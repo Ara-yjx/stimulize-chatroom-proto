@@ -1,0 +1,131 @@
+<!--
+  ============================================================
+  Stimulize Chatroom v2 — Local Smoke Test
+  ============================================================
+  How to run:
+
+  1. Terminal 1 — Chatroom Backend (port 5001):
+     cd backend && source .venv/bin/activate && python dev_server.py
+
+  2. Open this file in a browser:
+     frontend/test/index.html
+
+  3. Default chatroom ID (pre-seeded in mock):
+     scid_test-chatroom-001
+  ============================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stimulize Chatroom v2 — Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #eee;
+      display: flex;
+      justify-content: center;
+      padding: 40px 16px;
+    }
+    .wrapper { width: 100%; max-width: 520px; }
+    h1 { font-size: 18px; margin-bottom: 12px; text-align: center; color: #333; }
+    .config-form {
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .config-form label { font-size: 13px; color: #555; }
+    .config-form input {
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .config-form button {
+      padding: 8px;
+      background: #4a90d9;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-top: 4px;
+    }
+    #chatroom-container {
+      height: 500px;
+      background: #fff;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    #debug-panel { margin-top: 12px; }
+    #debug-panel button {
+      padding: 6px 12px;
+      background: #666;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      margin-right: 6px;
+    }
+    #debug-output {
+      margin-top: 8px;
+      padding: 10px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <h1>Stimulize Chatroom v2 — Test</h1>
+    <div class="config-form">
+      <label>API Base URL</label>
+      <input type="text" id="cfg-api-url" value="http://localhost:5001" />
+      <label>Chatroom ID</label>
+      <input type="text" id="cfg-chatroom-id" value="scid_test-chatroom-001" />
+      <button id="cfg-start">Start Chat</button>
+    </div>
+
+    <div id="chatroom-container"></div>
+
+    <div id="debug-panel">
+      <button id="btn-json">History JSON</button>
+      <button id="btn-text">History Text</button>
+      <div id="debug-output"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+  <script src="../dist/chatroom.min.js"></script>
+  <script>
+    document.getElementById("cfg-start").addEventListener("click", function () {
+      document.getElementById("chatroom-container").innerHTML = "";
+      StimulizeChatroom.init({
+        element: "#chatroom-container",
+        chatroomId: document.getElementById("cfg-chatroom-id").value,
+        apiBaseUrl: document.getElementById("cfg-api-url").value,
+      });
+    });
+
+    document.getElementById("btn-json").addEventListener("click", function () {
+      document.getElementById("debug-output").textContent =
+        JSON.stringify(StimulizeChatroom.getHistory(), null, 2);
+    });
+
+    document.getElementById("btn-text").addEventListener("click", function () {
+      document.getElementById("debug-output").textContent =
+        StimulizeChatroom.getHistoryText();
+    });
+  </script>
+</body>
+</html>

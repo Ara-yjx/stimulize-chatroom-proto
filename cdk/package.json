@@ -1,0 +1,21 @@
+{
+  "name": "stimulize-chatroom-cdk",
+  "version": "1.0.0",
+  "description": "CDK infrastructure for Stimulize Chatroom",
+  "scripts": {
+    "build": "tsc",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy --all"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.175.0",
+    "typescript": "~5.7.0",
+    "ts-node": "^10.9.2",
+    "@types/node": "^22.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.175.0",
+    "constructs": "^10.4.0"
+  }
+}

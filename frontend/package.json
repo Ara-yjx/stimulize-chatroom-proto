@@ -1,0 +1,13 @@
+{
+  "name": "stimulize-chatroom",
+  "version": "2.0.0",
+  "description": "Stimulize chatroom widget for Qualtrics",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --minify --loader:.css=text --global-name=StimulizeChatroom --external:jquery --outfile=dist/chatroom.min.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "esbuild": "^0.20.0",
+    "@types/jquery": "^3.5.0"
+  }
+}

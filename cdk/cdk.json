@@ -1,0 +1,29 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/app.ts",
+  "watch": {
+    "include": ["**"],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "**/*.d.ts",
+      "**/*.js",
+      "node_modules",
+      "build"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws"],
+
+    "vpcId": "vpc-PLACEHOLDER",
+    "subnetIds": "subnet-PLACEHOLDER1,subnet-PLACEHOLDER2",
+    "rdsSecurityGroupId": "sg-PLACEHOLDER",
+    "rdsHost": "your-rds-host.rds.amazonaws.com",
+    "rdsPort": "5432",
+    "rdsDatabase": "stimulize",
+    "rdsSecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:rds-secret",
+    "domainName": "chatroom.stimulize.org",
+    "useVpcEndpoints": "true"
+  }
+}
