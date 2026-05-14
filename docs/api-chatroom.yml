@@ -1,0 +1,190 @@
+openapi: 3.0.3
+info:
+  title: Stimulize Chatroom API
+  version: 1.0.0
+  description: Runtime API called by the chat widget. Hosted at chatroom.stimulize.org.
+
+servers:
+  - url: https://chatroom.stimulize.org
+    description: Production
+  - url: http://localhost:5001
+    description: Local dev
+
+paths:
+  /auth/token:
+    post:
+      summary: Start a chat session
+      description: |
+        Validates chatroom ID against RDS, creates conversation + participant in DynamoDB,
+        assigns nickname + avatar, returns JWT.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chatroom_id]
+              properties:
+                chatroom_id:
+                  type: string
+                  example: scid_550e8400-e29b-41d4-a716-446655440000
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    description: JWT (3h TTL). Claims: session_id, conversation_id, chatroom_id, iat, exp.
+                  session_id:
+                    type: string
+                  conversation_id:
+                    type: string
+                  nickname:
+                    type: string
+                    example: Participant1234
+                  avatar:
+                    $ref: "#/components/schemas/Avatar"
+                  chatroom_setting:
+                    $ref: "#/components/schemas/ChatroomSetting"
+        "401":
+          description: Chatroom not found or inactive
+        "500":
+          description: Internal error
+
+  /chat/send:
+    post:
+      summary: Send a message
+      description: |
+        Reads conversation from DynamoDB, calls Bedrock for each AI participant,
+        appends events to DynamoDB, writes usage to RDS.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+      responses:
+        "200":
+          description: AI replies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replies:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        nickname:
+                          type: string
+                        avatar:
+                          $ref: "#/components/schemas/Avatar"
+                        content:
+                          type: string
+                  error:
+                    type: boolean
+                    description: true if Bedrock inference failed after retries
+        "401":
+          description: Invalid or expired token
+
+  /chat/messages:
+    get:
+      summary: Poll for new events
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: after
+          in: query
+          schema:
+            type: integer
+          description: Epoch ms timestamp. Returns events after this time.
+      responses:
+        "200":
+          description: Events since timestamp
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ConversationEvent"
+        "401":
+          description: Invalid or expired token
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Avatar:
+      type: object
+      properties:
+        emojiText:
+          type: string
+          example: "🐱"
+        emojiImg:
+          type: string
+          nullable: true
+          description: "Future: URL to avatar image"
+
+    ChatroomSetting:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [one_on_one, group]
+          default: one_on_one
+        mimic_human:
+          type: boolean
+          default: true
+        system_prompt:
+          type: string
+        model_id:
+          type: string
+          example: global.anthropic.claude-sonnet-4-6
+        simulate_pairing_seconds:
+          type: integer
+          default: 0
+        timer_min_minutes:
+          type: integer
+          nullable: true
+        timer_max_minutes:
+          type: integer
+          nullable: true
+
+    ConversationEvent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [message, system]
+        session_id:
+          type: string
+        sender:
+          type: string
+        role:
+          type: string
+          enum: [human, ai, system]
+        content:
+          type: string
+        timestamp:
+          type: integer
+          description: Epoch ms
+        avatar:
+          $ref: "#/components/schemas/Avatar"

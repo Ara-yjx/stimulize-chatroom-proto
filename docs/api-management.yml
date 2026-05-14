@@ -1,0 +1,227 @@
+openapi: 3.0.3
+info:
+  title: Stimulize Chatroom Management API
+  version: 1.0.0
+  description: |
+    Management API called by the editor UI.
+    Phase 1: mock Flask server. Phase 2: real Stimulize backend.
+
+    Note: Lambda reads chatroom settings and writes usage directly to RDS —
+    no internal management API endpoints needed for Phase 1.
+    # will-do: If Lambda moves to SQS-based usage reporting (Phase 2+),
+    # add POST /internal/usage endpoint here.
+    # will-do: If Lambda stops reading RDS directly,
+    # add GET /internal/chatrooms/{id} endpoint here.
+
+servers:
+  - url: https://stimulize.org/api
+    description: Production (Stimulize backend)
+  - url: http://localhost:5000
+    description: Local mock
+
+tags:
+  - name: chatroom-crud
+    description: Chatroom CRUD (editor UI)
+  - name: usage
+    description: Usage queries (editor UI)
+
+paths:
+  /chatrooms:
+    post:
+      tags: [chatroom-crud]
+      summary: Create a chatroom
+      description: Generates scid_ + UUIDv4 as the chatroom ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, setting]
+              properties:
+                name:
+                  type: string
+                setting:
+                  $ref: "#/components/schemas/ChatroomSetting"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Chatroom"
+    get:
+      tags: [chatroom-crud]
+      summary: List chatrooms
+      description: Returns chatrooms for the current user. Setting omitted in list view.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChatroomSummary"
+
+  /chatrooms/{id}:
+    get:
+      tags: [chatroom-crud]
+      summary: Get chatroom with full setting
+      parameters:
+        - $ref: "#/components/parameters/ChatroomId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Chatroom"
+        "404":
+          description: Not found
+    put:
+      tags: [chatroom-crud]
+      summary: Update chatroom (partial)
+      parameters:
+        - $ref: "#/components/parameters/ChatroomId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                status:
+                  type: string
+                  enum: [active, inactive]
+                setting:
+                  $ref: "#/components/schemas/ChatroomSetting"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Chatroom"
+        "404":
+          description: Not found
+    delete:
+      tags: [chatroom-crud]
+      summary: Deactivate chatroom
+      description: Sets status to inactive. Does not delete data.
+      parameters:
+        - $ref: "#/components/parameters/ChatroomId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deactivated
+
+  /chatrooms/{id}/usage:
+    get:
+      tags: [usage]
+      summary: Get chatroom usage totals
+      parameters:
+        - $ref: "#/components/parameters/ChatroomId"
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Start date filter (ISO date)
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+          description: End date filter (ISO date)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chatroom_id:
+                    type: string
+                  input_tokens:
+                    type: integer
+                  output_tokens:
+                    type: integer
+                  total_tokens:
+                    type: integer
+
+components:
+  parameters:
+    ChatroomId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: scid_550e8400-e29b-41d4-a716-446655440000
+
+  schemas:
+    ChatroomSetting:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [one_on_one, group]
+          default: one_on_one
+        mimic_human:
+          type: boolean
+          default: true
+        system_prompt:
+          type: string
+        model_id:
+          type: string
+          example: global.anthropic.claude-sonnet-4-6
+        simulate_pairing_seconds:
+          type: integer
+          default: 0
+        timer_min_minutes:
+          type: integer
+          nullable: true
+        timer_max_minutes:
+          type: integer
+          nullable: true
+
+    Chatroom:
+      type: object
+      properties:
+        id:
+          type: string
+          example: scid_550e8400-e29b-41d4-a716-446655440000
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
+        setting:
+          $ref: "#/components/schemas/ChatroomSetting"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ChatroomSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
