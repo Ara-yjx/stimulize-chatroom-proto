@@ -16,18 +16,22 @@ paths:
       summary: Start a chat session
       description: |
         Validates chatroom ID against RDS, creates conversation + participant in DynamoDB,
-        assigns nickname + avatar, returns JWT.
+        assigns nickname + avatar, returns JWT. Beta also requires a fixed client
+        access key in the request body before a session token is issued.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [chatroom_id]
+              required: [chatroom_id, access_key]
               properties:
                 chatroom_id:
                   type: string
                   example: scid_550e8400-e29b-41d4-a716-446655440000
+                access_key:
+                  type: string
+                  description: Fixed beta client access key baked into generated beta scripts.
       responses:
         "200":
           description: Session created
@@ -50,6 +54,20 @@ paths:
                     $ref: "#/components/schemas/Avatar"
                   chatroom_setting:
                     $ref: "#/components/schemas/ChatroomSetting"
+                  lobby:
+                    type: object
+                    nullable: true
+                    description: Present only when the session is waiting in a group-mode lobby.
+                    properties:
+                      status:
+                        type: string
+                        enum: [open, closing, closed, aborted]
+                      actual_human_count:
+                        type: integer
+                      target_human_count:
+                        type: integer
+                      deadline_at:
+                        type: integer
         "401":
           description: Chatroom not found or inactive
         "500":
@@ -192,10 +210,30 @@ components:
           nullable: true
         max_duration_seconds:
           type: integer
+          maximum: 900
           nullable: true
           description: |
             Researcher-set cap on total conversation duration.
             Tick handler stops ticking and ends the conversation past this deadline.
+            Beta maximum: 900 seconds (15 minutes).
+        target_human_count:
+          type: integer
+          nullable: true
+          description: Group mode only; for one_on_one this is stored as 1.
+        ai_join_strategy:
+          type: string
+          nullable: true
+          enum: [fixed_ai_count, total_participant_count]
+          description: Group mode only.
+        ai_strategy_value:
+          type: integer
+          nullable: true
+          description: Fixed AI count or target total participant count, depending on ai_join_strategy.
+        max_wait_seconds:
+          type: integer
+          nullable: true
+          maximum: 600
+          description: Group lobby wait deadline. For one_on_one this is stored as 0.
 
     ConversationEvent:
       type: object

@@ -102,7 +102,10 @@ Partition key: `conversation_id` (S)
   chatroom_setting: { ... },      // snapshot of setting at session creation
   status: "active" | "ended",     // ticking stops when "ended"
   started_at: "...",              // ISO 8601, set when lobby closes
-  last_tick_at: 1711300000000,    // epoch ms, used for tick idempotency
+  active_tick_id: null | "aws-request-id",     // set while a tick handler owns this conversation
+  active_tick_until: null | 1711300060000,     // epoch ms; expired active ticks may be taken over
+  last_tick_started_at: 1711300000000,         // epoch ms, observability/cadence
+  last_tick_completed_at: 1711300003000,       // epoch ms, observability/cadence
   last_speak_at_by_session: {     // for fairness selection in gate
     "ai_001": 1711299990000
   },
@@ -158,6 +161,8 @@ Partition key: `conversation_id` (S)
 GSI: `status-index` (PK: `status`). Sparse — only `status="active"` rows. Heartbeat queries this. `ended` rows fall out, keeping the GSI hot regardless of historical volume.
 
 Tick events (`type: "tick"`) are recorded for full audit (every gate skip, every "asked but silent" decision, token costs). `/chat/messages` filters them out before returning to clients; they are never exposed to AI history either.
+
+**Beta storage guardrail**: events remain embedded in the conversation item for beta to keep implementation small. To reduce the chance of hitting DynamoDB's 400KB item limit during beta, the editor and management API cap `max_duration_seconds` at 900 seconds (15 minutes). Before production, move events to an append-only `chatroom-events` table and keep only conversation metadata/state in `chatroom-conversations` (see Beta -> Prod TODO).
 
 TTL is set to `created_at + 2.5 years` to allow fetching conversation history from the editor website later. The TTL field is derived from `created_at`, so if the retention policy changes, existing items can be batch-updated by recalculating TTL from `created_at`.
 ```
@@ -236,7 +241,7 @@ For `mode: "group"`, additional fields:
 }
 ```
 - `ai_strategy_value` semantics depend on `ai_join_strategy`: total participant count (compensates) vs fixed AI count.
-- `max_duration_seconds` applies to both modes. Tick handler stops ticking and ends the conversation past this deadline.
+- `max_duration_seconds` applies to both modes. Tick handler stops ticking and ends the conversation past this deadline. Beta hard cap: 900 seconds (15 minutes).
 - For `mode: "one_on_one"`, the group fields are **stored denormalized** with fixed values (`target_human_count=1, ai_join_strategy="fixed_ai_count", ai_strategy_value=1, max_wait_seconds=0`). The chat Lambda branches on the group fields uniformly and never re-derives from `mode`.
 
 ### RDS: `chatroom_usage` table
@@ -320,6 +325,7 @@ Implements the design in [design.md](./design.md#group-chatroom). Lobby state li
 ### `POST /auth/token` (group mode branch)
 
 ```python
+validate access_key against CHATROOM_CLIENT_ACCESS_KEY secret
 load chatroom from RDS
 if mode == "one_on_one": existing flow, return immediately
 
@@ -425,6 +431,7 @@ fail_count = 0
 
 while True:
     try:
+        now = int(time.time() * 1000)
         convs = ddb.query(
             TableName="chatroom-conversations",
             IndexName="status-index",
@@ -433,6 +440,9 @@ while True:
         )["Items"]
         fail_count = 0
         for c in convs:
+            active_until = int(c.get("active_tick_until", {"N": "0"})["N"])
+            if active_until > now:
+                continue  # best-effort prefilter; Lambda still does authoritative acquire
             lam.invoke(
                 FunctionName=LAMBDA,
                 InvocationType="Event",
@@ -454,58 +464,85 @@ Resources: 256 CPU / 512 MB. `desiredCount=1`.
 ```python
 def handler(event, context):
     cid = event["conversation_id"]
+    tick_id = context.aws_request_id
     now = int(time.time() * 1000)
+    active_until = now + 60000
 
-    # 1. idempotency: skip if a tick fired very recently
+    # 1. Acquire the active-tick slot before any Bedrock reasoning.
+    #    Heartbeat prefilter is advisory only; this conditional write is authoritative.
     try:
         ddb.update_item(
             Key={"conversation_id": cid},
-            UpdateExpression="SET last_tick_at = :now",
-            ConditionExpression="attribute_not_exists(last_tick_at) OR last_tick_at < :stale",
-            ExpressionAttributeValues={":now": now, ":stale": now - 4000},
+            UpdateExpression=(
+                "SET active_tick_id = :tick_id, "
+                "active_tick_until = :active_until, "
+                "last_tick_started_at = :now"
+            ),
+            ConditionExpression=(
+                "#status = :active AND "
+                "(attribute_not_exists(active_tick_until) OR active_tick_until < :now)"
+            ),
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":active": "active",
+                ":tick_id": tick_id,
+                ":active_until": active_until,
+                ":now": now,
+            },
         )
     except ConditionalCheckFailedException:
         return
 
-    conv = get_conversation(cid)
+    try:
+        conv = get_conversation(cid)
 
-    # 2. max-duration check
-    if conv.started_at + conv.setting.max_duration_seconds * 1000 < now:
-        update_status(cid, "ended")
-        return
+        # 2. max-duration check
+        if conv.started_at + conv.setting.max_duration_seconds * 1000 < now:
+            update_status(cid, "ended", condition_active_tick_id=tick_id)
+            return
 
-    # 3. gate (prose: min silence elapsed? same AI didn't just speak?)
-    decision = run_gate(conv, now)
-    if decision.skip:
-        append_tick_event(cid, gate_decision="skip", skip_reason=decision.reason)
-        return
+        # 3. gate (prose: min silence elapsed? same AI didn't just speak?)
+        decision = run_gate(conv, now)
+        if decision.skip:
+            append_tick_event(cid, gate_decision="skip", skip_reason=decision.reason)
+            return
 
-    # 4. Bedrock Converse with `speak` tool
-    candidate = decision.candidate
-    response = bedrock.converse(
-        modelId=conv.setting.model_id,
-        messages=build_history_for(candidate, conv),
-        system=[{"text": prompt_for(candidate)}],
-        toolConfig=SPEAK_TOOL_CONFIG,
-    )
-    messages = parse_speak_tool_call(response)  # [] if silent
+        # 4. Bedrock Converse with `speak` tool
+        candidate = decision.candidate
+        response = bedrock.converse(
+            modelId=conv.setting.model_id,
+            messages=build_history_for(candidate, conv),
+            system=[{"text": prompt_for(candidate)}],
+            toolConfig=SPEAK_TOOL_CONFIG,
+        )
+        messages = parse_speak_tool_call(response)  # [] if silent
 
-    # 5. record tick + messages
-    append_tick_event(cid,
-        chosen_session_id=candidate.session_id,
-        gate_decision="consider",
-        ai_decision="speak" if messages else "silent",
-        bedrock_invoked=True,
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
-    )
-    for m in messages:
-        append_message_event(cid, candidate, m, triggered_by_tick_id=...)
-    if messages:
-        update_last_speak_at(cid, candidate.session_id, now)
+        # 5. record tick + messages, conditionally on still owning active_tick_id
+        append_tick_event(cid,
+            chosen_session_id=candidate.session_id,
+            gate_decision="consider",
+            ai_decision="speak" if messages else "silent",
+            bedrock_invoked=True,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            condition_active_tick_id=tick_id,
+        )
+        for m in messages:
+            append_message_event(cid, candidate, m, triggered_by_tick_id=...,
+                                 condition_active_tick_id=tick_id)
+        if messages:
+            update_last_speak_at(cid, candidate.session_id, now,
+                                 condition_active_tick_id=tick_id)
+    finally:
+        # 6. Release only if this handler still owns the active tick.
+        release_active_tick(cid, tick_id)
 ```
 
 Bedrock retry/error classification reuses existing `bedrock_client.py` logic. On fatal errors the tick handler appends a `system` event and lets the conversation continue (next tick still fires).
+
+`release_active_tick(cid, tick_id)` removes `active_tick_id` and `active_tick_until`, and sets `last_tick_completed_at`, with `ConditionExpression="active_tick_id = :tick_id"`. If the condition fails, another handler has already taken over and this handler must not clear its ownership marker.
+
+The active tick is a timeout-based ownership marker, not a permanent lock. If a Lambda crashes or times out after setting `active_tick_id`, the conversation recovers when `active_tick_until` expires and the next heartbeat invokes a new handler. All final writes that mutate tick-owned state must condition on `active_tick_id = tick_id`; if that check fails, this handler lost ownership and must not append AI messages or update `last_speak_at_by_session`.
 
 ### Tick admin endpoint (debugging)
 
@@ -646,7 +683,7 @@ This allows:
 
 ### Init Flow
 1. `_injectStyles()` — inject CSS into `<head>`
-2. `exchangeToken()` — POST `/auth/token` with `chatroom_id`
+2. `exchangeToken()` — POST `/auth/token` with `chatroom_id` and beta `access_key`
 3. Read `session_id`, `conversation_id` from JWT payload (base64 decode)
 4. Read `nickname`, `avatar`, chatroom setting from `/auth/token` response
 5. Show pairing screen (if configured), wait N seconds
@@ -742,7 +779,7 @@ Editor enforces these client-side; the management API re-validates server-side a
 - `target_human_count >= 1`
 - `total_participant_count >= target_human_count` (if `ai_strategy = total_participant_count`)
 - `max_wait_seconds <= 600`
-- `max_duration_seconds <= 3600` (hard cap; revisit in prod)
+- `max_duration_seconds <= 900` for beta (15-minute hard cap; revisit in prod after event-history storage is split out)
 - `ai_strategy_value >= 0` and `<= 7` (cap on AI count for cost safety)
 - For `mode: "one_on_one"`, settings are auto-derived: `target_human_count=1`, `ai_strategy=fixed_ai_count`, `value=1`, `max_wait_seconds=0`. The 1-on-1 form is a UI preset over the same group settings.
 
@@ -779,6 +816,7 @@ Stacks (one file per stack, see Project Structure):
 ### ConversationTableStack
 - DynamoDB table `chatroom-conversations`. PK: `conversation_id` (S). PAY_PER_REQUEST. TTL on `ttl`.
 - GSI `status-index` (sparse on `status="active"`). Used by the heartbeat to find tickable conversations.
+- Fields `active_tick_id` and `active_tick_until` are used as the per-conversation active tick marker. The heartbeat may prefilter on `active_tick_until`, but the tick handler must conditionally acquire it before invoking Bedrock.
 
 ### LobbyTableStack
 - DynamoDB table `chatroom-lobbies`. PK: `lobby_id` (S). PAY_PER_REQUEST. TTL on `ttl` (180 days).
@@ -787,6 +825,7 @@ Stacks (one file per stack, see Project Structure):
 
 ### SecretsStack
 - JWT secret (HS256) — random value generated at first deploy.
+- Beta chatroom client access key — fixed beta value required by `/auth/token` before issuing a JWT.
 - Mock-management bearer token — random value, surfaced as env var to chatroom Lambda + heartbeat container, and as build-time secret to editor.
 - Admin bearer token (for `?include_ticks=true` debugging).
 
@@ -797,6 +836,7 @@ Stacks (one file per stack, see Project Structure):
 - Custom domain: `chatroom.stimulize.org` with ACM certificate.
 - IAM: DynamoDB R/W on conversation + lobby tables; Bedrock InvokeModel; RDS read; Secrets Manager read.
 - Env vars: `CONVERSATION_TABLE`, `LOBBY_TABLE`, `JWT_SECRET_ARN`, `ADMIN_TOKEN_SECRET_ARN`, `RDS_*`, `BEDROCK_REGION`, `MGMT_API_URL`, `MGMT_API_TOKEN_SECRET_ARN`.
+- Also reads `CHATROOM_CLIENT_ACCESS_KEY_SECRET_ARN` for the fixed beta widget access key used by `/auth/token`.
 - RDS Proxy for Lambda connection pooling.
 - VPC endpoints (or NAT Gateway) for Bedrock + DynamoDB + Secrets Manager from VPC.
 

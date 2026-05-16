@@ -19,13 +19,13 @@
 - **Beta (v1)** — current target
   - Group participant mode (1-on-1 is a UI preset over the group settings)
   - Standalone mode (portable script, independent of Stimulize trial)
-  - Chatroom ID only — no "Channel" or "Key"
+  - Chatroom ID + fixed beta client access key — no per-chatroom "Channel" or "Key"
   - Chatroom settings cloud-managed via mock management API (Fargate + SQLite + bearer token)
   - Auto-generated participant nicknames + emoji avatars (random)
   - Async AI flow via the tick model (heartbeat container + tick handler Lambda)
   - Conversation recorded in Qualtrics ED
   - Lobby-based pairing (`target_human_count`, `ai_join_strategy`, `max_wait_seconds`)
-  - `max_duration_seconds` cap per chatroom
+  - `max_duration_seconds` cap per chatroom; beta hard cap is 15 minutes
   - Researcher-facing audit via debug endpoint (`include_ticks=true`)
 
 - **Prod (v2)**
@@ -141,6 +141,11 @@ Future settings (out of scope for beta)
 - => Use UUIDv4 with prefix `scid_` (e.g. `scid_550e8400-e29b-41d4-a716-446655440000`). UUIDv4 chosen over UUIDv6 for simplicity — Python has native support. May migrate to UUIDv6 later if time-ordering is needed.
 - If a Chatroom gets abused, user should close it and create a new one (copy settings).
 
+**Beta client access key**
+- Beta widget calls `/auth/token` with `{ chatroom_id, access_key }`.
+- `access_key` is a single fixed beta value baked into generated beta scripts and checked against a server-side secret before a JWT is issued.
+- This is not a per-chatroom billing/security boundary; it is only a lightweight beta gate to avoid completely unauthenticated session creation. Production replaces it with the fuller channel/key model or real Stimulize auth.
+
 **Session token**
 - Short-lived JWT (3h)
 - Claims: `session_id`, `conversation_id`, `chatroom_id`, `iat`, `exp`
@@ -229,12 +234,16 @@ Options considered:
 2. SQS self-trigger chain. Each handler invocation enqueues the next. Lower idle cost but needs explicit watchdog + healing logic when chains break.
 3. Container heartbeat (chosen). Simple mental model, central cadence control, no per-conversation healing logic. Restart recovery via ECS.
 
-Why async Lambda invoke over SQS: built-in retry (2x), built-in throttling buffer (6h queue), no queue infra to provision. Idempotency required regardless — handler uses conditional `last_tick_at` update.
+Why async Lambda invoke over SQS: built-in retry (2x), built-in throttling buffer (6h queue), no queue infra to provision. Race control is required regardless — the handler conditionally acquires an `active_tick_id` / `active_tick_until` marker before any Bedrock call.
 
 **Configurability and ops:**
 - `HEARTBEAT_INTERVAL_SEC` env var on the container (tunable without redeploy; default 5s).
 - Container healthcheck: exits after N consecutive DDB query failures so ECS restarts.
-- `max_duration_seconds` chatroom setting: researcher caps total conversation duration. Tick handler stops ticking and flips `status="ended"` past this deadline.
+- `max_duration_seconds` chatroom setting: researcher caps total conversation duration. Tick handler stops ticking and flips `status="ended"` past this deadline. Beta hard cap: 900 seconds (15 minutes), primarily to bound Bedrock spend and keep embedded DynamoDB event history safely below item-size limits.
+
+**Active tick race control**
+
+The heartbeat may skip conversations whose `active_tick_until > now`, but that is only an optimization. The tick handler itself is authoritative: before reading history or calling Bedrock, it conditionally sets `active_tick_id=<lambda request id>` and `active_tick_until=now+timeout` on the conversation row. If another handler already owns an unexpired active tick, the new handler returns. All final state writes and AI message appends condition on `active_tick_id` still matching the handler's tick id. If a Lambda dies, the timeout expires and the next heartbeat can recover the conversation.
 
 **Beta vs production note:** Single-task ECS means ~30s gap during container restart — no ticks fire in that window. Acceptable for beta research traffic. **Revisit at production phase**: options include 2 tasks with leader election or shard assignment, EventBridge-driven fan-out, or migrating to the SQS self-trigger model.
 
@@ -411,12 +420,12 @@ Auth flow:
 
 **Decision: Start with: Chatroom == Channel == Channel Key**, all 1-1-1 bound.  
 We completely hide the concept of Channel and Key from users.  
-- Just use Chatroom ID instead of Channel key in the generated QSF/script. 
+- For beta, use Chatroom ID plus the fixed beta client access key in the generated QSF/script instead of per-chatroom channel keys.
 - Chatroom can be "Open" or "Closed".
 - If a Chatroom gets abused, user should close it and create a new one (copy settings).
 
 In standalone mode, use full config or only ChatroomID in script?
-- Since we'll always check the chatroom status, let's use ChatroomID.
+- Since we'll always check the chatroom status, let's use ChatroomID plus the fixed beta client access key.
   - This also restricts the capability of each Chatroom to prevent abuse.
 - From high perspective, it's like we're creating another sub-survey that has same edit-publish lifecycle, and referencing it in the main survey.
   - Or, the Chatroom becomes a public mini-app. 
@@ -521,6 +530,7 @@ Items deferred during the internal-beta phase. Revisit before public launch.
 - Bundle CDN: beta uses GitHub Pages on `cdn.stimulize.org`. Move to CloudFront + S3 if we need cache invalidation, edge logs, or stricter WAF rules.
 - CORS is `*` for beta. Tighten to a Qualtrics-domain allowlist (or Cognito-style auth) before prod.
 - JWT TTL is fixed at 3h. Revisit if researchers want longer sessions (`max_duration_seconds > 3h` would expire mid-conversation).
+- Beta keeps events embedded in the conversation DynamoDB item and caps conversations at 15 minutes. Before prod, split historical events into an append-only `chatroom-events` table to avoid the 400KB item limit, reduce hot-row contention, and support pagination/export.
 
 **Cost guardrails**
 - No per-chatroom Bedrock spend cap. Add daily / per-conversation token caps.
