@@ -34,6 +34,9 @@ dist/
 build/
 *.tsbuildinfo
 .cache/
+!frontend/dist/
+frontend/dist/*
+!frontend/dist/chatroom.min.js
 
 # CDK
 cdk/cdk.out/
