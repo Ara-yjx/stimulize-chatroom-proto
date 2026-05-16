@@ -41,7 +41,7 @@ Response: `{ events: [{ type, session_id, sender, role, content, timestamp, avat
 ### POST /chatrooms
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
 
-Request: `{ name, setting: { mode, mimic_human, system_prompt, model_id, simulate_pairing_seconds, timer_min_minutes, timer_max_minutes } }`
+Request: `{ name, setting: { mode, mimic_human, system_prompt, model_id, simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds } }`
 Response: `{ id, name, status, setting, created_at, updated_at }`
 
 ### GET /chatrooms

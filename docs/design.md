@@ -16,37 +16,51 @@
 
 ## Scope
 
-- Phase 1
-  - 1-on-1 participant mode
+- **Beta (v1)** — current target
+  - Group participant mode (1-on-1 is a UI preset over the group settings)
   - Standalone mode (portable script, independent of Stimulize trial)
-  - Chatroom ID only - no "Channel" or "Key"
-  - Chatroom settings are online (always sync)
-  - Auto-generated participant name, random avatar (like GitHub)
+  - Chatroom ID only — no "Channel" or "Key"
+  - Chatroom settings cloud-managed via mock management API (Fargate + SQLite + bearer token)
+  - Auto-generated participant nicknames + emoji avatars (random)
+  - Async AI flow via the tick model (heartbeat container + tick handler Lambda)
   - Conversation recorded in Qualtrics ED
+  - Lobby-based pairing (`target_human_count`, `ai_join_strategy`, `max_wait_seconds`)
+  - `max_duration_seconds` cap per chatroom
+  - Researcher-facing audit via debug endpoint (`include_ticks=true`)
 
-- Phase 2 (will do later)
-  - Group participant mode
-  - Participant name
-  - Usage chart
-  - Usage-writer Lambda + SQS
-  - Fetch conversation history from editor
+- **Prod (v2)**
+  - Migrate mock management API → real Stimulize backend (Postgres + proper auth)
+  - Lobby pruning enabled (currently no-op in beta)
+  - CORS allowlist
+  - Cost guardrails (per-conversation token caps)
+  - Multi-task heartbeat or alternate tick mechanism (no 30s gap)
+  - Tighter operational alarms
+  - See [Beta → Prod TODO](#beta--prod-todo) for the full list.
 
-- Phase 99 (discussed but likely won't do)
+- **Phase 1.1 (follow-up, in scope of beta but lower priority)**
+  - Token usage estimation in editor
+  - Customizable Qualtrics ED name
+  - Hide-next-button-until-min-time
+  - Image avatars
+  - Usage by day / month dashboards
+
+- **Phase 99 (discussed but likely won't do)**
   - Trial-integrated mode
   - Channel and key
   - Revision management
+  - Rolling join (humans joining a started conversation)
 
 ## Requirements
 
 **Chatroom**
-- Two participant modes: 1-on-1 mode (Phase 1) / Group mode (Phase 2)
+- Two participant modes: 1-on-1 mode and Group mode (1-on-1 is a UI preset over group settings)
 - AI Should simulate human texting habit 
 - Simulated "waiting for pairing" screen before entering chat
 - Optional timer: show status like "Please stay 5 to 10 minutes in the chatroom. Now: 4 minutes."
 
 **Chatroom settings**
 - Simplify prompt writing - just add a "Mimic human" switch
-- [Phase 2] Participants can set their name , and editor can decide whether to enable this feature
+- [Future] Participants can set their name , and editor can decide whether to enable this feature
 - Can deactivate at any time
 - Cost estimation
 
@@ -57,8 +71,8 @@
 
 ### Chatroom
 - Two participant modes:
-  - 1-on-1 mode (Phase 1): one human, one AI per conversation.
-  - Group mode (Phase 2): multiple humans and AIs per conversation. Server dynamically manages bot participants.
+  - 1-on-1 mode: one human, one AI per conversation. Implemented as a UI preset over the group settings (`target_human_count=1, ai_strategy=fixed_ai_count, value=1, max_wait_seconds=0`).
+  - Group mode: multiple humans and AIs per conversation. Server dynamically manages bot participants.
 - Should simulate human texting habit 
   - Might have delay due to texting
   - Might reply in 2 messages or no reply, not always 1-ask-1-reply
@@ -76,11 +90,10 @@
   - AI instruction(s) (allow per-AI instructions in group mode)- Simulate pairing time (seconds)
 - Timer: min / max (minutes)
 
-Phase 2 settings
+Future settings (out of scope for beta)
 - Participant name and avatar
   - Allow set name or not (default false) (if false, use "Participant" + 4-digit random number)
   - Enable avatar or not (default true)
-- [Phase 2] Group settings: `max_human_count`, and either (`min_bot_count` + `max_bot_count`) or (`min_participant` + `max_participant`)~~
 
 
 ### Frontend Widget
@@ -131,9 +144,123 @@ Phase 2 settings
 **Session token**
 - Short-lived JWT (3h)
 - Claims: `session_id`, `conversation_id`, `chatroom_id`, `iat`, `exp`
-- `session_id` is kept separate from `conversation_id` to prepare for group mode (Phase 2), where multiple participants share one conversation but each needs a distinct session.
+- `session_id` is kept separate from `conversation_id` because in group mode multiple participants share one conversation but each needs a distinct session.
 - Nickname, avatar, and role are NOT in the JWT — they're stored in DynamoDB alongside the conversation and looked up when needed. Keeps the token small.
 
+
+### Group Chatroom
+#### Pairing logic
+**Requirement**
+From researcher's perspective I want:
+- 2 use cases:
+	- 1 - I need to do a conversation as part of my exp (only 2-3 participants), but too few human participant - thus use AI to pretend a participant and ensure a conversation happens.
+	- 2 - I have enough participants and in most cases I get collect enough human during wait time, but I want to add AI who will say something that I want them to say. 
+		- AI prompts are defined elsewhere and randomly selected - just want to control the num of AIs
+- And in either case, I want to set "max wait time": if participant waits too long, just start a room with as-many-human-as-possible and rest AI
+- For simplicity
+	- Rolling join (human join a started conversation) is not in scope
+	- We want to start a conversation whenever we have enough human.
+
+**Solution**
+Configuration:
+- `target_human_count`
+- `ai_join_strategy` : either `total_participant_count` or `fixed_ai_count`
+- `max_wait_seconds`
+
+Humans will first wait in the lobby.
+A conversation would start when either enough human or deadline reached.
+
+AI count:
+- If `fixed_ai_count` strategy => `fixed_ai_count`
+- If `total_participant_count` strategy => `total_participant_count - actual_human_count`
+
+
+**Impl note:** 
+We might update the pairing logic - decouple this code and keep it flexible.
+
+#### Paring Implementation
+
+**Deadline trigger: client poll vs SQS delayed message
+1. Client poll triggers a "freshness check" (chosen)
+	1. backend opportunistically closes when `now > deadline_at`.
+2. SQS delayed message + closer Lambda. 
+	1. Server-driven. Reliable even if all clients leave.
+
+Decision -> **(1) client-driven**. 
+The waiting client is the one who needs the close to fire, and they're the one polling. If everyone leaves, no UX exists to break — DDB TTL cleans up the orphan lobby. Saves an SQS queue and a closer Lambda. Also dodges SQS's 900s DelaySeconds cap. The freshness check also runs in `/auth/token` so a fresh joiner re-uses or re-creates the lobby cleanly.
+
+**Lobby storage: lobby-row vs client-row**
+1. Lobby-row (chosen): one DDB item per lobby, participants embedded as a list. Capacity check is one conditional `UpdateItem`. Simple atomic semantics.
+2. Client-row: one item per participant. Capacity check needs a separate counter row (which becomes a lobby row anyway), and racing inserts can overshoot.
+
+Decision -> **(1) lobby-row**. 
+Lobbies hold ~4 participants, so list rewrite is cheap. The atomicity primitives we need (capacity, status flip) are per-item in DDB, so the lobby should be the item. Pruning a stale participant is one extra `UpdateItem`, acceptable.
+
+Lobby state lives in a **separate** `chatroom-lobbies` table, not the conversation table. The conversation row only exists once the lobby closes; until then, clients polling `/chat/messages` look up the lobby by pre-allocated `conversation_id` via GSI. See LLD for table shape.
+
+**Stale-participant pruning (post-beta)**
+
+While in lobby, every `/chat/messages` poll updates the caller's `last_seen_at`. If a client closes its tab, polls stop. After `STALE_THRESHOLD_SEC` (30s) without a heartbeat, that participant is considered stale.
+
+When pruning is enabled (prod), it runs at decision points:
+- Inside `/auth/token` join flow: prune stale participants before counting capacity.
+- Inside `close_lobby`: prune again right before computing `ai_count` and writing the conversation row.
+
+If pruning would leave 0 humans, the lobby is marked `aborted` instead of starting a conversation. Pruning never runs after close — the participant list is frozen at that moment.
+
+For **beta**, the schema records `last_seen_at` faithfully (so we have data) but the prune step in `close_lobby` is a no-op. All joiners count regardless of staleness. Disabled to keep beta simple.
+
+#### Async AI conversation flow ("tick" model)
+
+The naive "user sends message → all AIs reply" pattern doesn't fit group mode (multiple AIs talking over each other) or human-like timing (silent pauses, follow-up messages). Replace it with a **tick** model: a periodic event per active conversation that decides whether some AI should speak now. Same model serves group and 1-on-1.
+
+**Hybrid gate + tool-use:**
+- Gate (server logic): enforces minimum silence (default 5s), prevents same-AI-spamming, picks the AI that has been silent longest. Loose values; no max-silence rule for v1.
+- AI decision (Bedrock tool use): when the gate passes, ask the chosen AI via Converse `toolConfig` with one tool `speak(messages: string[])`. Empty array = stay silent. Non-empty array = the AI sends those messages (multi-message replies are natural).
+- Why hybrid over pure-prompt: cost-bounded; small models love to talk regardless of instructions.
+- Why tool use over control tokens (`<EOM>`/`<br>`): structured output, model-agnostic, no parsing brittleness across Claude/Nova/Llama.
+
+**Tick mechanism: container heartbeat + Lambda async invoke**
+
+A small ECS Fargate task (`desiredCount=1`) loops every N seconds, queries `status="active"` conversations from a sparse GSI, and async-invokes a tick handler Lambda for each. The handler runs the gate + Bedrock + DDB writes.
+
+Options considered:
+1. EventBridge cron + fan-out Lambda. EventBridge minimum is 1 minute — too coarse for 5-15s ticks.
+2. SQS self-trigger chain. Each handler invocation enqueues the next. Lower idle cost but needs explicit watchdog + healing logic when chains break.
+3. Container heartbeat (chosen). Simple mental model, central cadence control, no per-conversation healing logic. Restart recovery via ECS.
+
+Why async Lambda invoke over SQS: built-in retry (2x), built-in throttling buffer (6h queue), no queue infra to provision. Idempotency required regardless — handler uses conditional `last_tick_at` update.
+
+**Configurability and ops:**
+- `HEARTBEAT_INTERVAL_SEC` env var on the container (tunable without redeploy; default 5s).
+- Container healthcheck: exits after N consecutive DDB query failures so ECS restarts.
+- `max_duration_seconds` chatroom setting: researcher caps total conversation duration. Tick handler stops ticking and flips `status="ended"` past this deadline.
+
+**Beta vs production note:** Single-task ECS means ~30s gap during container restart — no ticks fire in that window. Acceptable for beta research traffic. **Revisit at production phase**: options include 2 tasks with leader election or shard assignment, EventBridge-driven fan-out, or migrating to the SQS self-trigger model.
+
+**Audit: all events recorded**
+
+The conversation `events[]` records every tick — including skipped ticks, "asked but stayed silent" ticks, and token costs. The Bedrock-visible history filters to message + system events only. This gives full research auditability ("why didn't AI speak then?") without polluting the AI's context.
+
+**Stateless ticks: full message history per tick**
+
+Bedrock Converse calls are stateless — Bedrock retains nothing across ticks. Each tick rebuilds the full prompt. The conversation history sent to Bedrock includes **all** prior messages, not a truncated window. This is the only way to keep AI identity (school, major, etc.) and topic state consistent across ticks. Token cost per tick grows linearly with conversation length; bounded by `max_duration_seconds`. Per-AI persona facts are also persisted on the conversation row and re-injected each tick. See LLD for prompt composition.
+
+**AIs don't know who else is AI**
+
+Each AI sees other participants only by nickname — there is no role marker (`human`/`ai`) in the history exposed to Bedrock. The AI knows its own nickname (via `<your-name>` in the prompt) but treats every other participant as a fellow human. This preserves the illusion and keeps researcher control over how the AI behaves toward "humans" without leaking metadata.
+
+**Simulated typing delay**
+
+AI messages don't appear instantly. Each message gets a `visible_at` timestamp = authoring time + 2-8s random delay (delays stack across a multi-message turn). UI rendering, the gate, and the history sent to the next AI all filter events by `visible_at <= now`. This mimics real typing tempo and keeps AIs reasoning about the conversation as users perceive it. Human and system events become visible immediately. See LLD for details.
+
+**No typing indicator in v1**
+
+While an AI message has `visible_at > now`, no "Mars is typing…" indicator is shown to the user. Backend `/chat/messages` filters events by `visible_at <= now`, so clients have no awareness of pending messages. This keeps the contract simple. A typing indicator is in the prod TODO list — it would require either a separate `typing` event type or exposing pending messages with content stripped.
+
+**1-on-1 mode is a special case of group mode**
+
+Conceptually, a 1-on-1 chatroom is just `target_human_count=1, ai_strategy=fixed_ai_count, value=1, max_wait_seconds=0`. Backend treats it the same way: same lobby flow, same tick handler, same conversation schema. The editor exposes 1-on-1 as a separate preset in the UI (because the researcher's mental model is different), but under the hood `mode` is just a discriminator that picks default values for the group settings. We keep `mode` as an explicit field for clarity and forward compatibility, not because the runtime needs it.
 
 ### Usage/Billing Architecture
 
@@ -208,7 +335,7 @@ Decision: Lambda in VPC is OK.
 
 ## Follow-up features (Phase 1.1)
 
-These non-critical features will be done lastly as follow-up (although in scope of phase 1)
+These non-critical features will be done lastly as follow-up (although in scope of beta)
 - Mimic human by not always 1-ask-1-reply
 - Token usage estimation
 - Allow customizing the ED name to output
@@ -224,7 +351,7 @@ These non-critical features will be done lastly as follow-up (although in scope 
 
 ## Alternative/Future Designs
 
-### Multi-Participant Conversation Mapping (Phase 2)
+### Multi-Participant Conversation Mapping
 - Each AI sees the full history from its own perspective:
   - Own messages → "assistant" role
   - Everything else → "user" role, prefixed with `[nickname]`
@@ -366,6 +493,53 @@ Issue:
 - If chatroom settings changes, the generated and distributed survey will also change. This is usually not expected. Need chatroom setting to be static, or with revision management.
 
 
+### Though-process of pairing logic
+First, determine two researcher cases (secure a conversation / AI to guide topic)
+To unify both cases, use configs
+- `min_ais`, `max_ais`
+- `min_humans`, `max_humans` 
+- `max_wait_seconds`
+And decide to start conversation when "enough human" or "wait timeout"
+Then simplify by reducing two corner case.
+- No rolling join -> no need `max_humans`
+- How many AI -> "total participants" (more AI when deadline reached) or "AI count" (fixed AI in both cases)
+
+
+---
+
+
+## Beta → Prod TODO
+
+Items deferred during the internal-beta phase. Revisit before public launch.
+
+**Reliability and ops**
+- ECS heartbeat is single-task. ~30s tick gap on container restart. Move to 2-task with leader election or shard assignment, or migrate to SQS-self-trigger model.
+- Mock management API runs as a single Fargate container with SQLite + bearer token. Migrate to real Stimulize backend (Postgres + proper auth).
+- Lambda concurrency limit set to default. Add explicit `reservedConcurrentExecutions` and a Bedrock-throttling alarm.
+- Bedrock cross-region inference latency varies (`global.` / `us.` prefixed models). Measure and document; consider regional pinning if it matters.
+- Lobby pruning: schema includes `last_seen_at` per participant but pruning logic is not implemented for beta. Implement before opening to wider users so abandoned tabs don't ghost-fill lobbies.
+- Bundle CDN: beta uses GitHub Pages on `cdn.stimulize.org`. Move to CloudFront + S3 if we need cache invalidation, edge logs, or stricter WAF rules.
+- CORS is `*` for beta. Tighten to a Qualtrics-domain allowlist (or Cognito-style auth) before prod.
+- JWT TTL is fixed at 3h. Revisit if researchers want longer sessions (`max_duration_seconds > 3h` would expire mid-conversation).
+
+**Cost guardrails**
+- No per-chatroom Bedrock spend cap. Add daily / per-conversation token caps.
+- Editor cost estimation only listed in Phase 1.1. Surface live "estimated max cost" before researcher saves a chatroom.
+
+**Researcher experience**
+- Token usage estimation in editor (live, based on duration × strategy × model rate).
+- Usage-by-day / usage-by-month dashboards in editor.
+
+**Data and privacy**
+- Conversation TTL is 2.5 years. Confirm with research compliance before prod.
+- Tick events stored verbatim include token counts and gate decisions — fine for audit, but expose via researcher-facing endpoints with care.
+
+**Widget polish**
+- Typing indicator (`Mars is typing…`) — currently no indicator while AI's `visible_at` is in the future.
+- Reconnection UX is "reconnecting…" after 30s. Could be smarter (immediate retry feedback, jittered backoff).
+- Multi-mount support (more than one chatroom per Qualtrics page) — out of scope for v1.
+
+
 ---
 
 
@@ -387,3 +561,37 @@ Issue:
 - Add "hide next button until minTime"
 - Model dropdown 
 - Token usage estimation
+
+
+
+### 2nd Team Review Raw Feedback
+
+- Want to allow beta user to try and evaluate the new features; auth and billing is not required.
+  - Solution TODO:
+    - If it turn out to be difficult to set up dev env for Stimulize backend , let's just use the mock management API and deploy it to EC2.
+    - Not a worthy shortcut to do no-RDS solution (store chatroom configs in the widget arguments). Will still have issue in chatroom save-edit and access key.
+
+- Prioritize multi-human-multi-ai mode
+- Prioritize "AI might respond one sentence in 2 message, or no response"
+  - Solution TODO:
+    - Need to separate "converse" with "get chatroom history"
+    - Instead of invoking converse every time when user send message, we should use an offline trigger (like every 5s) to trigger it.
+    - AI can reply control tokens like `<EOM>` to represent they don't want to say anything, or `<br>` to represent they want to send their in two or more messages.
+    - Need to update the prompt and verify the flow in experiment/ .
+
+
+### Lobby table schema: `lobby_id` PK vs `chatroom_id` PK
+
+Two ways to key the active-lobby store. We use option (1).
+
+(1) **PK = `lobby_id` (UUID), sparse GSI on `chatroom_id+status="open"`** (chosen)
+- Audit: each cohort gets its own row. Closed rows linger with TTL (180 days). "What happened in last week's 9am cohort?" is a `GetItem` away.
+- Multi-active-lobby migration: zero. Already keyed by lobby; just relax the "one open per chatroom" invariant in app code.
+- Cost: one extra UUID generation per lobby; one GSI.
+
+(2) **PK = `chatroom_id`, no GSI on status**
+- Audit: not in this table. Need CW Logs (or another store) at close time. Two write paths.
+- Multi-active-lobby migration: requires creating a new table with a different PK and migrating data. Disruptive (hard cut-over) or complex (dual-write).
+- Cost: simpler day-one schema; no UUID, no GSI.
+
+We chose (1) because the cost difference is trivial (one GSI), audit is "free" via TTL, and we don't have to think about migration if multi-active ever comes up.

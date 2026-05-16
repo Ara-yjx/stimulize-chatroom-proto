@@ -59,8 +59,14 @@ paths:
     post:
       summary: Send a message
       description: |
-        Reads conversation from DynamoDB, calls Bedrock for each AI participant,
-        appends events to DynamoDB, writes usage to RDS.
+        Appends the human's message event to the conversation. AI replies do
+        NOT come back from this endpoint — they arrive via the next
+        `/chat/messages` poll, driven by the tick handler.
+
+        Returns the same shape as `/chat/messages`: events visible to this
+        client at the moment of the call (filtered by `visible_at <= now`,
+        excluding `tick` events). This lets the client refresh its view in
+        the same round trip.
       security:
         - bearerAuth: []
       requestBody:
@@ -73,34 +79,33 @@ paths:
               properties:
                 message:
                   type: string
+                after:
+                  type: integer
+                  description: Epoch ms; only return events after this time. Same semantics as `/chat/messages?after`.
       responses:
         "200":
-          description: AI replies
+          description: Acknowledged; current visible events returned
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  replies:
+                  events:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        nickname:
-                          type: string
-                        avatar:
-                          $ref: "#/components/schemas/Avatar"
-                        content:
-                          type: string
-                  error:
-                    type: boolean
-                    description: true if Bedrock inference failed after retries
+                      $ref: "#/components/schemas/ConversationEvent"
         "401":
           description: Invalid or expired token
+        "409":
+          description: Conversation is in lobby state or has ended (no message accepted)
 
   /chat/messages:
     get:
       summary: Poll for new events
+      description: |
+        Returns events the client is allowed to see right now.
+        Filters: `visible_at <= now` AND `type != tick`.
+        Pending AI messages with `visible_at > now` are NOT included.
       security:
         - bearerAuth: []
       parameters:
@@ -108,7 +113,7 @@ paths:
           in: query
           schema:
             type: integer
-          description: Epoch ms timestamp. Returns events after this time.
+          description: Epoch ms timestamp. Returns events with `visible_at` after this time.
       responses:
         "200":
           description: Events since timestamp
@@ -121,6 +126,24 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/ConversationEvent"
+                  conversation_status:
+                    type: string
+                    enum: [active, ended]
+                    description: Once `ended`, client should disable the input and show "This conversation has ended".
+                  lobby:
+                    type: object
+                    nullable: true
+                    description: Present only while the conversation is still in lobby phase.
+                    properties:
+                      status:
+                        type: string
+                        enum: [open, closing, closed, aborted]
+                      actual_human_count:
+                        type: integer
+                      target_human_count:
+                        type: integer
+                      deadline_at:
+                        type: integer
         "401":
           description: Invalid or expired token
 
@@ -167,13 +190,24 @@ components:
         timer_max_minutes:
           type: integer
           nullable: true
+        max_duration_seconds:
+          type: integer
+          nullable: true
+          description: |
+            Researcher-set cap on total conversation duration.
+            Tick handler stops ticking and ends the conversation past this deadline.
 
     ConversationEvent:
       type: object
+      description: |
+        Server stores three event types: `message`, `system`, and `tick`.
+        `tick` events record gate decisions and per-tick metadata for audit (server-internal).
+        `/chat/messages` filters out `tick` events before returning to clients.
+        Clients only ever see `message` and `system` events.
       properties:
         type:
           type: string
-          enum: [message, system]
+          enum: [message, system, tick]
         session_id:
           type: string
         sender:
@@ -185,6 +219,17 @@ components:
           type: string
         timestamp:
           type: integer
-          description: Epoch ms
+          description: |
+            Epoch ms. Authoring time — when the event was generated.
+            Human messages and system events are visible immediately.
+            AI messages may be deferred (see visible_at).
+        visible_at:
+          type: integer
+          description: |
+            Epoch ms. When this event becomes visible to participants.
+            For AI messages, includes a simulated typing delay (2-8s,
+            stacked across a multi-message turn). Equals `timestamp`
+            for human messages and system events. Clients render each
+            message at `visible_at`, not `timestamp`.
         avatar:
           $ref: "#/components/schemas/Avatar"

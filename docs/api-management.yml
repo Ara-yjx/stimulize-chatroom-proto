@@ -4,7 +4,10 @@ info:
   version: 1.0.0
   description: |
     Management API called by the editor UI.
-    Phase 1: mock Flask server. Phase 2: real Stimulize backend.
+    Phase 1 (beta): mock Flask server in a Fargate container with SQLite, behind a bearer token.
+    Phase 2 (prod): real Stimulize backend with Postgres and proper auth.
+
+    Auth: all endpoints require `Authorization: Bearer <token>` (see securitySchemes).
 
     Note: Lambda reads chatroom settings and writes usage directly to RDS —
     no internal management API endpoints needed for Phase 1.
@@ -14,10 +17,15 @@ info:
     # add GET /internal/chatrooms/{id} endpoint here.
 
 servers:
+  - url: https://mock-mgmt.stimulize.org
+    description: Beta (Fargate container)
   - url: https://stimulize.org/api
-    description: Production (Stimulize backend)
+    description: Future production (Stimulize backend)
   - url: http://localhost:5000
     description: Local mock
+
+security:
+  - bearerAuth: []
 
 tags:
   - name: chatroom-crud
@@ -155,6 +163,10 @@ paths:
                     type: integer
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
   parameters:
     ChatroomId:
       name: id
@@ -189,6 +201,12 @@ components:
         timer_max_minutes:
           type: integer
           nullable: true
+        max_duration_seconds:
+          type: integer
+          nullable: true
+          description: |
+            Cap on total conversation duration. Tick handler ends the
+            conversation past this deadline. Applies to both modes.
 
     Chatroom:
       type: object
