@@ -26,8 +26,7 @@ def reset_state():
         "status": "active",
         "setting": {
             "mode": "one_on_one",
-            "mimic_human": True,
-            "system_prompt": "test prompt",
+            "topic_instruction": "test topic",
             "model_id": "global.anthropic.claude-sonnet-4-6",
             "simulate_pairing_seconds": 5,
             "timer_min_minutes": 5,
@@ -46,8 +45,7 @@ def test_create_chatroom(client):
         "name": "My Chatroom",
         "setting": {
             "mode": "one_on_one",
-            "mimic_human": True,
-            "system_prompt": "Be nice",
+            "topic_instruction": "Be nice",
             "model_id": "global.anthropic.claude-sonnet-4-6",
             "simulate_pairing_seconds": 3,
             "timer_min_minutes": None,
@@ -59,7 +57,7 @@ def test_create_chatroom(client):
     assert data["id"].startswith("scid_")
     assert data["name"] == "My Chatroom"
     assert data["status"] == "active"
-    assert data["setting"]["mimic_human"] is True
+    assert data["setting"]["topic_instruction"] == "Be nice"
     assert "created_at" in data
     assert "updated_at" in data
     # Should be stored in CHATROOMS
@@ -89,7 +87,7 @@ def test_get_chatroom(client):
     data = resp.get_json()
     assert data["id"] == "scid_test-chatroom-001"
     assert data["setting"]["mode"] == "one_on_one"
-    assert data["setting"]["system_prompt"] == "test prompt"
+    assert data["setting"]["topic_instruction"] == "test topic"
 
 
 def test_get_chatroom_not_found(client):
@@ -122,8 +120,7 @@ def test_update_chatroom_setting(client):
     resp = client.put("/chatrooms/scid_test-chatroom-001", json={
         "setting": {
             "mode": "group",
-            "mimic_human": False,
-            "system_prompt": "new prompt",
+            "topic_instruction": "new topic",
             "model_id": "global.anthropic.claude-sonnet-4-6",
             "simulate_pairing_seconds": 0,
             "timer_min_minutes": None,
@@ -133,7 +130,7 @@ def test_update_chatroom_setting(client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["setting"]["mode"] == "group"
-    assert data["setting"]["mimic_human"] is False
+    assert data["setting"]["topic_instruction"] == "new topic"
 
 
 def test_update_chatroom_not_found(client):

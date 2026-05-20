@@ -2,3 +2,4 @@ boto3
 pyjwt
 requests
 pytest
+hypothesis>=6.100,<7

@@ -2,6 +2,12 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Cap the widget width so on wide host pages (e.g. a Qualtrics question
+     spanning the full viewport) the chat doesn't sprawl to an awkward
+     width. Centered horizontally inside its mount element. */
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
   background: #f5f5f5;
@@ -127,4 +133,59 @@
   text-align: center;
   border-top: 1px solid #eee;
   background: #fafafa;
+}
+.stim-reconnect-banner {
+  padding: 8px 12px;
+  background: #fff3cd;
+  color: #856404;
+  font-size: 13px;
+  text-align: center;
+  border-bottom: 1px solid #ffc107;
+}
+.stim-reconnect-btn {
+  margin-top: 8px;
+  padding: 8px 20px;
+  background: #0084ff;
+  color: #fff;
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.stim-reconnect-btn:hover {
+  background: #006fdb;
+}
+.stim-beta-config {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  padding: 24px;
+}
+.stim-beta-label {
+  font-size: 13px;
+  color: #555;
+}
+.stim-beta-input {
+  width: 100%;
+  max-width: 320px;
+  padding: 8px 12px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 14px;
+  text-align: center;
+}
+.stim-beta-start {
+  padding: 8px 20px;
+  background: #0084ff;
+  color: #fff;
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.stim-beta-start:hover {
+  background: #006fdb;
 }

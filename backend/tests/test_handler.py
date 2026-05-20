@@ -102,6 +102,20 @@ class TestChatMessagesRoute:
         assert resp["statusCode"] == 200
         mock_msgs.assert_called_once()
 
+    @patch(
+        "chatroom_api.handler.chat.handle_chat_messages",
+        side_effect=__import__("chatroom_api.errors", fromlist=["LobbyAbortedException"]).LobbyAbortedException("conv-1"),
+    )
+    def test_aborted_lobby_returns_410(self, _mock_msgs):
+        token = _make_token()
+        resp = lambda_handler(
+            _event("GET", "/chat/messages",
+                   headers={"Authorization": f"Bearer {token}"}),
+            None,
+        )
+        assert resp["statusCode"] == 410
+        assert json.loads(resp["body"])["error"] == "lobby aborted"
+
 
 class TestNotFound:
     def test_unknown_path_returns_404(self):

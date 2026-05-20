@@ -21,23 +21,38 @@ export interface ConversationEvent {
   role: "human" | "ai" | "system";
   content: string;
   timestamp: number;
+  visible_at?: number;
   avatar?: Avatar;
 }
 
 export interface ChatroomSetting {
   mode: "one_on_one" | "group";
-  mimic_human: boolean;
-  system_prompt: string;
+  topic_instruction: string;
+  additional_prompt?: string;
+  ai_personas?: string[];
   model_id: string;
   simulate_pairing_seconds: number;
   timer_min_minutes?: number;
   timer_max_minutes?: number;
+  max_duration_seconds?: number;
+  target_human_count?: number;
+  ai_join_strategy?: "fixed_ai_count" | "total_participant_count";
+  ai_strategy_value?: number;
+  max_wait_seconds?: number;
+}
+
+export interface LobbyState {
+  status: "open" | "closing" | "closed" | "aborted";
+  actual_human_count: number;
+  target_human_count: number;
+  deadline_at: number;
 }
 
 export interface InitOptions {
   element: string | HTMLElement;
   chatroomId: string;
-  apiBaseUrl: string;
+  apiBaseUrl?: string;
+  beta?: boolean;
 }
 
 export interface SessionInfo {
@@ -59,14 +74,11 @@ export interface ExchangeTokenResponse {
 }
 
 export interface SendMessageResponse {
-  replies?: Array<{
-    nickname: string;
-    avatar?: Avatar;
-    content: string;
-  }>;
-  error?: boolean;
+  ok?: boolean;
 }
 
 export interface PollMessagesResponse {
   events: ConversationEvent[];
+  lobby?: LobbyState;
+  conversation_status?: "active" | "ended";
 }

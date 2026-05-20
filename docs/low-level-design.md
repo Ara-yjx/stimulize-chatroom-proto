@@ -126,7 +126,7 @@ Partition key: `conversation_id` (S)
   ],
   events: [
     {
-      type: "system" | "message" | "tick",
+      type: "system" | "message" | "tick" | "lobby_created",
       session_id: "sess-uuid4",
       sender: "Participant1234",
       role: "human" | "ai" | "system",
@@ -161,6 +161,8 @@ Partition key: `conversation_id` (S)
 GSI: `status-index` (PK: `status`). Sparse — only `status="active"` rows. Heartbeat queries this. `ended` rows fall out, keeping the GSI hot regardless of historical volume.
 
 Tick events (`type: "tick"`) are recorded for full audit (every gate skip, every "asked but silent" decision, token costs). `/chat/messages` filters them out before returning to clients; they are never exposed to AI history either.
+
+`lobby_created` events are written as the very first event when a lobby closes (group mode). They carry the lobby's `created_at` timestamp + pairing config (target_human_count, ai_join_strategy, ai_strategy_value, max_wait_seconds) so researchers can audit "how long did this cohort wait?". Filtered out of `/chat/messages` and AI history by the same audit-event rule as ticks; admin callers (`?include_ticks=true` with the admin bearer) see them.
 
 **Beta storage guardrail**: events remain embedded in the conversation item for beta to keep implementation small. To reduce the chance of hitting DynamoDB's 400KB item limit during beta, the editor and management API cap `max_duration_seconds` at 900 seconds (15 minutes). Before production, move events to an append-only `chatroom-events` table and keep only conversation metadata/state in `chatroom-conversations` (see Beta -> Prod TODO).
 
@@ -220,8 +222,7 @@ The `setting` JSON column contains:
 ```json
 {
   "mode": "one_on_one",
-  "mimic_human": true,
-  "system_prompt": "...",
+  "topic_instruction": "Anything about your college life.",
   "model_id": "global.anthropic.claude-sonnet-4-6",
   "simulate_pairing_seconds": 5,
   "timer_min_minutes": 5,
@@ -408,6 +409,16 @@ The `attribute_not_exists` guard on step 4 makes the close idempotent under raci
 - `max_wait_seconds` upper bound: no SQS limit applies (client-driven). Reasonable cap in editor: 600s.
 - Late joiner during `closing`/`closed`: conditional update on join fails, joiner forms a new lobby. Automatic.
 - Refresh during wait: client loses session_id, rejoins as new participant. Acceptable for v1.
+
+### Lobby UX (widget)
+
+While in lobby, the widget shows the same animated dots screen used for `simulate_pairing_seconds` ("Finding a chat partner..."). No counts, no countdown — researchers don't want to telegraph that other humans may not arrive.
+
+When `/chat/messages` returns 410 Gone (lobby `aborted` because no humans remained at deadline, or pruning left 0 humans), the widget replaces the pairing screen with an **aborted state**:
+- Message: "No one else joined this chatroom."
+- Button: "Reconnect" — clicking it tears down the current widget instance and re-runs `init()` with the same options. The user joins as a new participant in a fresh lobby (server creates one on `/auth/token` if none open).
+
+The reconnect button is the only recovery affordance. Once aborted, polling stops; it does not auto-retry.
 
 
 ## Async AI Conversation Flow
@@ -598,15 +609,21 @@ Each Bedrock Converse call is stateless — Bedrock holds no state across ticks.
 SPEECH_SCAFFOLD            # platform-managed: tool use, silence rules, examples
 + CHATROOM_TOPIC_INSTRUCTION  # researcher-supplied per chatroom (e.g. "chat about college life")
 + PER_AI_PERSONA           # auto-generated identity facts (school, major, gender), persisted on conversation row
++ PARTICIPANTS             # <participants> block listing every nickname (caller annotated "(you)")
 + CONVERSATION_CONTEXT     # <your-name>, <conversation-history> with now-relative timestamps
++ ADDITIONAL_PROMPT        # researcher-supplied free-form, appended after history (last-mile reminders)
 ```
 
 - `SPEECH_SCAFFOLD` and the `speak` tool config are not exposed to researchers — they live in our codebase and are versioned with the platform.
-- `CHATROOM_TOPIC_INSTRUCTION` is the researcher's chatroom setting (`system_prompt` in RDS).
-- `PER_AI_PERSONA` is generated at conversation start and stored on the conversation row so each AI keeps a consistent identity across ticks. Without this, AIs drift across ticks (different school, different major) since Bedrock conversations are stateless.
+- `CHATROOM_TOPIC_INSTRUCTION` is the researcher's chatroom setting (`topic_instruction` in RDS). The backend wraps it in a `# Chatroom topic` block before stitching it into the system prompt.
+- `PER_AI_PERSONA` is generated at conversation start and stored on the conversation row so each AI keeps a consistent identity across ticks. Without this, AIs drift across ticks (different school, different major) since Bedrock conversations are stateless. The persona is randomly drawn from the chatroom setting's `ai_personas` pool (without replacement when the pool has at least `ai_count` entries; with replacement otherwise; empty pool → no persona block).
+- `PARTICIPANTS` lists every nickname in the room (no role markers — see "AIs don't know who else is AI"). Without this, an AI can't notice a participant who never speaks, defeating the inclusivity rules in the scaffold.
 - `CONVERSATION_CONTEXT` is built fresh every tick. Timestamps in `<conversation-history>` are computed as `now - event.timestamp`, so the model sees correct relative deltas at every call.
+- `ADDITIONAL_PROMPT` is researcher-supplied free-form text (`additional_prompt` in RDS). Lands AFTER the history so last-mile reminders ("stay one-thought-per-turn") are the most recent thing the model sees before deciding what to say. Optional; omitted from the prompt when empty.
 
 **Drift prevention**: do NOT truncate `<conversation-history>` during a conversation. Each tick must include the full message history. Truncation causes identity drift and topic-loop. Token cost per tick grows linearly, which is the explicit tradeoff. Conversation length is bounded by `max_duration_seconds`.
+
+**Inclusivity rule**: the scaffold instructs AIs to notice silent participants and invite them in with group-addressed phrasing (no name targeting), with a ~15s cooldown after another participant has just invited them. Pairs with the `<participants>` block — without that block, an AI can't reliably see a participant who hasn't spoken.
 
 ### Simulated typing delay
 
@@ -715,17 +732,19 @@ jQuery.getScript("https://cdn.stimulize.org/chatroom.min.js", function() {
 
 ### API hostname configuration
 
-The widget talks only to the chatroom backend API (`/auth/token`, `/chat/send`, `/chat/messages`). It never talks to the management API. The hostname is hardcoded to `https://chatroom.stimulize.org` in production builds.
+The widget talks only to the chatroom backend API (`/auth/token`, `/chat/send`, `/chat/messages`). It never talks to the management API. The default hostname is `https://chatroom.stimulize.org`.
 
-For development and beta testing, `init()` accepts an optional `apiBaseUrl` override:
+`init()` accepts an optional `beta` flag. When `beta: true`, the widget renders an API hostname input box at widget start (before token exchange) and only proceeds once the user clicks "Start". This lets researchers point the widget at a non-prod backend during beta testing without a rebuild:
+
 ```javascript
 StimulizeChatroom.init({
   element: chatDiv,
   chatroomId: "scid_...",
-  apiBaseUrl: "http://localhost:5001"   // dev/beta only
+  beta: true        // shows hostname input box; default value pre-filled
 });
 ```
-The override is gated on `import.meta.env.DEV` at build time — production bundles ignore the field and always use the production URL.
+
+Without `beta: true`, the widget always uses `https://chatroom.stimulize.org` and never shows the input. The flag is the only way to override the hostname in production builds.
 
 ### Reconnection UX
 
@@ -771,7 +790,7 @@ Uses `@arco-design/web-react` (v2.66.7) to match the main Stimulize editor proje
 - Simulate pairing seconds, timer min/max, `max_duration_seconds`
 - Group-only: `target_human_count`, `ai_join_strategy` radio, `ai_strategy_value`, `max_wait_seconds`
 - Generate Script button → Qualtrics-compatible JS snippet
-- Widget Preview (iframe with blob URL)
+- Widget Preview (iframe with blob URL; "Launch another preview" button mounts side-by-side iframes for multi-participant testing)
 
 ### Form validation
 
@@ -794,8 +813,9 @@ For testing arbitrary backend hostnames during development, the editor exposes a
 ### Mode UX
 
 The editor surfaces mode as a toggle (`one_on_one` / `group`):
-- `one_on_one` form shows: name, model, mimic-human, system_prompt, simulate_pairing_seconds, timer min/max, max_duration_seconds. Group fields hidden.
+- `one_on_one` form shows: name, model, topic_instruction, simulate_pairing_seconds, timer min/max, max_duration_seconds. Group fields hidden.
 - `group` form additionally shows: target_human_count, ai_join_strategy radio (`fixed_ai_count` / `total_participant_count`), ai_strategy_value, max_wait_seconds.
+- `simulate_pairing_seconds` is hidden in group mode when `target_human_count > 1` — the lobby provides a real wait (`max_wait_seconds`), so a cosmetic wait on top would be confusing. With `target_human_count = 1` (1-on-1 preset under the hood, or a degenerate group room) the field stays visible because there is no real wait and the simulated pairing screen is the only pacing.
 - On save, the management API stores both sets of fields. For `one_on_one`, group fields are denormalized to fixed values (`target_human_count=1`, `ai_join_strategy=fixed_ai_count`, `ai_strategy_value=1`, `max_wait_seconds=0`) so the chat Lambda can branch uniformly on group fields without re-deriving from `mode`.
 
 ### Editor → Management API

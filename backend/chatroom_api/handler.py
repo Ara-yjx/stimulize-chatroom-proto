@@ -9,6 +9,7 @@ from typing import Optional
 import jwt
 
 from chatroom_api import auth, chat, jwt_utils
+from chatroom_api.errors import LobbyAbortedException
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -81,7 +82,12 @@ def lambda_handler(event: dict, context) -> dict:
                 return _response(status, resp)
 
             if http_method == "GET" and path == "/chat/messages":
-                status, resp = chat.handle_chat_messages(query_params, claims)
+                try:
+                    status, resp = chat.handle_chat_messages(
+                        query_params, claims, headers=headers
+                    )
+                except LobbyAbortedException:
+                    return _response(410, {"error": "lobby aborted"})
                 return _response(status, resp)
 
         # --- fallback ---

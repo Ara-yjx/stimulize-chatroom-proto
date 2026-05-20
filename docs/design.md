@@ -215,6 +215,10 @@ If pruning would leave 0 humans, the lobby is marked `aborted` instead of starti
 
 For **beta**, the schema records `last_seen_at` faithfully (so we have data) but the prune step in `close_lobby` is a no-op. All joiners count regardless of staleness. Disabled to keep beta simple.
 
+**Aborted-lobby UX**
+
+If a lobby reaches `aborted` (no humans remained at deadline, or pruning left 0 humans), the widget shows "No one else joined this chatroom." plus a "Reconnect" button. Clicking it re-runs `init()` so the user joins as a new participant in a fresh lobby. This makes the failure mode explicit rather than leaving the user staring at an animation. See LLD for the widget contract.
+
 #### Async AI conversation flow ("tick" model)
 
 The naive "user sends message → all AIs reply" pattern doesn't fit group mode (multiple AIs talking over each other) or human-like timing (silent pauses, follow-up messages). Replace it with a **tick** model: a periodic event per active conversation that decides whether some AI should speak now. Same model serves group and 1-on-1.
@@ -588,6 +592,26 @@ Items deferred during the internal-beta phase. Revisit before public launch.
     - Instead of invoking converse every time when user send message, we should use an offline trigger (like every 5s) to trigger it.
     - AI can reply control tokens like `<EOM>` to represent they don't want to say anything, or `<br>` to represent they want to send their in two or more messages.
     - Need to update the prompt and verify the flow in experiment/ .
+
+
+
+### 3rd Team Review Raw Feedback
+
+- Need per-AI personality prompt
+
+- Add "mimic human" back
+
+- When goes public, do not use our own bedrock token - use their own Chat GPT / Claude API key
+
+- Validate widget exports history to qualtrics ED.
+
+- Input prompt length limit.
+
+Technical:
+
+- Need to lock down chatroom prompt - edits in chatroom will impact ongoing conversation; ai prompt will change
+  - simple solution: show "ongoing conversation count" and let user save only when count is 0.
+  - better solution: "publish" action with "revision"
 
 
 ### Lobby table schema: `lobby_id` PK vs `chatroom_id` PK

@@ -56,6 +56,15 @@ cdk.context.json
 # Logs
 *.log
 
+# Local dev dumps
+backend/dev_dumps/
+
 # Backups
 *.bak
 *~
+
+# Python hypothesis test lib
+.hypothesis/
+
+.obsidian/
+

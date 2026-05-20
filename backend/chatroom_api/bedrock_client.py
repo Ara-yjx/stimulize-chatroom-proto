@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Callable
 
 import boto3
 from botocore.exceptions import ClientError
 
 from chatroom_api import config
+from chatroom_api.prompts.speech_scaffold import SPEAK_TOOL_CONFIG, parse_speak_tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -44,28 +46,21 @@ def _get_client():
     return _client
 
 
-def invoke(model_id: str, system_prompt: str, messages: list[dict]) -> dict:
-    """Call Bedrock Converse API with retry for transient errors.
+def _call_with_retry(call: Callable[[], dict]) -> dict:
+    """Invoke ``call`` with the shared Bedrock retry + error classification.
 
-    Returns: {"text": str, "input_tokens": int, "output_tokens": int}
-    Raises: BedrockInferenceError on failure.
+    ``call`` is a zero-arg closure that issues a Bedrock API request and
+    returns the raw response dict. Retryable ``ClientError`` codes
+    (Throttling/ModelTimeout/ServiceUnavailable) trigger exponential backoff
+    up to ``MAX_RETRIES``; fatal codes (ExpiredToken/Validation) raise
+    immediately. Any other exception is wrapped as a non-retryable
+    ``BedrockInferenceError``.
     """
-    client = _get_client()
     last_error = None
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = client.converse(
-                modelId=model_id,
-                messages=messages,
-                system=[{"text": system_prompt}],
-                inferenceConfig={"maxTokens": 512, "temperature": 0.7},
-            )
-            return {
-                "text": response["output"]["message"]["content"][0]["text"],
-                "input_tokens": response["usage"]["inputTokens"],
-                "output_tokens": response["usage"]["outputTokens"],
-            }
+            return call()
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
             error_msg = e.response["Error"]["Message"]
@@ -84,8 +79,74 @@ def invoke(model_id: str, system_prompt: str, messages: list[dict]) -> dict:
             # Unknown error — treat as fatal
             raise BedrockInferenceError(error_code, error_msg, retryable=False)
 
+        except BedrockInferenceError:
+            raise
+
         except Exception as e:
             raise BedrockInferenceError("UnknownError", str(e), retryable=False)
 
     # All retries exhausted
     raise last_error or BedrockInferenceError("UnknownError", "max retries exceeded", retryable=True)
+
+
+def invoke(model_id: str, system_prompt: str, messages: list[dict]) -> dict:
+    """Call Bedrock Converse API with retry for transient errors.
+
+    Returns: {"text": str, "input_tokens": int, "output_tokens": int}
+    Raises: BedrockInferenceError on failure.
+    """
+    client = _get_client()
+
+    def _do_call() -> dict:
+        response = client.converse(
+            modelId=model_id,
+            messages=messages,
+            system=[{"text": system_prompt}],
+            inferenceConfig={"maxTokens": 512, "temperature": 0.7},
+        )
+        return {
+            "text": response["output"]["message"]["content"][0]["text"],
+            "input_tokens": response["usage"]["inputTokens"],
+            "output_tokens": response["usage"]["outputTokens"],
+        }
+
+    return _call_with_retry(_do_call)
+
+
+def invoke_speak_tool(
+    model_id: str,
+    system_prompt: str,
+    messages: list[dict],
+) -> dict:
+    """Call Bedrock Converse API forcing the `speak` tool.
+
+    Wraps the existing retry/error classification.
+
+    Returns:
+        {
+            "messages": list[str],   # parsed via parse_speak_tool_call; [] if silent
+            "input_tokens": int,
+            "output_tokens": int,
+            "raw_response": dict,    # the full Bedrock response, for audit
+        }
+
+    Raises: BedrockInferenceError on failure.
+    """
+    client = _get_client()
+
+    def _do_call() -> dict:
+        response = client.converse(
+            modelId=model_id,
+            messages=messages,
+            system=[{"text": system_prompt}],
+            toolConfig=SPEAK_TOOL_CONFIG,
+            inferenceConfig={"maxTokens": 512, "temperature": 0.7},
+        )
+        return {
+            "messages": parse_speak_tool_call(response),
+            "input_tokens": response["usage"]["inputTokens"],
+            "output_tokens": response["usage"]["outputTokens"],
+            "raw_response": response,
+        }
+
+    return _call_with_retry(_do_call)

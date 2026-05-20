@@ -9,8 +9,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from chatroom_api.constants import DEFAULT_PROMPT
-
 # --- Seed data ---
 
 _chatrooms = {
@@ -21,8 +19,7 @@ _chatrooms = {
         "status": "active",
         "setting": {
             "mode": "one_on_one",
-            "mimic_human": True,
-            "system_prompt": DEFAULT_PROMPT,
+            "topic_instruction": "Anything about your college life.",
             "model_id": "global.anthropic.claude-sonnet-4-6",
             "simulate_pairing_seconds": 3,
             "timer_min_minutes": 5,

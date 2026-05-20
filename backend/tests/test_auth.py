@@ -10,8 +10,7 @@ SAMPLE_CHATROOM = {
     "status": "active",
     "setting": {
         "mode": "one_on_one",
-        "mimic_human": True,
-        "system_prompt": "You are a chatbot.",
+        "topic_instruction": "Talk about your college life.",
         "model_id": "global.anthropic.claude-sonnet-4-6",
         "simulate_pairing_seconds": 3,
         "timer_min_minutes": 5,

@@ -38,10 +38,7 @@ export function renderChatroom(
     const text = (_$input!.val() as string || "").trim();
     if (!text) return;
     _$input!.val("");
-    _$btn!.prop("disabled", true);
     onSend(text);
-    // Re-enable after a short delay (actual re-enable happens after send completes)
-    setTimeout(() => _$btn!.prop("disabled", false), 500);
   };
 
   _$btn!.on("click", doSend);

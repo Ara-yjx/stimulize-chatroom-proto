@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Table, Button, Modal, Input, Tag, Message } from '@arco-design/web-react'
 import type { ColumnProps } from '@arco-design/web-react/es/Table'
-import { MANAGEMENT_API_URL } from '../config'
-import { DEFAULT_SYSTEM_PROMPT } from '../defaultPrompt'
+import { mgmtFetch } from '../api/management'
+import { defaultSettingForMode } from '../lib/chatroomSetting'
 
 interface ChatroomSummary {
   id: string
@@ -23,7 +23,7 @@ export default function ChatroomList() {
 
   const fetchChatrooms = useCallback(async () => {
     try {
-      const resp = await fetch(`${MANAGEMENT_API_URL}/chatrooms`)
+      const resp = await mgmtFetch('/chatrooms')
       if (!resp.ok) throw new Error('Failed to fetch chatrooms')
       const data: ChatroomSummary[] = await resp.json()
       setChatrooms(data)
@@ -43,20 +43,12 @@ export default function ChatroomList() {
     }
     setCreating(true)
     try {
-      const resp = await fetch(`${MANAGEMENT_API_URL}/chatrooms`, {
+      const setting = defaultSettingForMode('one_on_one')
+      const resp = await mgmtFetch('/chatrooms', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: newName.trim(),
-          setting: {
-            mode: 'one_on_one',
-            mimic_human: true,
-            system_prompt: DEFAULT_SYSTEM_PROMPT,
-            model_id: 'global.anthropic.claude-sonnet-4-6',
-            simulate_pairing_seconds: 5,
-            timer_min_minutes: 5,
-            timer_max_minutes: 10,
-          },
+          setting,
         }),
       })
       if (!resp.ok) throw new Error('Failed to create chatroom')

@@ -29,10 +29,22 @@ Request: `{ message, after? }`
 Response: `{ events: [{ type, session_id, sender, role, content, timestamp, visible_at, avatar }] }`
 
 ### GET /chat/messages?after={timestamp}
-Poll for visible events since a timestamp (epoch ms). Pending AI messages with `visible_at > now` and internal `tick` events are filtered out. Admin/debug mode can include tick events when called with the separate admin token.
+Poll for visible events since a timestamp (epoch ms). Pending AI messages with `visible_at > now` and internal `tick` / `lobby_created` events are filtered out. Admin/debug mode can include audit events when called with the separate admin token.
 
 Headers: `Authorization: Bearer <jwt>`
-Response: `{ events: [{ type, session_id, sender, role, content, timestamp, visible_at, avatar }], conversation_status, lobby? }`
+Response:
+```json
+{
+  "events": [{ "type", "session_id", "sender", "role", "content", "timestamp", "visible_at", "avatar" }],
+  "lobby": { "status", "actual_human_count", "target_human_count", "deadline_at" },  // only during lobby phase
+  "conversation_status": "active" | "ended"
+}
+```
+
+Status codes:
+- `200` — success
+- `401` — JWT expired or invalid
+- `410 Gone` — lobby was aborted (no humans remained at deadline)
 
 ---
 
@@ -61,7 +73,7 @@ Usage endpoints are deferred in the current backend implementation.
 ### POST /chatrooms
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
 
-Request: `{ name, setting: { mode, mimic_human, system_prompt, model_id, simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, target_human_count?, ai_join_strategy?, ai_strategy_value?, max_wait_seconds? } }`
+Request: `{ name, setting: { mode, topic_instruction, additional_prompt?, ai_personas?, model_id, simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, target_human_count?, ai_join_strategy?, ai_strategy_value?, max_wait_seconds? } }`
 Response: `{ id, name, status, setting, created_at, updated_at }`
 
 ### GET /chatrooms
@@ -89,4 +101,116 @@ Response: standard backend success envelope; chatroom is soft-deleted by setting
 
 ## Management API — Usage
 
-Usage endpoints are deferred in the current `Stimulize-backend` implementation.
+### GET /chatrooms/:id/usage
+Get total token usage for a chatroom.
+
+Query params: `from` (ISO date, optional), `to` (ISO date, optional)
+
+Response: `{ chatroom_id, input_tokens, output_tokens, total_tokens }`
+
+Note: usage endpoints are deferred in the current `Stimulize-backend` implementation; this is the spec target.
+
+---
+
+## Widget JavaScript API
+
+The chat widget is distributed as a single bundled script (`chatroom.min.js`). It exposes a global `StimulizeChatroom` namespace.
+
+### Loading
+
+```html
+<script src="https://cdn.stimulize.org/chatroom.min.js"></script>
+```
+
+In Qualtrics (jQuery available):
+```javascript
+jQuery.getScript("https://cdn.stimulize.org/chatroom.min.js", function() {
+  // widget ready
+});
+```
+
+### `StimulizeChatroom.init(options)`
+
+Mount the widget and start a chat session. Must only be called once per page (single-instance).
+
+```typescript
+interface InitOptions {
+  element: string | HTMLElement;  // CSS selector or DOM element to mount into
+  chatroomId: string;             // chatroom ID (e.g. "scid_550e8400-...")
+  apiBaseUrl?: string;            // override backend URL (ignored unless beta: true)
+  beta?: boolean;                 // if true, shows a URL input box before connecting
+}
+```
+
+**Returns:** `Promise<void>` — resolves when the chatroom UI is rendered and polling has started.
+
+**Example (production):**
+```javascript
+StimulizeChatroom.init({
+  element: "#chatroom-container",
+  chatroomId: "scid_550e8400-e29b-41d4-a716-446655440000"
+});
+```
+
+**Example (beta — lets researcher set backend URL):**
+```javascript
+StimulizeChatroom.init({
+  element: "#chatroom-container",
+  chatroomId: "scid_550e8400-e29b-41d4-a716-446655440000",
+  beta: true
+});
+```
+
+### `StimulizeChatroom.getHistory()`
+
+Returns the full conversation history as a structured array.
+
+```typescript
+interface ChatMessage {
+  sender: string;
+  content: string;
+  role: "user" | "ai" | "system";
+  timestamp: number;       // epoch ms
+  session_id?: string;
+  avatar?: { emojiText: string };
+}
+```
+
+**Returns:** `ChatMessage[]`
+
+### `StimulizeChatroom.getHistoryText()`
+
+Returns the conversation history as plain text, one line per message. Format:
+```
+[SYS] Participant1234 (you) joined the chatroom
+[SYS] Participant5678 joined the chatroom
+[Participant1234] hello
+[Participant5678] [AI] hey there!
+```
+
+**Returns:** `string`
+
+### Qualtrics Embedded Data
+
+When running inside Qualtrics, the widget automatically writes the full history text to `Qualtrics.SurveyEngine.setEmbeddedData("chatroom_history", ...)` on every message event. No additional configuration needed — the widget detects the Qualtrics environment automatically.
+
+### Lifecycle
+
+1. **Beta URL input** (if `beta: true`) — user enters backend URL, clicks "Start Chat"
+2. **Token exchange** — calls `/auth/token` with `chatroomId`
+3. **Pairing screen** — animated "Finding a chat partner..." for `simulate_pairing_seconds` (configurable per chatroom)
+4. **Active chat** — message input, polling every 3s, AI messages appear with simulated typing delay
+5. **Conversation ended** — input disabled, "This conversation has ended." system message
+6. **Lobby aborted** (group mode, 410) — "No one else joined this chatroom." + "Reconnect" button
+
+### Error states
+
+- **Failed to connect**: chatroom ID invalid or backend unreachable. Shows inline error.
+- **Session expired**: JWT expired (3h TTL). Shows error bubble.
+- **Reconnecting…**: polling fails continuously for 30s. Non-blocking banner; auto-recovers.
+
+---
+
+## Note on Internal Endpoints
+
+Lambda reads chatroom settings directly via the management API (`MGMT_API_URL` + bearer) in beta. Usage writes are no-ops in beta — per-tick token counts are persisted on conversation tick events. If Lambda needs central usage aggregation in the future, an internal `POST /internal/usage` endpoint will be added to the management API.

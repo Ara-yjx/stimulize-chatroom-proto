@@ -15,3 +15,11 @@ class InactiveChatroomException(Exception):
     def __init__(self, chatroom_id: str):
         self.chatroom_id = chatroom_id
         super().__init__(f"Chatroom is inactive: {chatroom_id}")
+
+
+class LobbyAbortedException(Exception):
+    """Raised when a /chat/messages call refers to a lobby that ended in 'aborted' status."""
+
+    def __init__(self, conversation_id: str):
+        self.conversation_id = conversation_id
+        super().__init__(f"Lobby aborted for conversation {conversation_id}")

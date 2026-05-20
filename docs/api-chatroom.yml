@@ -191,11 +191,11 @@ components:
           type: string
           enum: [one_on_one, group]
           default: one_on_one
-        mimic_human:
-          type: boolean
-          default: true
-        system_prompt:
+        topic_instruction:
           type: string
+          description: |
+            Researcher-supplied topic. Backend wraps it in a `# Chatroom topic`
+            block before stitching into the system prompt.
         model_id:
           type: string
           example: global.anthropic.claude-sonnet-4-6

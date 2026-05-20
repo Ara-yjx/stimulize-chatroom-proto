@@ -17,7 +17,9 @@ import { Construct } from "constructs";
 
 export interface ChatroomApiStackProps extends StackProps {
   table: dynamodb.ITable;
+  lobbyTable: dynamodb.ITable;
   jwtSecret: secretsmanager.ISecret;
+  adminToken: secretsmanager.ISecret;
 }
 
 export class ChatroomApiStack extends Stack {
@@ -27,7 +29,7 @@ export class ChatroomApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ChatroomApiStackProps) {
     super(scope, id, props);
 
-    const { table, jwtSecret } = props;
+    const { table, lobbyTable, jwtSecret, adminToken } = props;
 
     // --------------- Context params ---------------
     const vpcId = this.node.tryGetContext("vpcId") as string;
@@ -122,7 +124,9 @@ export class ChatroomApiStack extends Stack {
       securityGroups: [lambdaSg],
       environment: {
         DYNAMODB_TABLE: table.tableName,
+        LOBBY_TABLE: lobbyTable.tableName,
         JWT_SECRET_ARN: jwtSecret.secretArn,
+        ADMIN_TOKEN_SECRET_ARN: adminToken.secretArn,
         RDS_HOST: rdsProxy.endpoint, // Lambda connects through RDS Proxy
         RDS_PORT: rdsPort,
         RDS_DATABASE: rdsDatabase,
@@ -131,13 +135,23 @@ export class ChatroomApiStack extends Stack {
         BEDROCK_REGION: "us-east-2",
         USE_MOCK_DYNAMO: "false",
         USE_MOCK_RDS: "false",
+        USE_MOCK_LOBBY: "false",
+        // MGMT_API_URL / MGMT_API_TOKEN_SECRET_ARN are intentionally NOT set:
+        // per docs/api-management.yml the chatroom Lambda doesn't talk to the
+        // management API at runtime (it reads chatroom settings directly from
+        // RDS and writes usage to RDS). The editor talks to the management
+        // API; that wiring lives in the Stimulize-backend teammate's stack.
       },
     });
 
     // --------------- IAM policies ---------------
 
-    // DynamoDB read/write
+    // DynamoDB read/write — conversation table
     table.grantReadWriteData(this.lambdaFunction);
+
+    // DynamoDB read/write — lobby table (open lobby query, atomic join,
+    // close_lobby, last_seen_at heartbeat updates).
+    lobbyTable.grantReadWriteData(this.lambdaFunction);
 
     // Bedrock InvokeModel
     this.lambdaFunction.addToRolePolicy(
@@ -149,6 +163,9 @@ export class ChatroomApiStack extends Stack {
 
     // Secrets Manager read (JWT secret)
     jwtSecret.grantRead(this.lambdaFunction);
+
+    // Secrets Manager read (admin bearer token — for /chat/messages?include_ticks=true)
+    adminToken.grantRead(this.lambdaFunction);
 
     // Secrets Manager read (RDS secret — for RDS Proxy auth)
     rdsSecret.grantRead(this.lambdaFunction);

@@ -184,11 +184,12 @@ components:
           type: string
           enum: [one_on_one, group]
           default: one_on_one
-        mimic_human:
-          type: boolean
-          default: true
-        system_prompt:
+        topic_instruction:
           type: string
+          description: |
+            Researcher-supplied topic. Just the topic — the human-mimicry
+            speech scaffold (rules, tool-use mechanics, examples) lives in
+            the backend and is wrapped around this string at runtime.
         model_id:
           type: string
           example: global.anthropic.claude-sonnet-4-6
