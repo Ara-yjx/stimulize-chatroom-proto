@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Table, Button, Modal, Input, Tag, Message } from '@arco-design/web-react'
 import type { ColumnProps } from '@arco-design/web-react/es/Table'
-import { mgmtFetch } from '../api/management'
+import { mgmtFetchJson } from '../api/management'
 import { defaultSettingForMode } from '../lib/chatroomSetting'
 
 interface ChatroomSummary {
@@ -23,9 +23,7 @@ export default function ChatroomList() {
 
   const fetchChatrooms = useCallback(async () => {
     try {
-      const resp = await mgmtFetch('/chatrooms')
-      if (!resp.ok) throw new Error('Failed to fetch chatrooms')
-      const data: ChatroomSummary[] = await resp.json()
+      const data = await mgmtFetchJson<ChatroomSummary[]>('/chatrooms')
       setChatrooms(data)
     } catch (e: unknown) {
       Message.error(e instanceof Error ? e.message : 'Failed to load chatrooms')
@@ -44,14 +42,13 @@ export default function ChatroomList() {
     setCreating(true)
     try {
       const setting = defaultSettingForMode('one_on_one')
-      const resp = await mgmtFetch('/chatrooms', {
+      await mgmtFetchJson('/chatrooms', {
         method: 'POST',
         body: JSON.stringify({
           name: newName.trim(),
           setting,
         }),
       })
-      if (!resp.ok) throw new Error('Failed to create chatroom')
       Message.success('Chatroom created')
       setModalVisible(false)
       setNewName('')

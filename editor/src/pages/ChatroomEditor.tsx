@@ -4,7 +4,7 @@ import {
   Form, Input, InputNumber, Switch, Select, Button, Message, Spin, Radio, Space, Popover,
 } from '@arco-design/web-react'
 import { IconDelete, IconPlus, IconQuestionCircle } from '@arco-design/web-react/icon'
-import { mgmtFetch } from '../api/management'
+import { mgmtFetchJson } from '../api/management'
 import {
   ChatroomSetting,
   ChatroomMode,
@@ -233,9 +233,7 @@ export default function ChatroomEditor() {
 
   const fetchChatroom = useCallback(async () => {
     try {
-      const resp = await mgmtFetch(`/chatrooms/${id}`)
-      if (!resp.ok) throw new Error('Chatroom not found')
-      const data: Chatroom = await resp.json()
+      const data = await mgmtFetchJson<Chatroom>(`/chatrooms/${id}`)
       setChatroom(data)
       const setting = normalizeLoadedSetting(data.setting)
       form.setFieldsValue({
@@ -290,7 +288,7 @@ export default function ChatroomEditor() {
 
     setSaving(true)
     try {
-      const resp = await mgmtFetch(`/chatrooms/${id}`, {
+      const updated = await mgmtFetchJson<Chatroom>(`/chatrooms/${id}`, {
         method: 'PUT',
         body: JSON.stringify({
           name: values.name,
@@ -298,8 +296,6 @@ export default function ChatroomEditor() {
           setting: finalSetting,
         }),
       })
-      if (!resp.ok) throw new Error('Failed to save')
-      const updated: Chatroom = await resp.json()
       setChatroom(updated)
       Message.success('Saved')
     } finally {

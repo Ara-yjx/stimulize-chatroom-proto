@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Local Full Run Check</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 16px; }
+      pre { white-space: pre-wrap; background: #111; color: #ddd; padding: 12px; border-radius: 8px; }
+      iframe { width: 100%; height: 900px; border: 1px solid #ccc; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Local Full Run Check</h1>
+    <pre id="result">Starting…</pre>
+    <iframe id="editor"></iframe>
+    <script>
+      const resultEl = document.getElementById('result');
+      const editorFrame = document.getElementById('editor');
+      const params = new URLSearchParams(window.location.search);
+      const reportUrl = params.get('report');
+      const chatroomId = params.get('chatroom') || 'scid_test-group-2h2ai-001';
+      editorFrame.src = `/chatrooms/${chatroomId}`;
+
+      async function setResult(obj) {
+        resultEl.textContent = JSON.stringify(obj, null, 2);
+        document.title = obj.ok ? 'PASS local full run' : 'FAIL local full run';
+        if (reportUrl) {
+          try {
+            await fetch(reportUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(obj),
+            });
+          } catch (error) {
+            resultEl.textContent += `\nreport failed: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
+      }
+
+      function log(message) {
+        resultEl.textContent += `\n${message}`;
+      }
+
+      function wait(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function waitFor(check, label, timeoutMs = 30000, intervalMs = 250) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+          const value = check();
+          if (value) return value;
+          await wait(intervalMs);
+        }
+        throw new Error(`Timed out waiting for ${label}`);
+      }
+
+      function findButtonByText(root, text) {
+        return [...root.querySelectorAll('button')].find((button) =>
+          button.textContent && button.textContent.trim() === text
+        );
+      }
+
+      function editorDoc() {
+        return editorFrame.contentDocument;
+      }
+
+      function previewFrames() {
+        return [...editorDoc().querySelectorAll('iframe')];
+      }
+
+      function snapshotPreviews() {
+        return previewFrames().map((iframe, index) => ({
+          index,
+          src: iframe.getAttribute('src'),
+          accessible: !!iframe.contentDocument,
+          readyState: iframe.contentDocument?.readyState || null,
+          bodySnippet: iframe.contentDocument?.body?.innerText?.slice(0, 200) || '',
+          htmlSnippet: iframe.contentDocument?.documentElement?.outerHTML?.slice(0, 400) || '',
+        }));
+      }
+
+      async function clickEditorButton(text, timeoutMs = 30000) {
+        const button = await waitFor(
+          () => {
+            const doc = editorDoc();
+            return doc ? findButtonByText(doc, text) : null;
+          },
+          `editor button "${text}"`,
+          timeoutMs
+        );
+        button.click();
+      }
+
+      async function startPreview(index) {
+        const iframe = await waitFor(
+          () => previewFrames()[index],
+          `preview iframe ${index + 1}`,
+          30000
+        );
+        await waitFor(() => iframe.contentDocument, `preview ${index + 1} document`, 30000);
+
+        const state = await waitFor(() => {
+          const doc = iframe.contentDocument;
+          if (!doc) return null;
+          if (doc.querySelector('.stim-beta-start')) return 'beta';
+          if (iframe.contentWindow && iframe.contentWindow.StimulizeChatroom) return 'active';
+          if ((doc.body?.innerText || '').includes('Conversation started')) return 'active';
+          return null;
+        }, `preview ${index + 1} boot state`, 30000);
+
+        if (state === 'beta') {
+          iframe.contentDocument.querySelector('.stim-beta-start').click();
+          await waitFor(
+            () => iframe.contentWindow && iframe.contentWindow.StimulizeChatroom,
+            `preview ${index + 1} widget boot`,
+            30000
+          );
+        }
+      }
+
+      function previewHistory(index) {
+        const iframe = previewFrames()[index];
+        const api = iframe?.contentWindow?.StimulizeChatroom;
+        if (!api || typeof api.getHistory !== 'function') return null;
+        return api.getHistory();
+      }
+
+      async function waitForAiConversation() {
+        return waitFor(() => {
+          const h1 = previewHistory(0) || [];
+          const h2 = previewHistory(1) || [];
+          const merged = [...h1, ...h2];
+          const aiMessages = merged.filter((m) => m.role === 'ai');
+          const aiSenders = [...new Set(aiMessages.map((m) => m.sender))];
+          if (aiMessages.length >= 2 && aiSenders.length >= 2) {
+            return {
+              preview1Count: h1.length,
+              preview2Count: h2.length,
+              aiMessages: aiMessages.map((m) => ({
+                sender: m.sender,
+                content: m.content,
+              })),
+              aiSenders,
+            };
+          }
+          return null;
+        }, 'AI-to-AI conversation', 70000, 1000);
+      }
+
+      async function run() {
+        try {
+          await waitFor(() => editorDoc()?.querySelector('h2'), 'editor page load', 30000);
+          await clickEditorButton('Save & Launch Preview', 30000);
+          await startPreview(0);
+          await clickEditorButton('+ Launch another preview', 30000);
+          await startPreview(1);
+          const conversation = await waitForAiConversation();
+          await setResult({ ok: true, chatroomId, conversation });
+        } catch (error) {
+          await setResult({
+            ok: false,
+            chatroomId,
+            error: error instanceof Error ? error.message : String(error),
+            previews: snapshotPreviews(),
+          });
+        }
+      }
+
+      run();
+    </script>
+  </body>
+  </html>
