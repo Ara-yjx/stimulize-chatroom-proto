@@ -107,3 +107,32 @@ def test_bedrock_fatal_error_appends_tick_and_system_events_and_keeps_active():
 
     # One system event with "Chatroom server error".
     assert any("server error" in e.get("content", "").lower() for e in system_events)
+
+
+def test_bedrock_resource_not_found_falls_back_to_default_model():
+    cid, started_at_ms = _seed()
+    now_seconds = (started_at_ms / 1000) + 60
+    calls: list[str] = []
+
+    def _fake_invoke(model_id, system_prompt, bedrock_messages):
+        calls.append(model_id)
+        if model_id == "test-model":
+            raise BedrockInferenceError(
+                "ResourceNotFoundException",
+                "model retired",
+                retryable=False,
+            )
+        return {
+            "messages": ["fallback worked"],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    with patch.object(tick_handler.time, "time", return_value=now_seconds), \
+         patch.object(tick_handler, "invoke_speak_tool", side_effect=_fake_invoke):
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "spoke"
+    assert calls == ["test-model", tick_handler._DEFAULT_MODEL_ID]
+    events = mock_dynamo.get_events(cid)
+    assert any(e.get("type") == "message" and e.get("content") == "fallback worked" for e in events)

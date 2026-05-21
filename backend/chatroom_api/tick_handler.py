@@ -49,6 +49,32 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
 
+def _invoke_with_model_fallback(
+    model_id: str,
+    system_prompt: str,
+    bedrock_messages: list[dict],
+) -> dict:
+    """Invoke Bedrock, falling back to the default model for stale saved ids.
+
+    Local dev and long-lived chatroom rows can carry model ids that have since
+    been retired by the provider. If the configured model fails with
+    ``ResourceNotFoundException``, retry once with the current default model so
+    the chat loop keeps working while the saved config catches up.
+    """
+    try:
+        return invoke_speak_tool(model_id, system_prompt, bedrock_messages)
+    except BedrockInferenceError as err:
+        if err.error_type != "ResourceNotFoundException" or model_id == _DEFAULT_MODEL_ID:
+            raise
+
+        logger.warning(
+            "Bedrock model %s is unavailable; falling back to %s",
+            model_id,
+            _DEFAULT_MODEL_ID,
+        )
+        return invoke_speak_tool(_DEFAULT_MODEL_ID, system_prompt, bedrock_messages)
+
+
 # ---------------------------------------------------------------------------
 # Backend selectors (mirror auth.py / close_lobby.py).
 # ---------------------------------------------------------------------------
@@ -339,7 +365,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     model_id = chatroom_setting.get("model_id") or _DEFAULT_MODEL_ID
 
     try:
-        result = invoke_speak_tool(model_id, system_prompt, bedrock_messages)
+        result = _invoke_with_model_fallback(model_id, system_prompt, bedrock_messages)
     except BedrockInferenceError as err:
         # Fatal Bedrock error: append one tick + one system event (so the
         # widget surfaces "Chatroom server error: ..."). Conversation

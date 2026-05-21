@@ -156,8 +156,6 @@ const MODEL_GROUPS: { label: string; options: { label: string; value: string }[]
     { label: 'Claude Haiku 4.5', value: 'global.anthropic.claude-haiku-4-5-20251001-v1:0' },
     { label: 'Claude Opus 4.7', value: 'global.anthropic.claude-opus-4-7' },
     { label: 'Claude Opus 4.6', value: 'global.anthropic.claude-opus-4-6-v1' },
-    { label: 'Claude 3.7 Sonnet', value: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0' },
-    { label: 'Claude 3.5 Haiku', value: 'us.anthropic.claude-3-5-haiku-20241022-v1:0' },
   ]},
   { label: 'Amazon Nova', options: [
     { label: 'Nova Pro', value: 'us.amazon.nova-pro-v1:0' },
