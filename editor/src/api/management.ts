@@ -3,15 +3,8 @@
  * the bearer token from build-time env. See docs/low-level-design.md
  * "Editor → Management API".
  */
-import {
-  MANAGEMENT_API_PASSWORD,
-  MANAGEMENT_API_TOKEN,
-  MANAGEMENT_API_URL,
-  MANAGEMENT_API_USERNAME,
-} from '../config'
-
-let cachedToken = MANAGEMENT_API_TOKEN
-let loginPromise: Promise<string> | null = null
+import { MANAGEMENT_API_URL } from '../config'
+import { getManagementToken, hasRefreshableCredentials } from './managementAuth'
 
 function unwrapPayload<T>(payload: unknown): T {
   if (!payload || typeof payload !== 'object') return payload as T
@@ -25,62 +18,6 @@ function unwrapPayload<T>(payload: unknown): T {
   if ('chatroom' in maybeData) return (maybeData as { chatroom: T }).chatroom
 
   return maybeData as T
-}
-
-async function loginForToken(): Promise<string> {
-  if (!MANAGEMENT_API_USERNAME || !MANAGEMENT_API_PASSWORD) {
-    throw new Error('Management API credentials are not configured')
-  }
-  if (loginPromise) return loginPromise
-
-  loginPromise = (async () => {
-    const resp = await fetch(`${MANAGEMENT_API_URL}/api/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: MANAGEMENT_API_USERNAME,
-        password: MANAGEMENT_API_PASSWORD,
-      }),
-    })
-
-    const payload = await resp.json().catch(() => ({}))
-    if (!resp.ok) {
-      const errorMessage =
-        (payload && typeof payload === 'object' && 'error' in payload && typeof payload.error === 'string' && payload.error) ||
-        'Failed to login to management API'
-      throw new Error(errorMessage)
-    }
-
-    const token =
-      payload &&
-      typeof payload === 'object' &&
-      'data' in payload &&
-      payload.data &&
-      typeof payload.data === 'object' &&
-      'access_token' in payload.data &&
-      typeof payload.data.access_token === 'string'
-        ? payload.data.access_token
-        : ''
-
-    if (!token) throw new Error('Management API login did not return an access token')
-    cachedToken = token
-    return token
-  })()
-
-  try {
-    return await loginPromise
-  } finally {
-    loginPromise = null
-  }
-}
-
-async function getManagementToken(forceRefresh = false): Promise<string> {
-  if (!forceRefresh && cachedToken) return cachedToken
-  if (MANAGEMENT_API_USERNAME && MANAGEMENT_API_PASSWORD) {
-    return loginForToken()
-  }
-  if (cachedToken) return cachedToken
-  throw new Error('No management API token or login credentials configured')
 }
 
 async function doFetch(path: string, init: RequestInit, forceRefresh = false): Promise<Response> {
@@ -99,12 +36,7 @@ async function doFetch(path: string, init: RequestInit, forceRefresh = false): P
 
 export async function mgmtFetch(path: string, init: RequestInit = {}): Promise<Response> {
   let resp = await doFetch(path, init, false)
-  if (
-    resp.status === 401 &&
-    MANAGEMENT_API_USERNAME &&
-    MANAGEMENT_API_PASSWORD &&
-    cachedToken
-  ) {
+  if (resp.status === 401 && hasRefreshableCredentials()) {
     resp = await doFetch(path, init, true)
   }
   return resp
