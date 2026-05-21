@@ -32,7 +32,30 @@ CHATROOMS: dict[str, dict] = {
         },
         "created_at": _NOW,
         "updated_at": _NOW,
-    }
+    },
+    "scid_test-group-2h2ai-001": {
+        "id": "scid_test-group-2h2ai-001",
+        "owner_id": "owner_default",
+        "name": "Local Group 2H 2AI",
+        "status": "active",
+        "setting": {
+            "mode": "group",
+            "topic_instruction": _DEFAULT_TOPIC,
+            "additional_prompt": "",
+            "ai_personas": [],
+            "model_id": "global.anthropic.claude-sonnet-4-6",
+            "simulate_pairing_seconds": 0,
+            "timer_min_minutes": 5,
+            "timer_max_minutes": 10,
+            "max_duration_seconds": 900,
+            "target_human_count": 2,
+            "ai_join_strategy": "fixed_ai_count",
+            "ai_strategy_value": 2,
+            "max_wait_seconds": 30,
+        },
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    },
 }
 
 # ---------------------------------------------------------------------------
