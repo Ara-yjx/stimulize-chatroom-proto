@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { Table, Button, Modal, Input, Tag, Message } from '@arco-design/web-react'
 import type { ColumnProps } from '@arco-design/web-react/es/Table'
 import { mgmtFetchJson } from '../api/management'
+import { hasManagementToken } from '../api/managementAuth'
 import { defaultSettingForMode } from '../lib/chatroomSetting'
+import { chatroomDetailRoute } from '../routes'
 
 interface ChatroomSummary {
   id: string
@@ -22,6 +24,11 @@ export default function ChatroomList() {
   const navigate = useNavigate()
 
   const fetchChatrooms = useCallback(async () => {
+    if (!hasManagementToken()) {
+      setChatrooms([])
+      setLoading(false)
+      return
+    }
     try {
       const data = await mgmtFetchJson<ChatroomSummary[]>('/chatrooms')
       setChatrooms(data)
@@ -37,6 +44,10 @@ export default function ChatroomList() {
   const createChatroom = async () => {
     if (!newName.trim()) {
       Message.warning('Please enter a chatroom name')
+      return
+    }
+    if (!hasManagementToken()) {
+      Message.warning('Please log in first')
       return
     }
     setCreating(true)
@@ -94,7 +105,7 @@ export default function ChatroomList() {
         loading={loading}
         onRow={(record) => ({
           style: { cursor: 'pointer' },
-          onClick: () => navigate(`/chatrooms/${record.id}`),
+          onClick: () => navigate(chatroomDetailRoute(record.id)),
         })}
         pagination={{ pageSize: 20 }}
       />

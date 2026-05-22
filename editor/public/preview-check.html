@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pages Preview Check</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 16px; }
+      pre { white-space: pre-wrap; background: #111; color: #ddd; padding: 12px; border-radius: 8px; }
+      iframe { width: 100%; height: 960px; border: 1px solid #ccc; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Pages Preview Check</h1>
+    <pre id="result">Starting…</pre>
+    <iframe id="editor"></iframe>
+    <script>
+      const resultEl = document.getElementById('result');
+      const editorFrame = document.getElementById('editor');
+      const params = new URLSearchParams(window.location.search);
+      const reportUrl = params.get('report');
+      const chatroomId = params.get('chatroom') || '';
+      const managementApiUrl =
+        (params.get('mgmt') || 'https://9wr63is7x6.execute-api.us-east-2.amazonaws.com/live').replace(/\/+$/, '');
+      let username = params.get('username') || '';
+      let password = params.get('password') || '';
+      const basePath = window.location.pathname.replace(/[^/]+$/, '');
+      let credentialsPromiseResolve = null;
+
+      function applyCredentials(data) {
+        if (!data || data.type !== 'stimulize-preview-check-credentials') return false;
+        const nextUsername = typeof data.username === 'string' ? data.username : '';
+        const nextPassword = typeof data.password === 'string' ? data.password : '';
+        if (!nextUsername || !nextPassword) return false;
+        username = nextUsername;
+        password = nextPassword;
+        if (credentialsPromiseResolve) {
+          credentialsPromiseResolve();
+          credentialsPromiseResolve = null;
+        }
+        return true;
+      }
+
+      window.addEventListener('message', (event) => {
+        applyCredentials(event.data);
+      });
+
+      if (!chatroomId) {
+        resultEl.textContent = JSON.stringify({ ok: false, error: 'missing chatroom query param' }, null, 2);
+        document.title = 'FAIL preview check';
+        throw new Error('missing chatroom query param');
+      }
+
+      editorFrame.src = `${basePath}#/chatroom`;
+
+      async function setResult(obj) {
+        resultEl.textContent = JSON.stringify(obj, null, 2);
+        document.title = obj.ok ? 'PASS preview check' : 'FAIL preview check';
+        if (reportUrl) {
+          try {
+            await fetch(reportUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(obj),
+            });
+          } catch (error) {
+            resultEl.textContent += `\nreport failed: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        }
+      }
+
+      function wait(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function waitFor(check, label, timeoutMs = 30000, intervalMs = 250) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+          const value = check();
+          if (value) return value;
+          await wait(intervalMs);
+        }
+        throw new Error(`Timed out waiting for ${label}`);
+      }
+
+      function editorDoc() {
+        return editorFrame.contentDocument;
+      }
+
+      async function waitForCredentialsFromParent() {
+        if (username && password) return;
+        await new Promise((resolve, reject) => {
+          credentialsPromiseResolve = resolve;
+          const timeout = window.setTimeout(() => {
+            credentialsPromiseResolve = null;
+            reject(new Error('login required but credentials were not provided'));
+          }, 30000);
+          const done = () => {
+            window.clearTimeout(timeout);
+            credentialsPromiseResolve = null;
+            resolve();
+          };
+          credentialsPromiseResolve = done;
+          if (username && password) done();
+        });
+      }
+
+      function previewFrames() {
+        return [...editorDoc().querySelectorAll('iframe')];
+      }
+
+      function editorSnapshot() {
+        const doc = editorDoc();
+        if (!doc) return null;
+        return {
+          title: doc.title,
+          location: editorFrame.contentWindow ? editorFrame.contentWindow.location.href : '',
+          headings: [...doc.querySelectorAll('h1, h2, h3, h4')].map((node) => node.textContent?.trim() || ''),
+          buttons: [...doc.querySelectorAll('button')].map((node) =>
+            (node.textContent || '').replace(/\s+/g, ' ').trim()
+          ).filter(Boolean).slice(0, 20),
+        };
+      }
+
+      function findButtonByText(root, text) {
+        return [...root.querySelectorAll('button')].find((button) =>
+          button.textContent && button.textContent.replace(/\s+/g, ' ').trim().includes(text)
+        );
+      }
+
+      async function ensureLoggedIn() {
+        const doc = await waitFor(() => editorDoc(), 'editor document', 30000);
+        await waitFor(() => {
+          const nextDoc = editorDoc();
+          if (!nextDoc) return null;
+          return nextDoc.querySelector('button, input, h1, h2') || null;
+        }, 'editor shell', 60000);
+
+        const logoutButton = [...doc.querySelectorAll('button')].find((button) =>
+          button.textContent && button.textContent.trim() === 'Logout'
+        );
+        if (logoutButton) return;
+
+        await waitForCredentialsFromParent();
+        const loginResp = await fetch(`${managementApiUrl}/api/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const loginPayload = await loginResp.json().catch(() => ({}));
+        const token =
+          loginPayload &&
+          typeof loginPayload === 'object' &&
+          'data' in loginPayload &&
+          loginPayload.data &&
+          typeof loginPayload.data === 'object' &&
+          'access_token' in loginPayload.data &&
+          typeof loginPayload.data.access_token === 'string'
+            ? loginPayload.data.access_token
+            : '';
+        if (!loginResp.ok || !token) {
+          throw new Error('failed to mint management token for preview check');
+        }
+
+        const frameWindow = editorFrame.contentWindow;
+        if (!frameWindow) {
+          throw new Error('editor frame window unavailable');
+        }
+        frameWindow.sessionStorage.setItem('stimulize.editor.managementToken', token);
+        frameWindow.sessionStorage.setItem('stimulize.editor.managementUsername', username);
+        frameWindow.location.reload();
+
+        await waitFor(() => {
+          const nextDoc = editorDoc();
+          return nextDoc && [...nextDoc.querySelectorAll('button')].some((button) =>
+            button.textContent && button.textContent.trim() === 'Logout'
+          );
+        }, 'post-login state', 60000);
+      }
+
+      async function clickEditorButton(text, timeoutMs = 30000) {
+        const button = await waitFor(() => {
+          const doc = editorDoc();
+          return doc ? findButtonByText(doc, text) : null;
+        }, `editor button "${text}"`, timeoutMs);
+        button.click();
+      }
+
+      async function startPreview(index) {
+        const iframe = await waitFor(
+          () => previewFrames()[index],
+          `preview iframe ${index + 1}`,
+          30000
+        );
+        await waitFor(() => iframe.contentDocument, `preview ${index + 1} document`, 30000);
+
+        const state = await waitFor(() => {
+          const doc = iframe.contentDocument;
+          if (!doc) return null;
+          if (doc.querySelector('.stim-beta-start')) return 'beta';
+          if (iframe.contentWindow && iframe.contentWindow.StimulizeChatroom) return 'active';
+          if ((doc.body?.innerText || '').includes('Conversation started')) return 'active';
+          return null;
+        }, `preview ${index + 1} boot state`, 45000);
+
+        if (state === 'beta') {
+          iframe.contentDocument.querySelector('.stim-beta-start').click();
+          await waitFor(
+            () => iframe.contentWindow && iframe.contentWindow.StimulizeChatroom,
+            `preview ${index + 1} widget boot`,
+            45000
+          );
+        }
+      }
+
+      function previewHistory(index) {
+        const iframe = previewFrames()[index];
+        const api = iframe?.contentWindow?.StimulizeChatroom;
+        if (!api || typeof api.getHistory !== 'function') return null;
+        return api.getHistory();
+      }
+
+      async function waitForAiConversation() {
+        return waitFor(() => {
+          const h1 = previewHistory(0) || [];
+          const h2 = previewHistory(1) || [];
+          const merged = [...h1, ...h2];
+          const aiMessages = merged.filter((m) => m.role === 'ai');
+          const aiSenders = [...new Set(aiMessages.map((m) => m.sender))];
+          if (aiMessages.length >= 2 && aiSenders.length >= 2) {
+            return {
+              preview1Count: h1.length,
+              preview2Count: h2.length,
+              aiMessages: aiMessages.map((m) => ({
+                sender: m.sender,
+                content: m.content,
+              })),
+              aiSenders,
+            };
+          }
+          return null;
+        }, 'AI-to-AI conversation', 90000, 1000);
+      }
+
+      async function run() {
+        try {
+          await ensureLoggedIn();
+          editorFrame.src = `${basePath}#/chatroom/${chatroomId}`;
+          await waitFor(() => editorDoc()?.querySelector('h2'), 'editor route load', 60000);
+          await clickEditorButton('Save & Launch Preview', 30000);
+          await startPreview(0);
+          await clickEditorButton('+ Launch another preview', 30000);
+          await startPreview(1);
+          const conversation = await waitForAiConversation();
+          await setResult({ ok: true, chatroomId, conversation });
+        } catch (error) {
+          await setResult({
+            ok: false,
+            chatroomId,
+            error: error instanceof Error ? error.message : String(error),
+            editor: editorSnapshot(),
+          });
+        }
+      }
+
+      run();
+    </script>
+  </body>
+</html>

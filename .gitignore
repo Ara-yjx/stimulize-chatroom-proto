@@ -32,11 +32,11 @@ yarn-error.log*
 # Build outputs
 dist/
 build/
+publish/
+output/
 *.tsbuildinfo
 .cache/
-!frontend/dist/
-frontend/dist/*
-!frontend/dist/chatroom.min.js
+frontend/dist/
 
 # CDK
 cdk/cdk.out/
@@ -67,4 +67,3 @@ backend/dev_dumps/
 .hypothesis/
 
 .obsidian/
-

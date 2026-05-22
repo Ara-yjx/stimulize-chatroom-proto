@@ -11,7 +11,8 @@ if (!globalThis.crypto?.getRandomValues) {
   })
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
   server: { port: 3000 },
-})
+  base: command === 'build' ? process.env.VITE_BASE_PATH || '/stimulize-chatroom-proto/' : '/',
+}))

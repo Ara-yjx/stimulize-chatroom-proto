@@ -1,0 +1,58 @@
+name: Deploy Pages Site
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/deploy-pages-site.yml'
+      - 'editor/**'
+      - 'frontend/**'
+      - 'scripts/build_pages_site.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            editor/package-lock.json
+            frontend/package-lock.json
+
+      - name: Build Pages artifact
+        env:
+          VITE_MOCK_MGMT_URL: https://9wr63is7x6.execute-api.us-east-2.amazonaws.com/live
+          VITE_CHATROOM_API_URL: https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod
+        run: ./scripts/build_pages_site.sh
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: publish
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -5,6 +5,7 @@ import {
 } from '@arco-design/web-react'
 import { IconDelete, IconPlus, IconQuestionCircle } from '@arco-design/web-react/icon'
 import { mgmtFetchJson } from '../api/management'
+import { hasManagementToken } from '../api/managementAuth'
 import {
   ChatroomSetting,
   ChatroomMode,
@@ -232,6 +233,11 @@ export default function ChatroomEditor() {
   const watchedAiStrategy = Form.useWatch('ai_join_strategy', form) as string | undefined
 
   const fetchChatroom = useCallback(async () => {
+    if (!hasManagementToken()) {
+      setChatroom(null)
+      setLoading(false)
+      return
+    }
     try {
       const data = await mgmtFetchJson<Chatroom>(`/chatrooms/${id}`)
       setChatroom(data)
@@ -251,6 +257,10 @@ export default function ChatroomEditor() {
   useEffect(() => { fetchChatroom() }, [fetchChatroom])
 
   const handleSave = async () => {
+    if (!hasManagementToken()) {
+      Message.warning('Please log in first')
+      return
+    }
     const values = await form.validate()
 
     // Layer custom validation on top of Form's built-in rules.

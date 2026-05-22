@@ -20,7 +20,7 @@
       const params = new URLSearchParams(window.location.search);
       const reportUrl = params.get('report');
       const chatroomId = params.get('chatroom') || 'scid_test-group-2h2ai-001';
-      editorFrame.src = `/chatrooms/${chatroomId}`;
+      editorFrame.src = `/#/chatroom/${chatroomId}`;
 
       async function setResult(obj) {
         resultEl.textContent = JSON.stringify(obj, null, 2);

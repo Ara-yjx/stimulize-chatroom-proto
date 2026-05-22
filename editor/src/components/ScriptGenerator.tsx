@@ -32,9 +32,7 @@ export default function ScriptGenerator({ chatroomId }: Props) {
       chatroomId: "${chatroomId}"
     });`
 
-    const widgetScriptUrl = beta
-      ? CHATROOM_WIDGET_URL
-      : 'https://cdn.stimulize.org/chatroom.min.js'
+    const widgetScriptUrl = CHATROOM_WIDGET_URL
 
     const script = `Qualtrics.SurveyEngine.addOnload(function() {
   var chatDiv = document.createElement("div");

@@ -65,28 +65,19 @@ export default function WidgetPreview({ chatroomId, onSaveBeforeLaunch }: Props)
   }, [])
 
   const buildHtml = (): string => {
-    // The widget honors `apiBaseUrl` only when `beta: true` per
-    // docs/api-reference.md "Widget JavaScript API". In dev we always pass
-    // both so the preview hits whichever backend the user typed in
-    // (defaults to localhost:5001). In production builds we omit both so
-    // the widget uses its hardcoded prod URL.
-    const initOptions = isDev
-      ? {
-          element: '#chatroom-container',
-          chatroomId,
-          beta: true,
-          apiBaseUrl: hostnameOverride || CHATROOM_API_URL,
-        }
-      : {
-          element: '#chatroom-container',
-          chatroomId,
-        }
+    // Editor preview should always hit the explicitly configured runtime API.
+    // The widget only honors `apiBaseUrl` when `beta: true`, so we pass both
+    // in all environments. In dev, the hostname can still be overridden.
+    const initOptions = {
+      element: '#chatroom-container',
+      chatroomId,
+      beta: true,
+      apiBaseUrl: isDev ? (hostnameOverride || CHATROOM_API_URL) : CHATROOM_API_URL,
+    }
 
     // Where to load chatroom.min.js from. In dev, use the override hostname
     // so we hit the local backend's bundled widget. In prod, use the CDN.
-    const widgetScriptUrl = isDev
-      ? CHATROOM_WIDGET_URL
-      : 'https://cdn.stimulize.org/chatroom.min.js'
+    const widgetScriptUrl = CHATROOM_WIDGET_URL
 
     return `<!DOCTYPE html>
 <html><head>

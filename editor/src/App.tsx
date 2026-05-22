@@ -1,8 +1,9 @@
-import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from 'react-router-dom'
 import { useState } from 'react'
 import { Layout, Menu, Input, Button, Message } from '@arco-design/web-react'
 import ChatroomList from './pages/ChatroomList'
 import ChatroomEditor from './pages/ChatroomEditor'
+import { CHATROOM_LIST_ROUTE } from './routes'
 import {
   getAuthenticatedUsername,
   hasManagementToken,
@@ -12,6 +13,11 @@ import {
 
 const { Header, Content } = Layout
 
+function LegacyChatroomDetailRedirect() {
+  const { id = '' } = useParams<{ id: string }>()
+  return <Navigate to={`${CHATROOM_LIST_ROUTE}/${id}`} replace />
+}
+
 export default function App() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -20,7 +26,7 @@ export default function App() {
   const [loggingIn, setLoggingIn] = useState(false)
   const [loggedInUsername, setLoggedInUsername] = useState(getAuthenticatedUsername())
 
-  const selectedKey = location.pathname.startsWith('/chatrooms') ? 'chatrooms' : 'chatrooms'
+  const selectedKey = location.pathname.startsWith(CHATROOM_LIST_ROUTE) ? 'chatroom' : 'chatroom'
 
   const handleLogin = async () => {
     if (!username.trim() || !password) {
@@ -60,11 +66,11 @@ export default function App() {
             mode="horizontal"
             selectedKeys={[selectedKey]}
             onClickMenuItem={(key) => {
-              if (key === 'chatrooms') navigate('/chatrooms')
+              if (key === 'chatroom') navigate(CHATROOM_LIST_ROUTE)
             }}
             style={{ flex: 1 }}
           >
-            <Menu.Item key="chatrooms">Chatrooms</Menu.Item>
+            <Menu.Item key="chatroom">Chatroom</Menu.Item>
           </Menu>
           {hasManagementToken() ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -101,9 +107,11 @@ export default function App() {
       </Header>
       <Content style={{ background: '#f7f8fa' }}>
         <Routes>
-          <Route path="/chatrooms" element={<ChatroomList />} />
-          <Route path="/chatrooms/:id" element={<ChatroomEditor />} />
-          <Route path="*" element={<Navigate to="/chatrooms" replace />} />
+          <Route path={CHATROOM_LIST_ROUTE} element={<ChatroomList />} />
+          <Route path={`${CHATROOM_LIST_ROUTE}/:id`} element={<ChatroomEditor />} />
+          <Route path="/chatrooms" element={<Navigate to={CHATROOM_LIST_ROUTE} replace />} />
+          <Route path="/chatrooms/:id" element={<LegacyChatroomDetailRedirect />} />
+          <Route path="*" element={<Navigate to={CHATROOM_LIST_ROUTE} replace />} />
         </Routes>
       </Content>
     </Layout>
