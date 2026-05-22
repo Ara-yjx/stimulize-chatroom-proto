@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from decimal import Decimal
 from typing import Optional
 
 import jwt
@@ -22,12 +23,21 @@ _CORS_HEADERS = {
 }
 
 
+def _json_default(value):
+    """JSON serializer for DynamoDB-native values."""
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
 def _response(status_code: int, body: dict) -> dict:
     """Build an API Gateway proxy response."""
     return {
         "statusCode": status_code,
         "headers": _CORS_HEADERS,
-        "body": json.dumps(body),
+        "body": json.dumps(body, default=_json_default),
     }
 
 

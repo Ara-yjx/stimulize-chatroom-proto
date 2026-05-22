@@ -1,4 +1,5 @@
 boto3
+pg8000
 pyjwt
 requests
 pytest

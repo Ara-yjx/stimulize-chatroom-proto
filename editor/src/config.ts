@@ -29,7 +29,13 @@ export const MANAGEMENT_API_PASSWORD: string =
 export const CHATROOM_API_URL: string =
   normalizeApiBaseUrl(import.meta.env.VITE_CHATROOM_API_URL as string | undefined, 'http://localhost:5001')
 
+/** Optional separate widget bundle URL for dev/beta preview flows. */
+export const CHATROOM_WIDGET_URL: string =
+  (import.meta.env.VITE_CHATROOM_WIDGET_URL as string | undefined)
+    ?? `${CHATROOM_API_URL}/chatroom.min.js`
+
 console.log({
   MANAGEMENT_API_URL,
   CHATROOM_API_URL,
+  CHATROOM_WIDGET_URL,
 })

@@ -1,13 +1,14 @@
 """Tests for chatroom_api.handler — routing, auth gating, error handling."""
 
 import json
+from decimal import Decimal
 from unittest.mock import patch
 
 import jwt as pyjwt
 import pytest
 
 from chatroom_api import config
-from chatroom_api.handler import lambda_handler
+from chatroom_api.handler import _response, lambda_handler
 
 
 def _event(method="GET", path="/", body=None, headers=None, qs=None):
@@ -39,6 +40,13 @@ class TestOptionsPreflight:
         resp = lambda_handler(_event("OPTIONS", "/chat/send"), None)
         assert resp["statusCode"] == 200
         assert "Access-Control-Allow-Origin" in resp["headers"]
+
+
+class TestResponseSerialization:
+    def test_decimal_values_are_serialized(self):
+        resp = _response(200, {"value": Decimal("1"), "fraction": Decimal("1.5")})
+        assert resp["statusCode"] == 200
+        assert json.loads(resp["body"]) == {"value": 1, "fraction": 1.5}
 
 
 class TestAuthTokenRoute:

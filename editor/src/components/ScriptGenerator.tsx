@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Input, Button, Message, Switch } from '@arco-design/web-react'
-import { CHATROOM_API_URL } from '../config'
+import { CHATROOM_API_URL, CHATROOM_WIDGET_URL } from '../config'
 
 const TextArea = Input.TextArea
 
@@ -33,7 +33,7 @@ export default function ScriptGenerator({ chatroomId }: Props) {
     });`
 
     const widgetScriptUrl = beta
-      ? `${apiBaseUrl}/chatroom.min.js`
+      ? CHATROOM_WIDGET_URL
       : 'https://cdn.stimulize.org/chatroom.min.js'
 
     const script = `Qualtrics.SurveyEngine.addOnload(function() {

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Button, Input, Space } from '@arco-design/web-react'
-import { CHATROOM_API_URL } from '../config'
+import { CHATROOM_API_URL, CHATROOM_WIDGET_URL } from '../config'
 
 interface Props {
   chatroomId: string
@@ -85,7 +85,7 @@ export default function WidgetPreview({ chatroomId, onSaveBeforeLaunch }: Props)
     // Where to load chatroom.min.js from. In dev, use the override hostname
     // so we hit the local backend's bundled widget. In prod, use the CDN.
     const widgetScriptUrl = isDev
-      ? `${hostnameOverride || CHATROOM_API_URL}/chatroom.min.js`
+      ? CHATROOM_WIDGET_URL
       : 'https://cdn.stimulize.org/chatroom.min.js'
 
     return `<!DOCTYPE html>

@@ -18,6 +18,7 @@ RDS_PORT = int(os.environ.get("RDS_PORT", "5432"))
 RDS_DATABASE = os.environ.get("RDS_DATABASE", "")
 RDS_USERNAME = os.environ.get("RDS_USERNAME", "")
 RDS_PASSWORD = os.environ.get("RDS_PASSWORD", "")
+RDS_SECRET_ARN = os.environ.get("RDS_SECRET_ARN", "")
 
 # Management API (chatroom-setting source for beta — see
 # ``chatroom_api/management_api_rds.py``). When ``MGMT_API_URL`` is set

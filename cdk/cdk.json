@@ -16,14 +16,15 @@
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/core:target-partitions": ["aws"],
 
-    "vpcId": "vpc-PLACEHOLDER",
-    "subnetIds": "subnet-PLACEHOLDER1,subnet-PLACEHOLDER2",
-    "rdsSecurityGroupId": "sg-PLACEHOLDER",
-    "rdsHost": "your-rds-host.rds.amazonaws.com",
+    "vpcId": "vpc-081ed9fce75e4ae61",
+    "subnetIds": "subnet-08a3370aff59abda6,subnet-0ce0cb8bfb0681dd5,subnet-050cbd1864ba5a727",
+    "rdsSecurityGroupId": "sg-0d0cc0441e6bd73ae",
+    "rdsHost": "stimulusdb.cluster-cf6cmwe2izyn.us-east-2.rds.amazonaws.com",
     "rdsPort": "5432",
-    "rdsDatabase": "stimulize",
-    "rdsSecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:rds-secret",
-    "domainName": "chatroom.stimulize.org",
-    "useVpcEndpoints": "true"
+    "rdsDatabase": "postgres",
+    "rdsSecretArn": "arn:aws:secretsmanager:us-east-2:487957693199:secret:rds-db-credentials/cluster-RKF7HOO6TF2Y27CWBE6RUIZH3I/stimulus/1743214978855-gcMlTG",
+    "domainName": "",
+    "enableCustomDomain": "false",
+    "useVpcEndpoints": "false"
   }
 }

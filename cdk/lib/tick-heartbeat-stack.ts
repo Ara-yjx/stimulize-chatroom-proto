@@ -1,15 +1,15 @@
-import * as path from "path";
 import {
+  Duration,
   Stack,
   StackProps,
   aws_dynamodb as dynamodb,
-  aws_ec2 as ec2,
-  aws_ecs as ecs,
+  aws_events as events,
+  aws_events_targets as targets,
   aws_iam as iam,
   aws_lambda as lambda,
-  aws_logs as logs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { backendPythonCode } from "./backend-code";
 
 export interface TickHeartbeatStackProps extends StackProps {
   tickHandler: lambda.IFunction;
@@ -17,70 +17,41 @@ export interface TickHeartbeatStackProps extends StackProps {
 }
 
 /**
- * `chatroom-tick-heartbeat` ECS Fargate service — the heartbeat container.
+ * Scheduled heartbeat Lambda for beta.
  *
- * Loops every `HEARTBEAT_INTERVAL_SEC` (default 5), queries
- * `chatroom-conversations` `status-index` for `status="active"` rows, and
- * async-invokes the tick handler Lambda for each. `desiredCount=1` because
- * a second concurrent loop would double-fire ticks for every active
- * conversation (the tick handler dedupes within
- * `TICK_DEDUPE_WINDOW_MS`, but the duplicate Bedrock invocations would
- * still cost money). Single-task means a ~30s gap during container
- * restart — accepted for beta per `docs/low-level-design.md`.
- *
- * See `docs/low-level-design.md` → "Heartbeat container".
+ * EventBridge starts one invocation every 15 minutes. Each invocation loops
+ * every 5 seconds for up to 14 minutes, querying the active-conversation GSI
+ * and async-invoking the tick handler. Reserved concurrency is 1 so overlapping
+ * schedules cannot create duplicate heartbeat loops.
  */
 export class TickHeartbeatStack extends Stack {
-  public readonly cluster: ecs.Cluster;
-  public readonly service: ecs.FargateService;
+  public readonly lambdaFunction: lambda.Function;
+  public readonly rule: events.Rule;
 
   constructor(scope: Construct, id: string, props: TickHeartbeatStackProps) {
     super(scope, id, props);
 
     const { tickHandler, conversationTable } = props;
 
-    const vpcId = this.node.tryGetContext("vpcId") as string;
-    const vpc = ec2.Vpc.fromLookup(this, "ExistingVpc", { vpcId });
-
-    this.cluster = new ecs.Cluster(this, "TickHeartbeatCluster", {
-      clusterName: "stimulize-chatroom-cluster",
-      vpc,
-    });
-
-    const taskDef = new ecs.FargateTaskDefinition(this, "HeartbeatTaskDef", {
-      cpu: 256,
-      memoryLimitMiB: 512,
-    });
-
-    // Build the container image directly from `backend/tick_loop/`. The
-    // Dockerfile in that folder pins Python 3.12-slim and installs pinned
-    // requirements; no separate ECR repo to manage.
-    const heartbeatImage = ecs.ContainerImage.fromAsset(
-      path.join(__dirname, "..", "..", "backend", "tick_loop"),
-    );
-
-    taskDef.addContainer("heartbeat", {
-      image: heartbeatImage,
-      logging: ecs.LogDrivers.awsLogs({
-        streamPrefix: "tick-heartbeat",
-        logRetention: logs.RetentionDays.ONE_MONTH,
-      }),
+    this.lambdaFunction = new lambda.Function(this, "HeartbeatFunction", {
+      functionName: "chatroom-tick-heartbeat",
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "tick_loop.heartbeat_lambda.handler",
+      code: backendPythonCode(),
+      memorySize: 256,
+      timeout: Duration.minutes(15),
+      reservedConcurrentExecutions: 1,
       environment: {
         HEARTBEAT_INTERVAL_SEC: "5",
+        HEARTBEAT_WINDOW_SEC: "840",
         TICK_HANDLER_LAMBDA: tickHandler.functionName,
         CONVERSATION_TABLE: conversationTable.tableName,
         CONVERSATION_STATUS_INDEX: "status-index",
-        AWS_REGION: this.region,
+        HEARTBEAT_MAX_FAILURES: "3",
       },
     });
 
-    // --------------- IAM ---------------
-
-    // dynamodb:Query on the status-index. Table-level grant is too broad,
-    // and there's no helper for index-only — use an explicit policy
-    // statement targeting both the table ARN (required for some
-    // DescribeTable-style sanity checks at SDK init) and the GSI ARN.
-    taskDef.taskRole.addToPrincipalPolicy(
+    this.lambdaFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["dynamodb:Query"],
         resources: [
@@ -90,14 +61,14 @@ export class TickHeartbeatStack extends Stack {
       }),
     );
 
-    // lambda:InvokeFunction on the tick handler.
-    tickHandler.grantInvoke(taskDef.taskRole);
+    tickHandler.grantInvoke(this.lambdaFunction);
 
-    this.service = new ecs.FargateService(this, "HeartbeatService", {
-      cluster: this.cluster,
-      taskDefinition: taskDef,
-      desiredCount: 1,
-      assignPublicIp: false,
+    this.rule = new events.Rule(this, "HeartbeatSchedule", {
+      schedule: events.Schedule.rate(Duration.minutes(15)),
     });
+
+    this.rule.addTarget(new targets.LambdaFunction(this.lambdaFunction, {
+      retryAttempts: 0,
+    }));
   }
 }

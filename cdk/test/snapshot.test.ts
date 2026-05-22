@@ -6,7 +6,7 @@
  *     lobby table).
  *   - Secrets Manager secret names.
  *   - Tick handler Lambda env vars and IAM (Bedrock invoke).
- *   - Tick heartbeat ECS task sizing, service desiredCount, and IAM
+ *   - Tick heartbeat scheduler Lambda sizing/schedule and IAM
  *     (DynamoDB Query on the GSI + Lambda invoke).
  *
  * Out of scope for this file:
@@ -17,7 +17,7 @@
  *     criteria for 7.8 ("conversation-table, lobby-table, secrets, and (if
  *     possible) tick-handler + tick-heartbeat").
  *
- * VPC lookup note: TickHandlerStack and TickHeartbeatStack call
+ * VPC lookup note: older backend stacks called
  * `ec2.Vpc.fromLookup`, which without a pre-resolved cache hits AWS via the
  * CDK context provider and breaks offline tests. We pre-seed the
  * `vpc-provider` cache key with a synthetic VPC so synth never reaches AWS.
@@ -29,6 +29,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { ConversationTableStack } from "../lib/conversation-table-stack";
 import { LobbyTableStack } from "../lib/lobby-table-stack";
 import { SecretsStack } from "../lib/secrets-stack";
+import { ChatroomApiStack } from "../lib/chatroom-api-stack";
 import { TickHandlerStack } from "../lib/tick-handler-stack";
 import { TickHeartbeatStack } from "../lib/tick-heartbeat-stack";
 
@@ -55,8 +56,8 @@ function makeApp(): cdk.App {
         availabilityZones: [],
         subnetGroups: [
           {
-            name: "Private",
-            type: "Private",
+            name: "Public",
+            type: "Public",
             subnets: [
               {
                 subnetId: "subnet-1",
@@ -74,6 +75,14 @@ function makeApp(): cdk.App {
           },
         ],
       },
+      rdsSecurityGroupId: "sg-test",
+      rdsHost: "stimulusdb-instance-1.example.rds.amazonaws.com",
+      rdsPort: "5432",
+      rdsDatabase: "stimulize",
+      rdsSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rds-secret",
+      domainName: "",
+      enableCustomDomain: "false",
+      useVpcEndpoints: "false",
     },
   });
 }
@@ -218,7 +227,7 @@ describe("TickHandlerStack", () => {
 // -----------------------------------------------------------------------------
 
 describe("TickHeartbeatStack", () => {
-  it("creates a Fargate task (256/512) and an ECS service with desiredCount=1", () => {
+  it("creates a scheduled heartbeat lambda with reserved concurrency 1", () => {
     const app = makeApp();
     const conv = new ConversationTableStack(app, "ConvTable", { env: TEST_ENV });
     const lobby = new LobbyTableStack(app, "LobbyTable", { env: TEST_ENV });
@@ -237,18 +246,25 @@ describe("TickHeartbeatStack", () => {
     });
     const t = Template.fromStack(stack);
 
-    // Fargate task definition: 256 CPU / 512 MiB.
-    t.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Cpu: "256",
-      Memory: "512",
-      RequiresCompatibilities: ["FARGATE"],
+    t.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "chatroom-tick-heartbeat",
+      Runtime: "python3.12",
+      Handler: "tick_loop.heartbeat_lambda.handler",
+      Timeout: 900,
+      ReservedConcurrentExecutions: 1,
+      Environment: {
+        Variables: Match.objectLike({
+          HEARTBEAT_INTERVAL_SEC: "5",
+          HEARTBEAT_WINDOW_SEC: "840",
+          TICK_HANDLER_LAMBDA: Match.anyValue(),
+          CONVERSATION_TABLE: Match.anyValue(),
+          CONVERSATION_STATUS_INDEX: "status-index",
+        }),
+      },
     });
 
-    // Service: desiredCount=1.
-    t.resourceCountIs("AWS::ECS::Service", 1);
-    t.hasResourceProperties("AWS::ECS::Service", {
-      DesiredCount: 1,
-      LaunchType: "FARGATE",
+    t.hasResourceProperties("AWS::Events::Rule", {
+      ScheduleExpression: "rate(15 minutes)",
     });
 
     // IAM: dynamodb:Query on status-index AND lambda:InvokeFunction on tick handler.
@@ -258,7 +274,6 @@ describe("TickHeartbeatStack", () => {
           Match.objectLike({
             Action: "dynamodb:Query",
             Effect: "Allow",
-            // Resource is a list with a Fn::Join that includes "/index/status-index".
             Resource: Match.anyValue(),
           }),
           Match.objectLike({
@@ -268,5 +283,49 @@ describe("TickHeartbeatStack", () => {
         ]),
       },
     });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// ChatroomApiStack
+// -----------------------------------------------------------------------------
+
+describe("ChatroomApiStack", () => {
+  it("creates API lambda with direct-RDS env vars and no custom domain by default", () => {
+    const app = makeApp();
+    const conv = new ConversationTableStack(app, "ConvTable", { env: TEST_ENV });
+    const lobby = new LobbyTableStack(app, "LobbyTable", { env: TEST_ENV });
+    const secrets = new SecretsStack(app, "Secrets", { env: TEST_ENV });
+    const stack = new ChatroomApiStack(app, "ChatroomApi", {
+      env: TEST_ENV,
+      table: conv.table,
+      lobbyTable: lobby.table,
+      jwtSecret: secrets.jwtSecret,
+      adminToken: secrets.adminToken,
+    });
+    const t = Template.fromStack(stack);
+
+    t.hasResourceProperties("AWS::Lambda::Function", {
+      Runtime: "python3.12",
+      Handler: "chatroom_api.handler.lambda_handler",
+      Environment: {
+        Variables: Match.objectLike({
+          DYNAMODB_TABLE: Match.anyValue(),
+          LOBBY_TABLE: Match.anyValue(),
+          JWT_SECRET_ARN: Match.anyValue(),
+          ADMIN_TOKEN_SECRET_ARN: Match.anyValue(),
+          RDS_HOST: "stimulusdb-instance-1.example.rds.amazonaws.com",
+          RDS_PORT: "5432",
+          RDS_DATABASE: "stimulize",
+          RDS_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rds-secret",
+          USE_MOCK_DYNAMO: "false",
+          USE_MOCK_RDS: "false",
+          USE_MOCK_LOBBY: "false",
+        }),
+      },
+    });
+
+    t.resourceCountIs("AWS::ApiGateway::DomainName", 0);
+    t.resourceCountIs("AWS::RDS::DBProxy", 0);
   });
 });
