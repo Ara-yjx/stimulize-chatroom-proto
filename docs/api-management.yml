@@ -14,7 +14,7 @@ info:
     # will-do: If Lambda moves to SQS-based usage reporting (Phase 2+),
     # add POST /internal/usage endpoint here.
     # will-do: If Lambda stops reading RDS directly,
-    # add GET /internal/chatrooms/{id} endpoint here.
+    # add GET /internal/chatroom/{id} endpoint here.
 
 servers:
   - url: https://mock-mgmt.stimulize.org
@@ -34,7 +34,7 @@ tags:
     description: Usage queries (editor UI)
 
 paths:
-  /chatrooms:
+  /api/createChatroom:
     post:
       tags: [chatroom-crud]
       summary: Create a chatroom
@@ -58,7 +58,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Chatroom"
-    get:
+  /api/getChatrooms:
+    post:
       tags: [chatroom-crud]
       summary: List chatrooms
       description: Returns chatrooms for the current user. Setting omitted in list view.
@@ -71,8 +72,8 @@ paths:
                 items:
                   $ref: "#/components/schemas/ChatroomSummary"
 
-  /chatrooms/{id}:
-    get:
+  /api/getChatroom/{id}:
+    post:
       tags: [chatroom-crud]
       summary: Get chatroom with full setting
       parameters:
@@ -85,7 +86,8 @@ paths:
                 $ref: "#/components/schemas/Chatroom"
         "404":
           description: Not found
-    put:
+  /api/updateChatroom/{id}:
+    post:
       tags: [chatroom-crud]
       summary: Update chatroom (partial)
       parameters:
@@ -111,7 +113,8 @@ paths:
                 $ref: "#/components/schemas/Chatroom"
         "404":
           description: Not found
-    delete:
+  /api/deleteChatroom/{id}:
+    post:
       tags: [chatroom-crud]
       summary: Deactivate chatroom
       description: Sets status to inactive. Does not delete data.
@@ -128,8 +131,8 @@ paths:
                     type: string
                     example: deactivated
 
-  /chatrooms/{id}/usage:
-    get:
+  /api/getChatroomUsage/{id}:
+    post:
       tags: [usage]
       summary: Get chatroom usage totals
       parameters:

@@ -16,9 +16,17 @@ function hostedWidgetUrl(): string {
   return new URL(basePath, window.location.origin).toString()
 }
 
+const DEFAULT_MANAGEMENT_API_URL = import.meta.env.DEV
+  ? 'http://localhost:5000'
+  : 'https://9wr63is7x6.execute-api.us-east-2.amazonaws.com/live'
+
+const DEFAULT_CHATROOM_API_URL = import.meta.env.DEV
+  ? 'http://localhost:5001'
+  : 'https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod'
+
 /** Management API base URL (mock Flask in beta; real Stimulize backend in prod). */
 export const MANAGEMENT_API_URL: string =
-  normalizeApiBaseUrl(import.meta.env.VITE_MOCK_MGMT_URL as string | undefined, 'http://localhost:5000')
+  normalizeApiBaseUrl(import.meta.env.VITE_MOCK_MGMT_URL as string | undefined, DEFAULT_MANAGEMENT_API_URL)
 
 /** Bearer token for the management API. */
 export const MANAGEMENT_API_TOKEN: string =
@@ -33,7 +41,7 @@ export const MANAGEMENT_API_PASSWORD: string =
 
 /** Chatroom (widget runtime) API base URL — used by the embed script + preview. */
 export const CHATROOM_API_URL: string =
-  normalizeApiBaseUrl(import.meta.env.VITE_CHATROOM_API_URL as string | undefined, 'http://localhost:5001')
+  normalizeApiBaseUrl(import.meta.env.VITE_CHATROOM_API_URL as string | undefined, DEFAULT_CHATROOM_API_URL)
 
 /** Optional separate widget bundle URL for dev/beta preview flows. */
 export const CHATROOM_WIDGET_URL: string =

@@ -38,10 +38,10 @@ def reset_state():
     yield
 
 
-# --- POST /chatrooms (create) ---
+# --- POST /api/createChatroom ---
 
 def test_create_chatroom(client):
-    resp = client.post("/chatrooms", json={
+    resp = client.post("/api/createChatroom", json={
         "name": "My Chatroom",
         "setting": {
             "mode": "one_on_one",
@@ -64,10 +64,10 @@ def test_create_chatroom(client):
     assert data["id"] in CHATROOMS
 
 
-# --- GET /chatrooms (list) ---
+# --- POST /api/getChatrooms ---
 
 def test_list_chatrooms(client):
-    resp = client.get("/chatrooms")
+    resp = client.post("/api/getChatrooms")
     assert resp.status_code == 200
     data = resp.get_json()
     assert isinstance(data, list)
@@ -79,10 +79,10 @@ def test_list_chatrooms(client):
     assert data[0]["status"] == "active"
 
 
-# --- GET /chatrooms/:id (get) ---
+# --- POST /api/getChatroom/:id ---
 
 def test_get_chatroom(client):
-    resp = client.get("/chatrooms/scid_test-chatroom-001")
+    resp = client.post("/api/getChatroom/scid_test-chatroom-001")
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["id"] == "scid_test-chatroom-001"
@@ -91,14 +91,14 @@ def test_get_chatroom(client):
 
 
 def test_get_chatroom_not_found(client):
-    resp = client.get("/chatrooms/scid_nonexistent")
+    resp = client.post("/api/getChatroom/scid_nonexistent")
     assert resp.status_code == 404
 
 
-# --- PUT /chatrooms/:id (update) ---
+# --- POST /api/updateChatroom/:id ---
 
 def test_update_chatroom_name(client):
-    resp = client.put("/chatrooms/scid_test-chatroom-001", json={
+    resp = client.post("/api/updateChatroom/scid_test-chatroom-001", json={
         "name": "Renamed Chatroom",
     })
     assert resp.status_code == 200
@@ -109,7 +109,7 @@ def test_update_chatroom_name(client):
 
 
 def test_update_chatroom_status(client):
-    resp = client.put("/chatrooms/scid_test-chatroom-001", json={
+    resp = client.post("/api/updateChatroom/scid_test-chatroom-001", json={
         "status": "inactive",
     })
     assert resp.status_code == 200
@@ -117,7 +117,7 @@ def test_update_chatroom_status(client):
 
 
 def test_update_chatroom_setting(client):
-    resp = client.put("/chatrooms/scid_test-chatroom-001", json={
+    resp = client.post("/api/updateChatroom/scid_test-chatroom-001", json={
         "setting": {
             "mode": "group",
             "topic_instruction": "new topic",
@@ -134,14 +134,14 @@ def test_update_chatroom_setting(client):
 
 
 def test_update_chatroom_not_found(client):
-    resp = client.put("/chatrooms/scid_nonexistent", json={"name": "x"})
+    resp = client.post("/api/updateChatroom/scid_nonexistent", json={"name": "x"})
     assert resp.status_code == 404
 
 
-# --- DELETE /chatrooms/:id (deactivate) ---
+# --- POST /api/deleteChatroom/:id ---
 
 def test_delete_chatroom(client):
-    resp = client.delete("/chatrooms/scid_test-chatroom-001")
+    resp = client.post("/api/deleteChatroom/scid_test-chatroom-001")
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["status"] == "deactivated"
@@ -150,14 +150,14 @@ def test_delete_chatroom(client):
 
 
 def test_delete_chatroom_not_found(client):
-    resp = client.delete("/chatrooms/scid_nonexistent")
+    resp = client.post("/api/deleteChatroom/scid_nonexistent")
     assert resp.status_code == 404
 
 
-# --- GET /chatrooms/:id/usage ---
+# --- POST /api/getChatroomUsage/:id ---
 
 def test_get_usage_empty(client):
-    resp = client.get("/chatrooms/scid_test-chatroom-001/usage")
+    resp = client.post("/api/getChatroomUsage/scid_test-chatroom-001")
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["chatroom_id"] == "scid_test-chatroom-001"
@@ -172,7 +172,7 @@ def test_get_usage_with_records(client):
     # Different chatroom — should not be counted
     accumulate_usage("scid_other", 999, 999)
 
-    resp = client.get("/chatrooms/scid_test-chatroom-001/usage")
+    resp = client.post("/api/getChatroomUsage/scid_test-chatroom-001")
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["input_tokens"] == 300
@@ -196,8 +196,8 @@ def test_get_usage_with_date_filter(client):
     })
 
     # Filter: only records from 2025-03-01 onward
-    resp = client.get(
-        "/chatrooms/scid_test-chatroom-001/usage?from=2025-03-01T00:00:00"
+    resp = client.post(
+        "/api/getChatroomUsage/scid_test-chatroom-001?from=2025-03-01T00:00:00"
     )
     data = resp.get_json()
     assert data["input_tokens"] == 200
@@ -208,5 +208,5 @@ def test_get_usage_with_date_filter(client):
 # --- CORS ---
 
 def test_cors_headers(client):
-    resp = client.options("/chatrooms", headers={"Origin": "http://localhost:3000"})
+    resp = client.options("/api/getChatrooms", headers={"Origin": "http://localhost:3000"})
     assert "access-control-allow-origin" in {k.lower() for k in resp.headers.keys()}

@@ -17,6 +17,7 @@ import styles from "./ui/styles.css";
 declare const $: JQueryStatic;
 declare const jQuery: JQueryStatic;
 const _$ = (typeof jQuery !== "undefined" ? jQuery : $) as JQueryStatic;
+const DEFAULT_API_BASE_URL = "https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod";
 
 let state: ChatroomState | null = null;
 
@@ -31,7 +32,7 @@ function injectStyles(): void {
 
 function showBetaUrlInput(element: string | HTMLElement, options: InitOptions): Promise<string> {
   const $el = _$(element as any) as JQuery;
-  const defaultUrl = options.apiBaseUrl || "https://chatroom.stimulize.org";
+  const defaultUrl = options.apiBaseUrl || DEFAULT_API_BASE_URL;
   $el.html(`
     <div class="stim-chatroom">
       <div class="stim-beta-config">

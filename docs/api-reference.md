@@ -48,17 +48,17 @@ Status codes:
 
 ---
 
-## Management API Implementation Mapping
+## Management API Implementation
 
-The design docs and OpenAPI spec describe a REST-style management API. The current `Stimulize-backend` implementation keeps the project's existing POST/action route style instead.
+The current `Stimulize-backend` implementation only exposes the project's POST/action route style.
 
-Mapping:
+Routes:
 
-- `POST /chatrooms` -> `POST /api/createChatroom`
-- `GET /chatrooms` -> `POST /api/getChatrooms`
-- `GET /chatrooms/:id` -> `POST /api/getChatroom/<id>`
-- `PUT /chatrooms/:id` -> `POST /api/updateChatroom/<id>`
-- `DELETE /chatrooms/:id` -> `POST /api/deleteChatroom/<id>`
+- `POST /api/createChatroom`
+- `POST /api/getChatrooms`
+- `POST /api/getChatroom/<id>`
+- `POST /api/updateChatroom/<id>`
+- `POST /api/deleteChatroom/<id>`
 
 The actual backend contract is documented in:
 
@@ -70,29 +70,30 @@ Usage endpoints are deferred in the current backend implementation.
 
 ## Management API — Chatroom CRUD (Editor UI → Backend)
 
-### POST /chatrooms
+### POST /api/createChatroom
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
+The create request is the first persisted save, so any editor-provided default `setting` values are stored immediately at creation time.
 
 Request: `{ name, setting: { mode, topic_instruction, additional_prompt?, ai_personas?, model_id, simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, target_human_count?, ai_join_strategy?, ai_strategy_value?, max_wait_seconds? } }`
 Response: `{ id, name, status, setting, created_at, updated_at }`
 
-### GET /chatrooms
+### POST /api/getChatrooms
 List chatrooms for the current user.
 
 Response: `[{ id, name, status, created_at, updated_at }]` (setting omitted in list view)
 
-### GET /chatrooms/:id
+### POST /api/getChatroom/:id
 Get a single chatroom with full setting.
 
 Response: `{ id, name, status, setting, created_at, updated_at }`
 
-### PUT /chatrooms/:id
+### POST /api/updateChatroom/:id
 Update chatroom name, status, or setting.
 
 Request: `{ name?, status?, setting? }` (`setting`, when provided, replaces the full setting object)
 Response: updated chatroom object
 
-### DELETE /chatrooms/:id
+### POST /api/deleteChatroom/:id
 Deactivate a chatroom (sets status to `inactive`).
 
 Response: standard backend success envelope; chatroom is soft-deleted by setting `status=inactive`
@@ -101,7 +102,7 @@ Response: standard backend success envelope; chatroom is soft-deleted by setting
 
 ## Management API — Usage
 
-### GET /chatrooms/:id/usage
+### POST /api/getChatroomUsage/:id
 Get total token usage for a chatroom.
 
 Query params: `from` (ISO date, optional), `to` (ISO date, optional)
@@ -137,8 +138,8 @@ Mount the widget and start a chat session. Must only be called once per page (si
 interface InitOptions {
   element: string | HTMLElement;  // CSS selector or DOM element to mount into
   chatroomId: string;             // chatroom ID (e.g. "scid_550e8400-...")
-  apiBaseUrl?: string;            // override backend URL (ignored unless beta: true)
-  beta?: boolean;                 // if true, shows a URL input box before connecting
+  apiBaseUrl?: string;            // override backend URL
+  beta?: boolean;                 // beta mode flag
 }
 ```
 
@@ -152,12 +153,13 @@ StimulizeChatroom.init({
 });
 ```
 
-**Example (beta — lets researcher set backend URL):**
+**Example (beta):**
 ```javascript
 StimulizeChatroom.init({
   element: "#chatroom-container",
   chatroomId: "scid_550e8400-e29b-41d4-a716-446655440000",
-  beta: true
+  beta: true,
+  apiBaseUrl: "https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod"
 });
 ```
 
@@ -196,12 +198,11 @@ When running inside Qualtrics, the widget automatically writes the full history 
 
 ### Lifecycle
 
-1. **Beta URL input** (if `beta: true`) — user enters backend URL, clicks "Start Chat"
-2. **Token exchange** — calls `/auth/token` with `chatroomId`
+1. **Token exchange** — calls `/auth/token` with `chatroomId`
 3. **Pairing screen** — animated "Finding a chat partner..." for `simulate_pairing_seconds` (configurable per chatroom)
 4. **Active chat** — message input, polling every 3s, AI messages appear with simulated typing delay
 5. **Conversation ended** — input disabled, "This conversation has ended." system message
-6. **Lobby aborted** (group mode, 410) — "No one else joined this chatroom." + "Reconnect" button
+5. **Lobby aborted** (group mode, 410) — "No one else joined this chatroom." + "Reconnect" button
 
 ### Error states
 

@@ -12,7 +12,7 @@ provider can be replaced (or kept) depending on whether Lambda gets
 direct DB access.
 
 Usage write path is a no-op today: the management API does not expose a
-usage-write endpoint (only ``GET /chatrooms/:id/usage`` for queries).
+usage-write endpoint (only ``POST /api/getChatroom/:id`` for chatroom lookups).
 Per-tick token counts are already persisted on the conversation row's
 tick events, so no data is lost. A ``POST /internal/usage`` endpoint is
 on the prod TODO list (see ``docs/api-management.yml``); once it lands,
@@ -45,7 +45,7 @@ def _headers() -> dict:
 
 
 def get_chatroom(chatroom_id: str) -> Optional[dict]:
-    """``GET /chatrooms/{id}`` — returns same dict shape as ``rds.get_chatroom``.
+    """``POST /api/getChatroom/{id}`` — returns same dict shape as ``rds.get_chatroom``.
 
     Returns ``None`` on 404. Re-raises on any other HTTP error so the
     caller surfaces a 500 to the widget rather than silently treating
@@ -55,8 +55,8 @@ def get_chatroom(chatroom_id: str) -> Optional[dict]:
         raise RuntimeError(
             "management_api_rds requires MGMT_API_URL to be set"
         )
-    url = f"{config.MGMT_API_URL.rstrip('/')}/chatrooms/{chatroom_id}"
-    resp = requests.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT_SEC)
+    url = f"{config.MGMT_API_URL.rstrip('/')}/api/getChatroom/{chatroom_id}"
+    resp = requests.post(url, headers=_headers(), timeout=_HTTP_TIMEOUT_SEC)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()

@@ -1,7 +1,7 @@
 """Tests for chatroom_api.management_api_rds.
 
 Covers:
-- ``get_chatroom`` issues ``GET {MGMT_API_URL}/chatrooms/{id}`` with a
+- ``get_chatroom`` issues ``POST {MGMT_API_URL}/api/getChatroom/{id}`` with a
   bearer header and parses the response into the canonical dict shape.
 - ``get_chatroom`` returns ``None`` on 404.
 - ``get_chatroom`` raises on other HTTP errors (so the widget surfaces
@@ -59,13 +59,13 @@ class TestGetChatroom:
     def test_issues_get_with_bearer(self):
         with patch.object(config, "MGMT_API_URL", "https://mgmt.example.com"), \
              patch.object(config, "MGMT_API_TOKEN", "tok-123"), \
-             patch("chatroom_api.management_api_rds.requests.get") as get_mock:
+             patch("chatroom_api.management_api_rds.requests.post") as get_mock:
             get_mock.return_value = _mock_response(200, SAMPLE_RESPONSE)
             result = management_api_rds.get_chatroom("scid_test-001")
 
         get_mock.assert_called_once()
         args, kwargs = get_mock.call_args
-        assert args[0] == "https://mgmt.example.com/chatrooms/scid_test-001"
+        assert args[0] == "https://mgmt.example.com/api/getChatroom/scid_test-001"
         assert kwargs["headers"]["Authorization"] == "Bearer tok-123"
         assert kwargs["headers"]["Accept"] == "application/json"
         assert kwargs["timeout"] == 5
@@ -80,16 +80,16 @@ class TestGetChatroom:
     def test_strips_trailing_slash_on_url(self):
         with patch.object(config, "MGMT_API_URL", "https://mgmt.example.com/"), \
              patch.object(config, "MGMT_API_TOKEN", "tok"), \
-             patch("chatroom_api.management_api_rds.requests.get") as get_mock:
+             patch("chatroom_api.management_api_rds.requests.post") as get_mock:
             get_mock.return_value = _mock_response(200, SAMPLE_RESPONSE)
             management_api_rds.get_chatroom("scid_x")
         url = get_mock.call_args[0][0]
-        assert url == "https://mgmt.example.com/chatrooms/scid_x"
+        assert url == "https://mgmt.example.com/api/getChatroom/scid_x"
 
     def test_omits_bearer_when_token_unset(self):
         with patch.object(config, "MGMT_API_URL", "https://mgmt.example.com"), \
              patch.object(config, "MGMT_API_TOKEN", ""), \
-             patch("chatroom_api.management_api_rds.requests.get") as get_mock:
+             patch("chatroom_api.management_api_rds.requests.post") as get_mock:
             get_mock.return_value = _mock_response(200, SAMPLE_RESPONSE)
             management_api_rds.get_chatroom("scid_x")
         headers = get_mock.call_args[1]["headers"]
@@ -98,7 +98,7 @@ class TestGetChatroom:
     def test_404_returns_none(self):
         with patch.object(config, "MGMT_API_URL", "https://mgmt.example.com"), \
              patch.object(config, "MGMT_API_TOKEN", "tok"), \
-             patch("chatroom_api.management_api_rds.requests.get") as get_mock:
+             patch("chatroom_api.management_api_rds.requests.post") as get_mock:
             get_mock.return_value = _mock_response(404)
             result = management_api_rds.get_chatroom("scid_missing")
         assert result is None
@@ -106,7 +106,7 @@ class TestGetChatroom:
     def test_500_raises(self):
         with patch.object(config, "MGMT_API_URL", "https://mgmt.example.com"), \
              patch.object(config, "MGMT_API_TOKEN", "tok"), \
-             patch("chatroom_api.management_api_rds.requests.get") as get_mock:
+             patch("chatroom_api.management_api_rds.requests.post") as get_mock:
             get_mock.return_value = _mock_response(500)
             with pytest.raises(requests.HTTPError):
                 management_api_rds.get_chatroom("scid_x")

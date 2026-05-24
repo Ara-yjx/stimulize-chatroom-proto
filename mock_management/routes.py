@@ -16,7 +16,7 @@ admin_bp = Blueprint("admin", __name__)
 # --- Chatroom CRUD ---
 
 
-@admin_bp.route("/chatrooms", methods=["POST"])
+@admin_bp.route("/api/createChatroom", methods=["POST"])
 def create_chatroom():
     """Create a new chatroom. Generates scid_ + uuid4 as the ID."""
     body = request.get_json(force=True)
@@ -36,7 +36,7 @@ def create_chatroom():
     return jsonify(chatroom), 201
 
 
-@admin_bp.route("/chatrooms", methods=["GET"])
+@admin_bp.route("/api/getChatrooms", methods=["POST"])
 def list_chatrooms():
     """List all chatrooms (summary: id, name, status, created_at, updated_at)."""
     summaries = [
@@ -52,7 +52,7 @@ def list_chatrooms():
     return jsonify(summaries)
 
 
-@admin_bp.route("/chatrooms/<chatroom_id>", methods=["GET"])
+@admin_bp.route("/api/getChatroom/<chatroom_id>", methods=["POST"])
 def get_chatroom(chatroom_id):
     """Get a single chatroom with full setting."""
     chatroom = CHATROOMS.get(chatroom_id)
@@ -61,7 +61,7 @@ def get_chatroom(chatroom_id):
     return jsonify(chatroom)
 
 
-@admin_bp.route("/chatrooms/<chatroom_id>", methods=["PUT"])
+@admin_bp.route("/api/updateChatroom/<chatroom_id>", methods=["POST"])
 def update_chatroom(chatroom_id):
     """Partial update: name, status, setting."""
     chatroom = CHATROOMS.get(chatroom_id)
@@ -82,7 +82,7 @@ def update_chatroom(chatroom_id):
     return jsonify(chatroom)
 
 
-@admin_bp.route("/chatrooms/<chatroom_id>", methods=["DELETE"])
+@admin_bp.route("/api/deleteChatroom/<chatroom_id>", methods=["POST"])
 def delete_chatroom(chatroom_id):
     """Deactivate a chatroom (set status to inactive)."""
     chatroom = CHATROOMS.get(chatroom_id)
@@ -98,7 +98,7 @@ def delete_chatroom(chatroom_id):
 # --- Usage ---
 
 
-@admin_bp.route("/chatrooms/<chatroom_id>/usage", methods=["GET"])
+@admin_bp.route("/api/getChatroomUsage/<chatroom_id>", methods=["POST"])
 def get_chatroom_usage(chatroom_id):
     """Get token usage totals for a chatroom, optionally filtered by date range."""
     from_date = request.args.get("from")

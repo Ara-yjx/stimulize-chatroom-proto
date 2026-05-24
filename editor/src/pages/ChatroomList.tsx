@@ -30,7 +30,9 @@ export default function ChatroomList() {
       return
     }
     try {
-      const data = await mgmtFetchJson<ChatroomSummary[]>('/chatrooms')
+      const data = await mgmtFetchJson<ChatroomSummary[]>('/api/getChatrooms', {
+        method: 'POST',
+      })
       setChatrooms(data)
     } catch (e: unknown) {
       Message.error(e instanceof Error ? e.message : 'Failed to load chatrooms')
@@ -53,7 +55,7 @@ export default function ChatroomList() {
     setCreating(true)
     try {
       const setting = defaultSettingForMode('one_on_one')
-      await mgmtFetchJson('/chatrooms', {
+      await mgmtFetchJson('/api/createChatroom', {
         method: 'POST',
         body: JSON.stringify({
           name: newName.trim(),

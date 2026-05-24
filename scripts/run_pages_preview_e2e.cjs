@@ -5,6 +5,14 @@ const MANAGEMENT_API_URL = 'https://9wr63is7x6.execute-api.us-east-2.amazonaws.c
 const TOKEN_STORAGE_KEY = 'stimulize.editor.managementToken';
 const USERNAME_STORAGE_KEY = 'stimulize.editor.managementUsername';
 
+function browserLaunchOptions() {
+  const executablePath = process.env.PLAYWRIGHT_CHROME_PATH;
+  if (executablePath) {
+    return { executablePath, headless: true };
+  }
+  return { channel: 'chrome', headless: true };
+}
+
 function parseAccountFile(filePath) {
   const text = fs.readFileSync(filePath, 'utf8');
   const lines = text.split(/\r?\n/).map((line) => line.trim());
@@ -70,6 +78,40 @@ async function waitForAiConversation(page, timeoutMs = 120000) {
   throw new Error('Timed out waiting for AI-to-AI conversation');
 }
 
+async function startAllPreviewFrames(page, timeoutMs = 60000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const result = await page.evaluate(() => {
+      const frames = Array.from(document.querySelectorAll('iframe')).filter((frame) => {
+        const src = frame.getAttribute('src') || '';
+        return src.startsWith('blob:');
+      });
+      let ready = 0;
+      for (const frame of frames) {
+        try {
+          const doc = frame.contentDocument;
+          const win = frame.contentWindow;
+          if (!doc || !win) continue;
+          const startButton = doc.querySelector('.stim-beta-start');
+          if (startButton) {
+            startButton.click();
+            continue;
+          }
+          if (win.StimulizeChatroom) {
+            ready += 1;
+          }
+        } catch {}
+      }
+      return { frameCount: frames.length, ready };
+    });
+    if (result.frameCount >= 2 && result.ready >= 2) {
+      return;
+    }
+    await page.waitForTimeout(1000);
+  }
+  throw new Error('Timed out waiting for preview frames to start');
+}
+
 async function main() {
   const detailUrl = process.argv[2];
   const accountFile = process.argv[3];
@@ -80,7 +122,7 @@ async function main() {
   const { username, password } = parseAccountFile(accountFile);
   const token = await loginForToken(username, password);
 
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const browser = await chromium.launch(browserLaunchOptions());
   let page;
   try {
     const context = await browser.newContext({ viewport: { width: 1600, height: 1400 } });
@@ -110,6 +152,7 @@ async function main() {
       }).length >= 2;
     }, { timeout: 60000 });
 
+    await startAllPreviewFrames(page, 60000);
     const conversation = await waitForAiConversation(page, 120000);
     if (screenshotPath) {
       fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });

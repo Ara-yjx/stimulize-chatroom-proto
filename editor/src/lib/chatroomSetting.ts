@@ -71,6 +71,14 @@ export interface ValidationResult {
   errors: Record<string, string>
 }
 
+export function deriveMaxDurationSeconds(timerMaxMinutes: number | null): number {
+  const effectiveMaxMinutes =
+    typeof timerMaxMinutes === 'number' && Number.isFinite(timerMaxMinutes) && timerMaxMinutes >= 0
+      ? timerMaxMinutes
+      : 0
+  return (effectiveMaxMinutes + 1) * 60
+}
+
 /**
  * Validate a chatroom setting per the rules in docs/low-level-design.md.
  *
@@ -163,10 +171,10 @@ export function defaultSettingForMode(mode: ChatroomMode): ChatroomSetting {
     additional_prompt: '',
     ai_personas: [],
     model_id: 'global.anthropic.claude-sonnet-4-6',
-    simulate_pairing_seconds: 5,
-    timer_min_minutes: 5,
-    timer_max_minutes: 10,
-    max_duration_seconds: 600,
+    simulate_pairing_seconds: 15,
+    timer_min_minutes: 1,
+    timer_max_minutes: 5,
+    max_duration_seconds: deriveMaxDurationSeconds(5),
   }
 
   if (mode === 'one_on_one') {

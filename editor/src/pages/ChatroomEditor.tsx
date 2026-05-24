@@ -11,6 +11,7 @@ import {
   ChatroomMode,
   defaultSettingForMode,
   denormalizeForSave,
+  deriveMaxDurationSeconds,
   validateChatroomSetting,
   VALIDATION_LIMITS,
 } from '../lib/chatroomSetting'
@@ -215,10 +216,13 @@ interface FormValues extends ChatroomSetting {
 function normalizeLoadedSetting(setting: Partial<ChatroomSetting> | undefined): ChatroomSetting {
   const mode: ChatroomMode = setting?.mode === 'group' ? 'group' : 'one_on_one'
   const defaults = defaultSettingForMode(mode)
+  const timerMaxMinutes =
+    typeof setting?.timer_max_minutes === 'number' ? setting.timer_max_minutes : defaults.timer_max_minutes
   return {
     ...defaults,
     ...setting,
     mode,
+    max_duration_seconds: deriveMaxDurationSeconds(timerMaxMinutes ?? null),
   }
 }
 
@@ -231,6 +235,12 @@ export default function ChatroomEditor() {
   const watchedMode = Form.useWatch('mode', form) as ChatroomMode | undefined
   const watchedTargetHumanCount = Form.useWatch('target_human_count', form) as number | undefined
   const watchedAiStrategy = Form.useWatch('ai_join_strategy', form) as string | undefined
+  const watchedTimerMaxMinutes = Form.useWatch('timer_max_minutes', form) as number | null | undefined
+
+  useEffect(() => {
+    if (typeof watchedTimerMaxMinutes === 'undefined') return
+    form.setFieldValue('max_duration_seconds', deriveMaxDurationSeconds(watchedTimerMaxMinutes ?? null))
+  }, [form, watchedTimerMaxMinutes])
 
   const fetchChatroom = useCallback(async () => {
     if (!hasManagementToken()) {
@@ -239,7 +249,9 @@ export default function ChatroomEditor() {
       return
     }
     try {
-      const data = await mgmtFetchJson<Chatroom>(`/chatrooms/${id}`)
+      const data = await mgmtFetchJson<Chatroom>(`/api/getChatroom/${id}`, {
+        method: 'POST',
+      })
       setChatroom(data)
       const setting = normalizeLoadedSetting(data.setting)
       form.setFieldsValue({
@@ -273,7 +285,7 @@ export default function ChatroomEditor() {
       simulate_pairing_seconds: values.simulate_pairing_seconds,
       timer_min_minutes: values.timer_min_minutes ?? null,
       timer_max_minutes: values.timer_max_minutes ?? null,
-      max_duration_seconds: values.max_duration_seconds,
+      max_duration_seconds: deriveMaxDurationSeconds(values.timer_max_minutes ?? null),
       target_human_count: values.target_human_count,
       ai_join_strategy: values.ai_join_strategy,
       ai_strategy_value: values.ai_strategy_value,
@@ -298,8 +310,8 @@ export default function ChatroomEditor() {
 
     setSaving(true)
     try {
-      const updated = await mgmtFetchJson<Chatroom>(`/chatrooms/${id}`, {
-        method: 'PUT',
+      const updated = await mgmtFetchJson<Chatroom>(`/api/updateChatroom/${id}`, {
+        method: 'POST',
         body: JSON.stringify({
           name: values.name,
           status: values.status ? 'active' : 'inactive',
@@ -474,21 +486,22 @@ avoid talking about politics; keep messages under 12 words.
             <FormItem label="⏱️ Simulate Pairing (sec)" field="simulate_pairing_seconds" hidden={hideSimulatePairing} style={{ flex: 1, minWidth: 180 }}>
               <InputNumber min={0} style={{ width: '100%' }} />
             </FormItem>
-            <FormItem label="⏳ Max Duration (sec)"
-              field="max_duration_seconds"
-              extra="Cap on total conversation duration."
-              rules={[{ required: true, type: 'number', min: 0, max: VALIDATION_LIMITS.maxDurationSecondsMax }]}
-              style={{ flex: 1, minWidth: 180 }}
-            >
-              <InputNumber min={0} max={VALIDATION_LIMITS.maxDurationSecondsMax} style={{ width: '100%' }} />
-            </FormItem>
           </Row>
 
           <Row>
             <FormItem label="🕒 Timer Min (min)" field="timer_min_minutes" style={{ flex: 1, minWidth: 140 }}>
               <InputNumber min={0} style={{ width: '100%' }} />
             </FormItem>
-            <FormItem label="🕒 Timer Max (min)" field="timer_max_minutes" style={{ flex: 1, minWidth: 140 }}>
+            <FormItem
+              label="🕒 Timer Max (min)"
+              field="timer_max_minutes"
+              style={{ flex: 1, minWidth: 140 }}
+              extra={
+                typeof watchedTimerMaxMinutes === 'number' && watchedTimerMaxMinutes > 15
+                  ? 'Too long conversation will cause extra cost.'
+                  : undefined
+              }
+            >
               <InputNumber min={0} style={{ width: '100%' }} />
             </FormItem>
           </Row>

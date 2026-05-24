@@ -65,7 +65,7 @@ frontend/                    # Chat widget (TypeScript + jQuery)
 
 editor/                      # Editor UI (React + TypeScript + Vite + Arco Design)
   src/
-    App.tsx                  # Router: /chatrooms, /chatrooms/:id
+    App.tsx                  # Router: /chatroom, /chatroom/:id
     pages/
       ChatroomList.tsx
       ChatroomEditor.tsx
@@ -779,8 +779,8 @@ Source structure: CSS lives in a separate file (`src/ui/styles.css`) for clean p
 Uses `@arco-design/web-react` (v2.66.7) to match the main Stimulize editor project.
 
 ### Pages
-- `/chatrooms` — list all chatrooms with status (active/inactive)
-- `/chatrooms/:id` — edit chatroom setting, generate script, preview widget
+- `/chatroom` — list all chatrooms with status (active/inactive)
+- `/chatroom/:id` — edit chatroom setting, generate script, preview widget
 
 ### Chatroom Editor Form
 - Name, status toggle, mode toggle (`one_on_one` / `group`)
@@ -822,11 +822,11 @@ The editor surfaces mode as a toggle (`one_on_one` / `group`):
 
 Editor talks to the management API (mock Flask container in beta, real Stimulize backend in prod). All requests carry `Authorization: Bearer <token>`.
 
-- `GET /chatrooms` — list
-- `POST /chatrooms` — create
-- `GET /chatrooms/:id` — get
-- `PUT /chatrooms/:id` — update
-- `DELETE /chatrooms/:id` — deactivate
+- `POST /api/getChatrooms` — list
+- `POST /api/createChatroom` — create
+- `POST /api/getChatroom/:id` — get
+- `POST /api/updateChatroom/:id` — update
+- `POST /api/deleteChatroom/:id` — deactivate
 
 
 ## CDK (TypeScript)

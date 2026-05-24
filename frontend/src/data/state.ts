@@ -8,6 +8,7 @@ import type {
   SessionInfo,
 } from "./types";
 import { exchangeToken, sendMessage, pollMessages } from "./api";
+const DEFAULT_API_BASE_URL = "https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod";
 
 // --- Callback types ---
 export type OnMessageCallback = (msg: ChatMessage, isSelf: boolean) => void;
@@ -83,8 +84,7 @@ export class ChatroomState {
   // --- Init: exchange token, populate state ---
   async init(options: InitOptions): Promise<void> {
     this._initOptions = options;
-    const defaultUrl = "https://chatroom.stimulize.org";
-    this._apiBaseUrl = (options.apiBaseUrl || defaultUrl).replace(/\/+$/, "");
+    this._apiBaseUrl = (options.apiBaseUrl || DEFAULT_API_BASE_URL).replace(/\/+$/, "");
     this.chatHistory = [];
     this.lastTimestamp = 0;
     this.conversationStatus = "lobby";
