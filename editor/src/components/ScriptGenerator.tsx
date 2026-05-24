@@ -1,8 +1,10 @@
 import { useState } from 'react'
-import { Input, Button, Message } from '@arco-design/web-react'
-import { CHATROOM_API_URL, CHATROOM_WIDGET_URL } from '../config'
+import { Input, Button, Message, Typography } from '@arco-design/web-react'
+import { CHATROOM_WIDGET_URL } from '../config'
+import { IconCopy } from '@arco-design/web-react/icon'
 
 const TextArea = Input.TextArea
+const Text = Typography.Text
 
 interface Props {
   chatroomId: string
@@ -14,15 +16,19 @@ interface Props {
  * widget does not fall back to `chatroom.stimulize.org` before DNS is live.
  */
 export default function ScriptGenerator({ chatroomId }: Props) {
-  const [apiBaseUrl, setApiBaseUrl] = useState(CHATROOM_API_URL)
+  // const [apiBaseUrl, setApiBaseUrl] = useState(CHATROOM_API_URL)
   const [snippet, setSnippet] = useState('')
 
   const generate = () => {
+    // const initBlock = `    StimulizeChatroom.init({
+    //   element: chatDiv,
+    //   chatroomId: "${chatroomId}",
+    //   beta: true,
+    //   apiBaseUrl: "${apiBaseUrl}"
+    // });`
     const initBlock = `    StimulizeChatroom.init({
       element: chatDiv,
       chatroomId: "${chatroomId}",
-      beta: true,
-      apiBaseUrl: "${apiBaseUrl}"
     });`
 
     const widgetScriptUrl = CHATROOM_WIDGET_URL
@@ -60,10 +66,10 @@ ${initBlock}
     <div>
       <h3 style={{ marginBottom: 12 }}>Generate Embed Script</h3>
 
-      <div style={{ marginBottom: 12 }}>
+      {/* <div style={{ marginBottom: 12 }}>
         <div style={{ marginBottom: 4, fontSize: 13, fontWeight: 500 }}>Runtime API Base URL</div>
         <Input value={apiBaseUrl} onChange={setApiBaseUrl} style={{ maxWidth: 500 }} />
-      </div>
+      </div> */}
 
       <Button type="primary" onClick={generate} style={{ marginBottom: 12 }}>
         Generate Script
@@ -77,7 +83,14 @@ ${initBlock}
             autoSize={{ minRows: 12, maxRows: 24 }}
             style={{ fontFamily: 'monospace', fontSize: 12 }}
           />
-          <Button onClick={copySnippet} style={{ marginTop: 8 }}>Copy to Clipboard</Button>
+          <Button onClick={copySnippet} style={{ marginTop: 8 }}><IconCopy /> Copy to Clipboard</Button>
+          <br/>
+          <Text>
+            You also need to create two Embeded Data fields in Qualtrics: <br/>
+            <code>QUALTRICS_CHATROOM_HISTORY</code>
+            and
+            <code>QUALTRICS_CHATROOM_HISTORY_JSON</code>.
+          </Text>
         </div>
       )}
     </div>
