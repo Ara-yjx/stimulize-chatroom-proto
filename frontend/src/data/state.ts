@@ -44,6 +44,7 @@ export class ChatroomState {
   /** Tracks whether we've seen a lobby block in any poll response so far. */
   private _sawLobby = false;
   private _lobbyPollTimer: ReturnType<typeof setInterval> | null = null;
+  private _seenRemoteMessageKeys = new Set<string>();
 
   // Callback registries
   private _onMessage: OnMessageCallback[] = [];
@@ -90,6 +91,7 @@ export class ChatroomState {
     this.conversationStatus = "lobby";
     this._pollFailingSince = null;
     this._sawLobby = false;
+    this._seenRemoteMessageKeys.clear();
 
     const resp = await exchangeToken(this._apiBaseUrl, options.chatroomId);
     this.token = resp.token;
@@ -321,6 +323,9 @@ export class ChatroomState {
 
   private _renderEvent(evt: ConversationEvent): void {
     if (evt.type === "system") {
+      const systemKey = this._dedupeKey(evt.sender, evt.content, evt.timestamp, "system");
+      if (this._seenRemoteMessageKeys.has(systemKey)) return;
+      this._seenRemoteMessageKeys.add(systemKey);
       let content = evt.content;
       if (evt.session_id === this.sessionId) {
         content = content.replace(this.nickname, `${this.nickname} (you)`);
@@ -333,6 +338,9 @@ export class ChatroomState {
       });
       this._onSystemEvent.forEach((cb) => cb(content));
     } else if (evt.type === "error") {
+      const errorKey = this._dedupeKey("System", evt.content, evt.timestamp, "system");
+      if (this._seenRemoteMessageKeys.has(errorKey)) return;
+      this._seenRemoteMessageKeys.add(errorKey);
       this.chatHistory.push({
         sender: "System",
         content: evt.content,
@@ -341,10 +349,18 @@ export class ChatroomState {
       });
       this._onError.forEach((cb) => cb(evt.content));
     } else {
+      // Rarely, the client can receive the same remote message twice across
+      // polling/reconnect edges. Deduping on sender/content/timestamp/role is
+      // the smallest client-only fix that suppresses the duplicate bubble
+      // without changing the backend event schema.
+      const messageRole = evt.role === "ai" ? "ai" : "user";
+      const messageKey = this._dedupeKey(evt.sender, evt.content, evt.timestamp, messageRole);
+      if (this._seenRemoteMessageKeys.has(messageKey)) return;
+      this._seenRemoteMessageKeys.add(messageKey);
       const msg: ChatMessage = {
         sender: evt.sender,
         content: evt.content,
-        role: evt.role === "ai" ? "ai" : "user",
+        role: messageRole,
         timestamp: evt.timestamp,
         session_id: evt.session_id,
         avatar: evt.avatar,
@@ -370,6 +386,10 @@ export class ChatroomState {
       clearInterval(this._timerInterval);
       this._timerInterval = null;
     }
+  }
+
+  private _dedupeKey(sender: string, content: string, timestamp: number, role: string): string {
+    return `${sender}::${content}::${timestamp}::${role}`;
   }
 
   // --- Cleanup ---
