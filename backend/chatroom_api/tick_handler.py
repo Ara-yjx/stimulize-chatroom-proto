@@ -368,7 +368,11 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
             }],
         }]
 
-    model_id = chatroom_setting.get("model_id") or _DEFAULT_MODEL_ID
+    model_id = (
+        (candidate_participant or {}).get("model_id")
+        or chatroom_setting.get("model_id")
+        or _DEFAULT_MODEL_ID
+    )
 
     try:
         result = _invoke_with_model_fallback(model_id, system_prompt, bedrock_messages)

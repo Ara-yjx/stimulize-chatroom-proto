@@ -125,6 +125,7 @@ def handle_auth_token(body: dict) -> tuple[int, dict]:
     ai_id = f"ai_{uuid4().hex[:8]}"
     ai_nickname = _generate_nickname(exclude={human_nickname})
     ai_avatar = _pick_avatar(exclude={human_avatar["emojiText"]})
+    default_model_id = chatroom_setting.get("model_id") or ""
 
     # 6. Build participants list
     participants = [
@@ -139,6 +140,7 @@ def handle_auth_token(body: dict) -> tuple[int, dict]:
             "nickname": ai_nickname,
             "avatar": ai_avatar,
             "role": "ai",
+            "model_id": default_model_id,
         },
     ]
 

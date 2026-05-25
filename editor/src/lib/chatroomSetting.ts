@@ -11,6 +11,14 @@ export type ChatroomMode = 'one_on_one' | 'group'
 
 export type AiJoinStrategy = 'fixed_ai_count' | 'total_participant_count'
 
+export interface AiPersonaSetting {
+  persona: string
+  /**
+   * Null means "same model as chatroom default".
+   */
+  model_id: string | null
+}
+
 export interface ChatroomSetting {
   mode: ChatroomMode
   /**
@@ -28,14 +36,15 @@ export interface ChatroomSetting {
   additional_prompt: string
   /**
    * Pool of researcher-supplied per-AI personas. When the lobby closes,
-   * the backend randomly picks one persona per AI (without replacement
-   * when the pool has enough entries; with replacement on overflow).
-   * Each entry is a free-form string injected into the AI's system
-   * prompt as ``<your-persona>...</your-persona>``. Empty pool → no
-   * persona block; the scaffold's "build an identity as the conversation
-   * goes" rule takes over.
+   * the backend assigns one entry per AI in round-robin-style batches:
+   * without replacement when the pool has enough entries, otherwise full
+   * shuffled rounds first, then a final partial round.
+   *
+   * Each entry carries the persona text plus an optional per-persona model
+   * override. If ``model_id`` is null, the chatroom-level ``model_id`` is
+   * used for that AI.
    */
-  ai_personas: string[]
+  ai_personas: AiPersonaSetting[]
   model_id: string
   simulate_pairing_seconds: number
   timer_min_minutes: number | null
@@ -69,6 +78,26 @@ export const VALIDATION_LIMITS = {
 export interface ValidationResult {
   ok: boolean
   errors: Record<string, string>
+}
+
+export function normalizeAiPersonas(value: unknown): AiPersonaSetting[] {
+  if (!Array.isArray(value)) return []
+
+  return value.flatMap((entry): AiPersonaSetting[] => {
+    if (typeof entry === 'string') {
+      return [{ persona: entry, model_id: null }]
+    }
+    if (!entry || typeof entry !== 'object') return []
+    const persona =
+      typeof (entry as { persona?: unknown }).persona === 'string'
+        ? (entry as { persona: string }).persona
+        : ''
+    const modelIdRaw = (entry as { model_id?: unknown }).model_id
+    return [{
+      persona,
+      model_id: typeof modelIdRaw === 'string' && modelIdRaw.trim() ? modelIdRaw : null,
+    }]
+  })
 }
 
 export function deriveMaxDurationSeconds(timerMaxMinutes: number | null): number {

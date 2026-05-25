@@ -146,3 +146,28 @@ def test_bedrock_resource_not_found_falls_back_to_default_model():
     assert usage["input_tokens"] == 1
     assert usage["output_tokens"] == 1
     assert usage["estimated_cost_usd"] > 0
+
+
+def test_participant_model_id_overrides_chatroom_default():
+    cid, started_at_ms = _seed()
+    now_seconds = (started_at_ms / 1000) + 60
+
+    mock_dynamo._rooms[cid]["participants"][1]["model_id"] = tick_handler._DEFAULT_MODEL_ID
+    mock_dynamo._rooms[cid]["chatroom_setting"]["model_id"] = "test-model"
+
+    seen_models: list[str] = []
+
+    def _fake_invoke(model_id, system_prompt, bedrock_messages):
+        seen_models.append(model_id)
+        return {
+            "messages": ["participant-specific model"],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    with patch.object(tick_handler.time, "time", return_value=now_seconds), \
+         patch.object(tick_handler, "invoke_speak_tool", side_effect=_fake_invoke):
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "spoke"
+    assert seen_models == [tick_handler._DEFAULT_MODEL_ID]

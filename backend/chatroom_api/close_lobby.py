@@ -89,37 +89,67 @@ def _pick_avatar(exclude=None) -> dict:
     return {"emojiText": emoji}
 
 
-def _pick_personas(persona_pool: list, ai_count: int) -> list[str]:
-    """Pick *ai_count* personas from *persona_pool* for one cohort.
+def _pick_personas(persona_pool: list, ai_count: int) -> list:
+    """Pick *ai_count* entries from *persona_pool* for one cohort.
 
     Behavior:
-    - Empty pool → returns ``[""] * ai_count`` (no persona section in the
-      prompt; scaffold's "build an identity as the conversation goes"
-      rule takes over).
+    - Empty pool → returns ``[""] * ai_count`` for the legacy string case.
     - Pool with at least *ai_count* entries → sample without replacement
-      so each AI in the same room gets a distinct persona.
-    - Pool smaller than *ai_count* → sample without replacement first,
-      then top up with random picks (with replacement) from the pool.
-      Better than collisions on the first AIs while padding stays uniform.
+      so each AI in the same room gets a distinct assignment.
+    - Pool smaller than *ai_count* → assign whole shuffled rounds of the
+      cleaned pool first, then top up the final partial round without
+      replacement from the same pool. Example: 3 personas, 7 AIs → 2 full
+      rounds (6 assignments) plus
+      1 extra random pick from the pool.
 
-    Non-string entries and empty/whitespace strings are dropped before
-    sampling so a typo in the editor (e.g. ``[null, ""]``) doesn't
-    silently inject blank personas.
+    Legacy callers pass strings; newer callers may pass pre-normalized
+    dict entries. Non-string entries are ignored in the legacy path.
     """
-    cleaned = [
-        str(p).strip()
-        for p in (persona_pool or [])
-        if isinstance(p, str) and str(p).strip()
-    ]
+    cleaned = []
+    for p in (persona_pool or []):
+        if isinstance(p, str):
+            stripped = str(p).strip()
+            if stripped:
+                cleaned.append(stripped)
+        elif isinstance(p, dict):
+            cleaned.append(p)
     if not cleaned:
         return [""] * ai_count
     if ai_count <= 0:
         return []
     if len(cleaned) >= ai_count:
         return random.sample(cleaned, ai_count)
-    distinct = random.sample(cleaned, len(cleaned))
-    fill = [random.choice(cleaned) for _ in range(ai_count - len(cleaned))]
-    return distinct + fill
+    full_rounds, remainder = divmod(ai_count, len(cleaned))
+    result: list[str] = []
+    for _ in range(full_rounds):
+        result.extend(random.sample(cleaned, len(cleaned)))
+    if remainder:
+        result.extend(random.sample(cleaned, remainder))
+    return result
+
+
+def _normalize_persona_entries(persona_pool: list, default_model_id: str) -> list[dict[str, str]]:
+    """Normalize stored ``ai_personas`` to a clean list of persona/model pairs.
+
+    Supports both legacy string entries and the newer object form:
+    ``{"persona": "...", "model_id": "..." | null}``.
+    """
+    normalized: list[dict[str, str]] = []
+    for entry in persona_pool or []:
+        if isinstance(entry, str):
+            persona = entry.strip()
+            if not persona:
+                continue
+            normalized.append({"persona": persona, "model_id": default_model_id})
+            continue
+        if not isinstance(entry, dict):
+            continue
+        persona = str(entry.get("persona", "")).strip()
+        if not persona:
+            continue
+        model_id = str(entry.get("model_id", "") or "").strip() or default_model_id
+        normalized.append({"persona": persona, "model_id": model_id})
+    return normalized
 
 
 def _now_iso() -> str:
@@ -209,14 +239,23 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
             "max_wait_seconds": lobby.get("max_wait_seconds"),
         }
 
-    persona_pool = chatroom_setting.get("ai_personas") or []
-    personas_for_ais = _pick_personas(persona_pool, ai_count)
+    default_model_id = str(chatroom_setting.get("model_id") or "").strip()
+    persona_entries = _normalize_persona_entries(
+        chatroom_setting.get("ai_personas") or [],
+        default_model_id,
+    )
+    selected_persona_entries = _pick_personas(persona_entries, ai_count) if persona_entries else []
 
     used_nicknames = {p.get("nickname") for p in participants_after_prune}
     used_emojis = {(p.get("avatar") or {}).get("emojiText") for p in participants_after_prune}
 
     ai_participants: list[dict] = []
     for i in range(ai_count):
+        selected_entry = (
+            selected_persona_entries[i]
+            if i < len(selected_persona_entries)
+            else {"persona": "", "model_id": default_model_id}
+        )
         nickname = _generate_nickname(exclude=used_nicknames)
         avatar = _pick_avatar(exclude=used_emojis)
         used_nicknames.add(nickname)
@@ -226,7 +265,8 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
             "nickname": nickname,
             "avatar": avatar,
             "role": "ai",
-            "persona": personas_for_ais[i],
+            "persona": selected_entry.get("persona", ""),
+            "model_id": selected_entry.get("model_id", default_model_id),
         })
 
     # --- Step 4: build conversation row + events; idempotent put.

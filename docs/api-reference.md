@@ -74,7 +74,7 @@ Usage endpoints are deferred in the current backend implementation.
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
 The create request is the first persisted save, so any editor-provided default `setting` values are stored immediately at creation time.
 
-Request: `{ name, setting: { mode, topic_instruction, additional_prompt?, ai_personas?, model_id, simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, target_human_count?, ai_join_strategy?, ai_strategy_value?, max_wait_seconds? } }`
+Request: `{ name, setting: { mode, topic_instruction, additional_prompt?, ai_personas?: [{ persona, model_id? }], model_id, simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, target_human_count?, ai_join_strategy?, ai_strategy_value?, max_wait_seconds? } }`
 Response: `{ id, name, status, setting, created_at, updated_at }`
 
 ### POST /api/getChatrooms

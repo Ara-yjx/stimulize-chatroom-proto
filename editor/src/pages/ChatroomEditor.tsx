@@ -9,9 +9,11 @@ import { hasManagementToken } from '../api/managementAuth'
 import {
   ChatroomSetting,
   ChatroomMode,
+  AiPersonaSetting,
   defaultSettingForMode,
   denormalizeForSave,
   deriveMaxDurationSeconds,
+  normalizeAiPersonas,
   validateChatroomSetting,
   VALIDATION_LIMITS,
 } from '../lib/chatroomSetting'
@@ -24,6 +26,7 @@ const FormItem = Form.Item
 const RadioGroup = Radio.Group
 const Option = Select.Option
 const OptGroup = Select.OptGroup
+const SAME_MODEL_AS_DEFAULT = '__CHATROOM_DEFAULT__'
 
 
 /** Section heading inside the form. Compact, uppercase tracking, separator above. */
@@ -112,22 +115,45 @@ function PersonaListEditor({
   value,
   onChange,
 }: {
-  value?: string[]
-  onChange?: (next: string[]) => void
+  value?: AiPersonaSetting[]
+  onChange?: (next: AiPersonaSetting[]) => void
 }) {
   const personas = value ?? []
-  const update = (next: string[]) => onChange?.(next)
+  const update = (next: AiPersonaSetting[]) => onChange?.(next)
   return (
     <div>
       {personas.map((p, i) => (
         <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'flex-start' }}>
-          <TextArea
-            value={p}
-            onChange={(v) => update(personas.map((x, j) => (j === i ? v : x)))}
-            autoSize={{ minRows: 2, maxRows: 6 }}
-            placeholder={`Instruction to persona ${i + 1}`}
-            style={{ flex: 1 }}
-          />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <TextArea
+              value={p.persona}
+              onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, persona: v } : x)))}
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              placeholder={`Instruction to persona ${i + 1}`}
+              style={{ flex: 1, marginBottom: 8 }}
+            />
+            <Select
+              value={p.model_id ?? SAME_MODEL_AS_DEFAULT}
+              onChange={(v) => update(
+                personas.map((x, j) => (
+                  j === i
+                    ? { ...x, model_id: v === SAME_MODEL_AS_DEFAULT ? null : String(v) }
+                    : x
+                )),
+              )}
+              placeholder="Select model"
+              style={{ width: '100%' }}
+            >
+              <Option value={SAME_MODEL_AS_DEFAULT}>(same model as chatroom default)</Option>
+              {MODEL_GROUPS.map((group) => (
+                <OptGroup key={group.label} label={group.label}>
+                  {group.options.map((opt) => (
+                    <Option key={opt.value} value={opt.value}>{opt.label}</Option>
+                  ))}
+                </OptGroup>
+              ))}
+            </Select>
+          </div>
           <Button
             shape="circle"
             type="text"
@@ -138,7 +164,11 @@ function PersonaListEditor({
         </div>
       ))}
       <Space>
-        <Button size="small" icon={<IconPlus />} onClick={() => update([...personas, ''])}>
+        <Button
+          size="small"
+          icon={<IconPlus />}
+          onClick={() => update([...personas, { persona: '', model_id: null }])}
+        >
           Add persona
         </Button>
         {personas.length > 0 && (
@@ -223,6 +253,7 @@ function normalizeLoadedSetting(setting: Partial<ChatroomSetting> | undefined): 
     ...defaults,
     ...setting,
     mode,
+    ai_personas: normalizeAiPersonas(setting?.ai_personas),
     max_duration_seconds: deriveMaxDurationSeconds(timerMaxMinutes ?? null),
   }
 }
@@ -281,7 +312,7 @@ export default function ChatroomEditor() {
       mode: values.mode,
       topic_instruction: values.topic_instruction,
       additional_prompt: values.additional_prompt,
-      ai_personas: values.ai_personas ?? [],
+      ai_personas: normalizeAiPersonas(values.ai_personas),
       model_id: values.model_id,
       simulate_pairing_seconds: values.simulate_pairing_seconds,
       timer_min_minutes: values.timer_min_minutes ?? null,
@@ -437,12 +468,14 @@ export default function ChatroomEditor() {
                     <div style={{ maxWidth: 360, fontSize: 13, lineHeight: 1.6 }}>
                       <p style={{ marginTop: 0 }}>
                         Pool of per-AI persona instructions. When the lobby closes,
-                        the backend randomly picks one entry per AI (distinct when
-                        the pool is big enough; with replacement once it overflows).
+                        the backend assigns one entry per AI in round-robin-style
+                        batches, and each persona can optionally override the
+                        chatroom default model.
                       </p>
                       <p>
                         Each entry is free-form — describe the persona AND any
-                        dos/don'ts. For example:
+                        dos/don'ts, then optionally pick a model just for that
+                        persona. For example:
                       </p>
                       <pre style={{
                         background: '#f2f3f5', padding: 8, borderRadius: 4,

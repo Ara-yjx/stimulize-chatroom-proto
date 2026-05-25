@@ -121,7 +121,8 @@ Partition key: `conversation_id` (S)
       nickname: "Participant5678",
       avatar: { emojiText: "🐶" },
       role: "ai",
-      persona: "upenn sophomore, asian studies minor, casual tone"  // injected each tick to prevent drift
+      persona: "upenn sophomore, asian studies minor, casual tone",  // injected each tick to prevent drift
+      model_id: "global.anthropic.claude-sonnet-4-6"                // per-AI override resolved at conversation start
     }
   ],
   events: [
@@ -223,6 +224,16 @@ The `setting` JSON column contains:
 {
   "mode": "one_on_one",
   "topic_instruction": "Anything about your college life.",
+  "ai_personas": [
+    {
+      "persona": "upenn sophomore, asian studies minor, casual tone",
+      "model_id": null
+    },
+    {
+      "persona": "ucsd sophomore, economics major, very concise",
+      "model_id": "global.anthropic.claude-sonnet-4-6"
+    }
+  ],
   "model_id": "global.anthropic.claude-sonnet-4-6",
   "simulate_pairing_seconds": 5,
   "timer_min_minutes": 5,
@@ -303,7 +314,7 @@ The tick handler call site (illustrative):
 
 ```python
 response = bedrock.converse(
-    modelId=setting["model_id"],
+    modelId=chosen_ai.model_id or setting["model_id"],
     messages=bedrock_messages,           # built from filtered events (visible_at <= now)
     system=[{"text": full_system_prompt}],   # SCAFFOLD + TOPIC + PERSONA + CONTEXT
     toolConfig=SPEAK_TOOL_CONFIG,        # forced tool use
@@ -637,7 +648,8 @@ SPEECH_SCAFFOLD            # platform-managed: tool use, silence rules, examples
 
 - `SPEECH_SCAFFOLD` and the `speak` tool config are not exposed to researchers — they live in our codebase and are versioned with the platform.
 - `CHATROOM_TOPIC_INSTRUCTION` is the researcher's chatroom setting (`topic_instruction` in RDS). The backend wraps it in a `# Chatroom topic` block before stitching it into the system prompt.
-- `PER_AI_PERSONA` is generated at conversation start and stored on the conversation row so each AI keeps a consistent identity across ticks. Without this, AIs drift across ticks (different school, different major) since Bedrock conversations are stateless. The persona is randomly drawn from the chatroom setting's `ai_personas` pool (without replacement when the pool has at least `ai_count` entries; with replacement otherwise; empty pool → no persona block).
+- `PER_AI_PERSONA` is generated at conversation start and stored on the conversation row so each AI keeps a consistent identity across ticks. Without this, AIs drift across ticks (different school, different major) since Bedrock conversations are stateless. The persona is drawn from the chatroom setting's `ai_personas` pool using a round-robin-style assignment: without replacement when the pool has at least `ai_count` entries; otherwise assign whole shuffled rounds of the pool first, then fill the final partial round without replacement; empty pool → no persona block.
+- Each selected AI also gets a resolved `model_id` on its participant row. If the chosen persona entry omits `model_id`, the chatroom-level default `model_id` is copied onto that participant at conversation creation time. Ticks then read the participant's `model_id` first and fall back to the chatroom default.
 - `PARTICIPANTS` lists every nickname in the room (no role markers — see "AIs don't know who else is AI"). Without this, an AI can't notice a participant who never speaks, defeating the inclusivity rules in the scaffold.
 - `CONVERSATION_CONTEXT` is built fresh every tick. Timestamps in `<conversation-history>` are computed as `now - event.timestamp`, so the model sees correct relative deltas at every call.
 - `ADDITIONAL_PROMPT` is researcher-supplied free-form text (`additional_prompt` in RDS). Lands AFTER the history so last-mile reminders ("stay one-thought-per-turn") are the most recent thing the model sees before deciding what to say. Optional; omitted from the prompt when empty.

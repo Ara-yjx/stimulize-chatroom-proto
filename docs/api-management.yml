@@ -193,6 +193,14 @@ components:
             Researcher-supplied topic. Just the topic — the human-mimicry
             speech scaffold (rules, tool-use mechanics, examples) lives in
             the backend and is wrapped around this string at runtime.
+        ai_personas:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiPersonaSetting"
+          description: |
+            Optional per-AI persona/model pool. Each entry may override the
+            chatroom default model; null `model_id` means "same model as the
+            chatroom default".
         model_id:
           type: string
           example: global.anthropic.claude-sonnet-4-6
@@ -371,6 +379,16 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    AiPersonaSetting:
+      type: object
+      properties:
+        persona:
+          type: string
+        model_id:
+          type: string
+          nullable: true
+          description: Null means use the chatroom-level `model_id`.
 
     ChatroomSummary:
       type: object
