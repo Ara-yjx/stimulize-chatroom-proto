@@ -59,19 +59,41 @@ CHATROOMS: dict[str, dict] = {
 }
 
 # ---------------------------------------------------------------------------
-# Usage records: list of dicts with chatroom_id, input_tokens, output_tokens,
-# created_at.  Kept as a flat list so the usage endpoint can filter by date.
+# Usage records: one row per billable model invocation. Kept flat so the
+# usage endpoints can filter and aggregate by time period.
 # ---------------------------------------------------------------------------
 
 USAGE: list[dict] = []
 
 
-def accumulate_usage(chatroom_id: str, input_tokens: int, output_tokens: int) -> None:
+def accumulate_usage(
+    *,
+    owner_id: str = "owner_default",
+    chatroom_id: str,
+    conversation_id: str | None = None,
+    session_id: str | None = None,
+    provider: str = "bedrock",
+    model_id: str = "global.anthropic.claude-sonnet-4-6",
+    pricing_key: str = "bedrock_claude_sonnet_4_6_global_standard",
+    input_tokens: int,
+    output_tokens: int,
+    estimated_cost_usd: float = 0.0,
+    created_at: str | None = None,
+) -> None:
     """Append a usage record for a chatroom."""
     USAGE.append({
+        "usage_event_id": f"usage_{uuid.uuid4()}",
+        "owner_id": owner_id,
         "chatroom_id": chatroom_id,
+        "conversation_id": conversation_id,
+        "session_id": session_id,
+        "provider": provider,
+        "model_id": model_id,
+        "pricing_key": pricing_key,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
+        "invoked_at": created_at or datetime.now(timezone.utc).isoformat(),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
 

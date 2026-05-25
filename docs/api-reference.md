@@ -103,13 +103,24 @@ Response: standard backend success envelope; chatroom is soft-deleted by setting
 ## Management API — Usage
 
 ### POST /api/getChatroomUsage/:id
-Get total token usage for a chatroom.
+Get aggregated usage for one chatroom owned by the current user.
 
-Query params: `from` (ISO date, optional), `to` (ISO date, optional)
+Request body:
 
-Response: `{ chatroom_id, input_tokens, output_tokens, total_tokens }`
+```json
+{
+  "period": "day",
+  "from": "2026-05-01T00:00:00Z",
+  "to": "2026-05-31T23:59:59Z"
+}
+```
 
-Note: usage endpoints are deferred in the current `Stimulize-backend` implementation; this is the spec target.
+Response totals include `input_tokens`, `output_tokens`, and `estimated_cost_usd`. When `period` is provided, the response also includes a `series` array grouped by `hour`, `day`, `week`, or `month`.
+
+### POST /api/getUserUsage
+Get aggregated usage across all chatrooms owned by the current user.
+
+Request body supports the same `period`, `from`, and `to` fields as `getChatroomUsage`.
 
 ---
 
@@ -214,4 +225,4 @@ When running inside Qualtrics, the widget automatically writes the full history 
 
 ## Note on Internal Endpoints
 
-Lambda reads chatroom settings directly via the management API (`MGMT_API_URL` + bearer) in beta. Usage writes are no-ops in beta — per-tick token counts are persisted on conversation tick events. If Lambda needs central usage aggregation in the future, an internal `POST /internal/usage` endpoint will be added to the management API.
+Lambda reads chatroom settings directly from Stimulize Postgres in deploys where RDS credentials are configured. Each billable model invocation writes one `chatroom_usage` row containing `provider`, `model_id`, raw input/output token counts, and the write-time `estimated_cost_usd`. Aggregated usage is then queried through the management API.

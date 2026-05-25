@@ -161,48 +161,132 @@ def test_get_usage_empty(client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["chatroom_id"] == "scid_test-chatroom-001"
-    assert data["input_tokens"] == 0
-    assert data["output_tokens"] == 0
-    assert data["total_tokens"] == 0
+    assert data["totals"]["input_tokens"] == 0
+    assert data["totals"]["output_tokens"] == 0
+    assert data["totals"]["estimated_cost_usd"] == 0.0
+    assert data["series"] == []
 
 
 def test_get_usage_with_records(client):
-    accumulate_usage("scid_test-chatroom-001", 100, 50)
-    accumulate_usage("scid_test-chatroom-001", 200, 75)
+    accumulate_usage(chatroom_id="scid_test-chatroom-001", input_tokens=100, output_tokens=50, estimated_cost_usd=0.1)
+    accumulate_usage(chatroom_id="scid_test-chatroom-001", input_tokens=200, output_tokens=75, estimated_cost_usd=0.25)
     # Different chatroom — should not be counted
-    accumulate_usage("scid_other", 999, 999)
+    accumulate_usage(chatroom_id="scid_other", input_tokens=999, output_tokens=999, estimated_cost_usd=9.99)
 
     resp = client.post("/api/getChatroomUsage/scid_test-chatroom-001")
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["input_tokens"] == 300
-    assert data["output_tokens"] == 125
-    assert data["total_tokens"] == 425
+    assert data["totals"]["input_tokens"] == 300
+    assert data["totals"]["output_tokens"] == 125
+    assert data["totals"]["estimated_cost_usd"] == 0.35
 
 
 def test_get_usage_with_date_filter(client):
     # Manually insert records with known timestamps
     USAGE.append({
+        "usage_event_id": "usage-1",
+        "owner_id": "owner_default",
         "chatroom_id": "scid_test-chatroom-001",
+        "conversation_id": "conv-1",
+        "session_id": "ai-1",
+        "provider": "bedrock",
+        "model_id": "global.anthropic.claude-sonnet-4-6",
+        "pricing_key": "bedrock_claude_sonnet_4_6_global_standard",
         "input_tokens": 100,
         "output_tokens": 50,
+        "estimated_cost_usd": 0.12,
+        "invoked_at": "2025-01-01T00:00:00+00:00",
         "created_at": "2025-01-01T00:00:00+00:00",
     })
     USAGE.append({
+        "usage_event_id": "usage-2",
+        "owner_id": "owner_default",
         "chatroom_id": "scid_test-chatroom-001",
+        "conversation_id": "conv-2",
+        "session_id": "ai-1",
+        "provider": "bedrock",
+        "model_id": "global.anthropic.claude-sonnet-4-6",
+        "pricing_key": "bedrock_claude_sonnet_4_6_global_standard",
         "input_tokens": 200,
         "output_tokens": 75,
+        "estimated_cost_usd": 0.31,
+        "invoked_at": "2025-06-15T00:00:00+00:00",
         "created_at": "2025-06-15T00:00:00+00:00",
     })
 
     # Filter: only records from 2025-03-01 onward
-    resp = client.post(
-        "/api/getChatroomUsage/scid_test-chatroom-001?from=2025-03-01T00:00:00"
-    )
+    resp = client.post("/api/getChatroomUsage/scid_test-chatroom-001", json={
+        "from": "2025-03-01T00:00:00+00:00"
+    })
     data = resp.get_json()
-    assert data["input_tokens"] == 200
-    assert data["output_tokens"] == 75
-    assert data["total_tokens"] == 275
+    assert data["totals"]["input_tokens"] == 200
+    assert data["totals"]["output_tokens"] == 75
+    assert data["totals"]["estimated_cost_usd"] == 0.31
+
+
+def test_get_usage_with_period_series(client):
+    accumulate_usage(
+        chatroom_id="scid_test-chatroom-001",
+        input_tokens=100,
+        output_tokens=20,
+        estimated_cost_usd=0.10,
+        created_at="2025-06-15T12:05:00+00:00",
+    )
+    accumulate_usage(
+        chatroom_id="scid_test-chatroom-001",
+        input_tokens=50,
+        output_tokens=10,
+        estimated_cost_usd=0.04,
+        created_at="2025-06-15T12:45:00+00:00",
+    )
+    accumulate_usage(
+        chatroom_id="scid_test-chatroom-001",
+        input_tokens=80,
+        output_tokens=15,
+        estimated_cost_usd=0.07,
+        created_at="2025-06-15T13:01:00+00:00",
+    )
+
+    resp = client.post("/api/getChatroomUsage/scid_test-chatroom-001", json={
+        "period": "hour"
+    })
+    data = resp.get_json()
+    assert data["totals"]["input_tokens"] == 230
+    assert len(data["series"]) == 2
+    assert data["series"][0]["input_tokens"] == 150
+    assert data["series"][1]["input_tokens"] == 80
+
+
+def test_get_user_usage(client):
+    accumulate_usage(
+        owner_id="owner_default",
+        chatroom_id="scid_test-chatroom-001",
+        input_tokens=100,
+        output_tokens=20,
+        estimated_cost_usd=0.10,
+    )
+    accumulate_usage(
+        owner_id="owner_default",
+        chatroom_id="scid_other",
+        input_tokens=50,
+        output_tokens=10,
+        estimated_cost_usd=0.04,
+    )
+    accumulate_usage(
+        owner_id="owner_other",
+        chatroom_id="scid_other",
+        input_tokens=999,
+        output_tokens=999,
+        estimated_cost_usd=9.99,
+    )
+
+    resp = client.post("/api/getUserUsage", json={"owner_id": "owner_default"})
+    data = resp.get_json()
+    assert data["scope"] == "user"
+    assert data["owner_id"] == "owner_default"
+    assert data["totals"]["input_tokens"] == 150
+    assert data["totals"]["output_tokens"] == 30
+    assert data["totals"]["estimated_cost_usd"] == 0.14
 
 
 # --- CORS ---

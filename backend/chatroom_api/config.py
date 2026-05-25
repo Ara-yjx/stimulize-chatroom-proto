@@ -20,10 +20,9 @@ RDS_USERNAME = os.environ.get("RDS_USERNAME", "")
 RDS_PASSWORD = os.environ.get("RDS_PASSWORD", "")
 RDS_SECRET_ARN = os.environ.get("RDS_SECRET_ARN", "")
 
-# Management API (chatroom-setting source for beta — see
-# ``chatroom_api/management_api_rds.py``). When ``MGMT_API_URL`` is set
-# *and* ``USE_MOCK_RDS`` is False, the backend reads chatroom settings
-# from the management API instead of Postgres. ``MGMT_API_TOKEN`` is the
-# bearer the management API expects.
+# Management API fallback for chatroom reads only. Direct Postgres is the
+# primary architecture for both chatroom reads and usage writes. This HTTP
+# path exists only for legacy environments where RDS access is intentionally
+# unavailable. ``MGMT_API_TOKEN`` is the bearer the management API expects.
 MGMT_API_URL = os.environ.get("MGMT_API_URL", "")
 MGMT_API_TOKEN = os.environ.get("MGMT_API_TOKEN", "")

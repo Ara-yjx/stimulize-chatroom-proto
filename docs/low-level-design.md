@@ -247,21 +247,42 @@ For `mode: "group"`, additional fields:
 
 ### RDS: `chatroom_usage` table
 
+**Write-path decision**
+
+- Option A: tick/runtime Lambda writes usage through the management API.
+- Option B: tick/runtime Lambda writes usage directly to Stimulize Postgres.
+- Decision: **Option B**.
+- Reason:
+  - the runtime already knows the exact provider/model/token counts at the moment cost is incurred,
+  - direct Postgres avoids an extra network hop and auth layer,
+  - idempotent `usage_event_id` inserts are simpler when the runtime owns the write.
+- Consequence: management API exposes only aggregated read endpoints (`getChatroomUsage`, `getUserUsage`). It is not part of the write path.
+
 ```sql
 CREATE TABLE chatroom_usage (
-  id              SERIAL PRIMARY KEY,
-  chatroom_id     VARCHAR(64) NOT NULL REFERENCES chatroom(id),
-  conversation_id VARCHAR(64) NOT NULL,
-  session_id      VARCHAR(64) NOT NULL,
-  input_tokens    INT NOT NULL,
-  output_tokens   INT NOT NULL,
-  total_tokens    INT NOT NULL,  -- input_tokens + output_tokens (raw count, no pricing multiplier)
-  created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+  id                 SERIAL PRIMARY KEY,
+  usage_event_id     VARCHAR(255) NOT NULL UNIQUE,
+  owner_id           INT NOT NULL REFERENCES users(id),
+  chatroom_id        VARCHAR(64) NOT NULL REFERENCES chatroom(id),
+  conversation_id    VARCHAR(255),
+  session_id         VARCHAR(255),
+  provider           VARCHAR(64) NOT NULL,
+  model_id           VARCHAR(255) NOT NULL,
+  pricing_key        VARCHAR(255) NOT NULL,
+  input_tokens       INT NOT NULL,
+  output_tokens      INT NOT NULL,
+  estimated_cost_usd NUMERIC(18, 8) NOT NULL,
+  currency           VARCHAR(8) NOT NULL DEFAULT 'USD',
+  invoked_at         TIMESTAMPTZ NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  raw_usage_json     JSONB
 );
 CREATE INDEX idx_usage_chatroom ON chatroom_usage(chatroom_id);
+CREATE INDEX idx_usage_chatroom_invoked_at ON chatroom_usage(chatroom_id, invoked_at);
+CREATE INDEX idx_usage_owner_invoked_at ON chatroom_usage(owner_id, invoked_at);
 ```
 
-Note: Bedrock API response token counts are raw counts — they do NOT include model pricing multipliers. Actual cost calculation (multiplier per model) happens at billing query time, not at write time.
+Note: Bedrock API response token counts are raw counts — they do NOT include model pricing multipliers. The runtime applies the backend's hardcoded provider/model pricing table at write time and stores `estimated_cost_usd` in each usage row so historical rows do not silently reprice when vendor rates change later.
 
 
 ## JWT
@@ -290,7 +311,7 @@ response = bedrock.converse(
 )
 ```
 
-Token usage: `response["usage"]["inputTokens"]`, `outputTokens` — recorded into the corresponding `tick` event.
+Token usage: `response["usage"]["inputTokens"]`, `outputTokens` — recorded into the corresponding `tick` event and written as one `chatroom_usage` row per billable model invocation.
 
 ### Conversation History Mapping
 

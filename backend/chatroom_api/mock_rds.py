@@ -39,19 +39,36 @@ def get_chatroom(chatroom_id: str) -> Optional[dict]:
 
 
 def write_usage(
+    *,
+    usage_event_id: str,
+    owner_id: int | str,
     chatroom_id: str,
     conversation_id: str,
     session_id: str,
+    provider: str,
+    model_id: str,
+    pricing_key: str,
     input_tokens: int,
     output_tokens: int,
+    estimated_cost_usd,
+    invoked_at: datetime | None = None,
+    raw_usage_json: dict | None = None,
 ) -> None:
     """Append a usage record to the in-memory store."""
     _usage_records.append({
+        "usage_event_id": usage_event_id,
+        "owner_id": owner_id,
         "chatroom_id": chatroom_id,
         "conversation_id": conversation_id,
         "session_id": session_id,
+        "provider": provider,
+        "model_id": model_id,
+        "pricing_key": pricing_key,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
+        "estimated_cost_usd": float(estimated_cost_usd),
+        "currency": "USD",
+        "invoked_at": (invoked_at or datetime.now(timezone.utc)).isoformat(),
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "raw_usage_json": raw_usage_json,
     })

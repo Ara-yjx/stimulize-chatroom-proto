@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 import boto3
@@ -98,21 +99,49 @@ def get_chatroom(chatroom_id: str) -> Optional[dict]:
 
 
 def write_usage(
+    *,
+    usage_event_id: str,
+    owner_id: int | str,
     chatroom_id: str,
     conversation_id: str,
     session_id: str,
+    provider: str,
+    model_id: str,
+    pricing_key: str,
     input_tokens: int,
     output_tokens: int,
+    estimated_cost_usd,
+    invoked_at: datetime | None = None,
+    raw_usage_json: dict | None = None,
 ) -> None:
-    """Insert a usage record into the chatroom_usage table."""
+    """Insert one billable invocation row into the chatroom_usage table."""
     conn = _get_connection()
     cur = conn.cursor()
     try:
+        invoked_at = invoked_at or datetime.now(timezone.utc)
         cur.execute(
             "INSERT INTO chatroom_usage "
-            "(chatroom_id, conversation_id, session_id, input_tokens, output_tokens, total_tokens) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (chatroom_id, conversation_id, session_id, input_tokens, output_tokens, input_tokens + output_tokens),
+            "(usage_event_id, owner_id, chatroom_id, conversation_id, session_id, provider, "
+            "model_id, pricing_key, input_tokens, output_tokens, estimated_cost_usd, currency, invoked_at, created_at, raw_usage_json) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (usage_event_id) DO NOTHING",
+            (
+                usage_event_id,
+                owner_id,
+                chatroom_id,
+                conversation_id,
+                session_id,
+                provider,
+                model_id,
+                pricing_key,
+                input_tokens,
+                output_tokens,
+                str(estimated_cost_usd),
+                "USD",
+                invoked_at,
+                invoked_at,
+                json.dumps(raw_usage_json) if raw_usage_json is not None else None,
+            ),
         )
     finally:
         cur.close()

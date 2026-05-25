@@ -7,10 +7,10 @@ Each caller now imports ``get_rds_provider()`` from here.
 Selection order (first match wins):
 
 1. ``USE_MOCK_RDS=true`` (default for local dev) → ``mock_rds``.
-2. ``MGMT_API_URL`` is set → ``management_api_rds`` (HTTP to the
-   management API; used for beta-deployed Lambdas that don't have direct
-   Postgres access).
-3. Otherwise → ``rds`` (real Postgres via psycopg2).
+2. Any direct Postgres config is present → ``rds``.
+3. ``MGMT_API_URL`` is set → ``management_api_rds`` (legacy fallback for
+   read-only chatroom lookups when direct Postgres is intentionally absent).
+4. Otherwise → ``rds``.
 
 This is intentionally implicit rather than introducing yet another
 ``RDS_PROVIDER`` env var: the existing flags already encode the intent
@@ -32,6 +32,9 @@ def get_rds_provider():
     if config.USE_MOCK_RDS:
         from chatroom_api import mock_rds
         return mock_rds
+    if config.RDS_HOST or config.RDS_SECRET_ARN or config.RDS_DATABASE:
+        from chatroom_api import rds
+        return rds
     if config.MGMT_API_URL:
         from chatroom_api import management_api_rds
         return management_api_rds

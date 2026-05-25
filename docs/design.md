@@ -124,7 +124,15 @@ Future settings (out of scope for beta)
 - Use URL `chatroom.stimulize.org` (better data segregation than `stimulize.org/chatroom`).
 
 ### Billing
-- Token-based usage tracking, mirroring Bedrock pricing (input + output tokens).
+- Token-based usage tracking, mirroring Bedrock pricing (input + output tokens), with one persisted usage row per billable model invocation and write-time `estimated_cost_usd` so historical records stay stable if provider pricing changes later.
+- Decision on write path:
+  - Option A: runtime writes usage through the management API.
+  - Option B: runtime writes usage directly to Stimulize Postgres.
+  - Decision: **Option B**.
+  - Brief comparison:
+    - Option A adds one more network hop, one more auth surface, and turns the management backend into a write-through proxy for data the runtime already owns.
+    - Option B keeps the billable event adjacent to the Bedrock invocation, reduces moving parts, and makes idempotent `usage_event_id` writes straightforward.
+  - Result: management API is read-only for billing aggregation; the chatroom runtime writes `chatroom_usage` rows directly to RDS.
 
 
 ## Design Details
@@ -612,6 +620,18 @@ Technical:
 - Need to lock down chatroom prompt - edits in chatroom will impact ongoing conversation; ai prompt will change
   - simple solution: show "ongoing conversation count" and let user save only when count is 0.
   - better solution: "publish" action with "revision"
+
+
+### 4rd Team Review Raw Feedback
+
+AI behaviour:
+should prioritize "listen and rely to human" over "stick on the given topic"
+
+add "xxx exit chat"
+
+fix
+- rejoin chatroom
+- in qualtrics preview mode, should use same conversation instance
 
 
 ### Lobby table schema: `lobby_id` PK vs `chatroom_id` PK

@@ -6,8 +6,8 @@ Covers:
 - ``get_chatroom`` returns ``None`` on 404.
 - ``get_chatroom`` raises on other HTTP errors (so the widget surfaces
   500 rather than masquerading as "not found").
-- ``write_usage`` is a no-op (does not call out — important since the
-  management API has no usage-write endpoint today).
+- ``write_usage`` fails fast because billing writes must use direct Postgres,
+  not the management-API fallback.
 - The ``_providers.get_rds_provider`` selector picks this module when
   ``USE_MOCK_RDS=false`` and ``MGMT_API_URL`` is set.
 """
@@ -119,14 +119,24 @@ class TestGetChatroom:
 
 class TestWriteUsage:
 
-    def test_is_noop(self):
-        # Must not issue any HTTP call — the management API has no usage-write endpoint.
+    def test_fails_fast(self):
         with patch("chatroom_api.management_api_rds.requests.post") as post_mock, \
              patch("chatroom_api.management_api_rds.requests.put") as put_mock, \
              patch("chatroom_api.management_api_rds.requests.get") as get_mock:
-            management_api_rds.write_usage(
-                "scid_x", "conv-1", "sess-1", input_tokens=10, output_tokens=20
-            )
+            with pytest.raises(RuntimeError):
+                management_api_rds.write_usage(
+                    usage_event_id="usage-1",
+                    owner_id=1,
+                    chatroom_id="scid_x",
+                    conversation_id="conv-1",
+                    session_id="sess-1",
+                    provider="bedrock",
+                    model_id="global.anthropic.claude-sonnet-4-6",
+                    pricing_key="bedrock_claude_sonnet_4_6_global_standard",
+                    input_tokens=10,
+                    output_tokens=20,
+                    estimated_cost_usd="0.00033000",
+                )
         post_mock.assert_not_called()
         put_mock.assert_not_called()
         get_mock.assert_not_called()
@@ -141,9 +151,21 @@ class TestProviderSelection:
              patch.object(config, "MGMT_API_URL", "https://mgmt.example.com"):
             assert _providers.get_rds_provider() is mock_rds
 
-    def test_management_api_when_url_set_and_mock_off(self):
+    def test_prefers_direct_postgres_when_rds_config_present(self):
+        from chatroom_api import _providers, rds
+        with patch.object(config, "USE_MOCK_RDS", False), \
+             patch.object(config, "RDS_HOST", "db.example.com"), \
+             patch.object(config, "RDS_SECRET_ARN", ""), \
+             patch.object(config, "RDS_DATABASE", ""), \
+             patch.object(config, "MGMT_API_URL", "https://mgmt.example.com"):
+            assert _providers.get_rds_provider() is rds
+
+    def test_management_api_only_when_rds_config_absent(self):
         from chatroom_api import _providers
         with patch.object(config, "USE_MOCK_RDS", False), \
+             patch.object(config, "RDS_HOST", ""), \
+             patch.object(config, "RDS_SECRET_ARN", ""), \
+             patch.object(config, "RDS_DATABASE", ""), \
              patch.object(config, "MGMT_API_URL", "https://mgmt.example.com"):
             assert _providers.get_rds_provider() is management_api_rds
 

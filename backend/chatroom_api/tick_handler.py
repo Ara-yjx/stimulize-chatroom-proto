@@ -36,6 +36,7 @@ from chatroom_api.constants import TICK_DEDUPE_WINDOW_MS
 from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.delays import compute_visible_at, pick_delays_ms
 from chatroom_api.gate import run_gate
+from chatroom_api.pricing import estimate_cost_usd
 from chatroom_api.prompts.speech_scaffold import (
     SPEAK_TOOL_CONFIG,  # re-exported for callers that want to inspect it
     format_topic_block,
@@ -62,7 +63,9 @@ def _invoke_with_model_fallback(
     the chat loop keeps working while the saved config catches up.
     """
     try:
-        return invoke_speak_tool(model_id, system_prompt, bedrock_messages)
+        result = invoke_speak_tool(model_id, system_prompt, bedrock_messages)
+        result["resolved_model_id"] = model_id
+        return result
     except BedrockInferenceError as err:
         if err.error_type != "ResourceNotFoundException" or model_id == _DEFAULT_MODEL_ID:
             raise
@@ -72,7 +75,9 @@ def _invoke_with_model_fallback(
             model_id,
             _DEFAULT_MODEL_ID,
         )
-        return invoke_speak_tool(_DEFAULT_MODEL_ID, system_prompt, bedrock_messages)
+        result = invoke_speak_tool(_DEFAULT_MODEL_ID, system_prompt, bedrock_messages)
+        result["resolved_model_id"] = _DEFAULT_MODEL_ID
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +261,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         return None
 
     db = _get_db()
+    rds = _get_rds()
     now_ms = _now_ms()
 
     # --- Step 1: idempotency guard. ----------------------------------------
@@ -399,6 +405,41 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     messages = result.get("messages", []) or []
     input_tokens = result.get("input_tokens", 0)
     output_tokens = result.get("output_tokens", 0)
+    resolved_model_id = result.get("resolved_model_id") or model_id
+    provider = "bedrock"
+
+    try:
+        chatroom = rds.get_chatroom(chatroom_id) if chatroom_id else None
+        owner_id = (chatroom or {}).get("owner_id")
+        if owner_id is None:
+            logger.warning("tick: owner_id missing for chatroom %s; skipping usage write", chatroom_id)
+        else:
+            pricing_key, estimated_cost_usd = estimate_cost_usd(
+                provider,
+                resolved_model_id,
+                input_tokens,
+                output_tokens,
+            )
+            rds.write_usage(
+                usage_event_id=f"{conversation_id}:{now_ms}:{candidate_session_id}",
+                owner_id=owner_id,
+                chatroom_id=chatroom_id,
+                conversation_id=conversation_id,
+                session_id=candidate_session_id,
+                provider=provider,
+                model_id=resolved_model_id,
+                pricing_key=pricing_key,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_cost_usd=estimated_cost_usd,
+                invoked_at=datetime.fromtimestamp(now_ms / 1000, timezone.utc),
+                raw_usage_json={
+                    "bedrock_invoked": True,
+                    "messages_count": len(messages),
+                },
+            )
+    except Exception as usage_exc:
+        logger.warning("tick: usage write failed for conversation %s: %s", conversation_id, usage_exc)
 
     # --- Step 5: append tick + AI messages with stacked visible_at. --------
     new_events: list[dict] = [_make_tick_event(

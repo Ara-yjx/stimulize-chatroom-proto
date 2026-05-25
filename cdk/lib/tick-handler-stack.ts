@@ -24,9 +24,9 @@ export interface TickHandlerStackProps extends StackProps {
  * for one conversation.
  *
  * Deployed outside the VPC for beta so it can reach Bedrock, DynamoDB, and
- * Secrets Manager without NAT/VPC-endpoint plumbing. RDS access is not
- * required at runtime — the chatroom_setting needed for ticking is
- * snapshotted onto the conversation row at lobby-close time.
+ * Secrets Manager without NAT/VPC-endpoint plumbing. It also reaches the
+ * shared Postgres cluster directly so each model invocation can write a usage
+ * row for later aggregation in the Stimulize backend.
  *
  * See `docs/low-level-design.md` → "Async AI Conversation Flow".
  */
@@ -37,6 +37,15 @@ export class TickHandlerStack extends Stack {
     super(scope, id, props);
 
     const { conversationTable, lobbyTable, jwtSecret, adminToken } = props;
+    const rdsHost = this.node.tryGetContext("rdsHost") as string;
+    const rdsPort = this.node.tryGetContext("rdsPort") as string || "5432";
+    const rdsDatabase = this.node.tryGetContext("rdsDatabase") as string || "postgres";
+    const rdsSecretArn = this.node.tryGetContext("rdsSecretArn") as string;
+    const rdsSecret = secretsmanager.Secret.fromSecretCompleteArn(
+      this,
+      "TickHandlerRdsSecret",
+      rdsSecretArn,
+    );
 
     this.lambdaFunction = new lambda.Function(this, "TickHandlerFunction", {
       functionName: "chatroom-tick-handler",
@@ -53,6 +62,10 @@ export class TickHandlerStack extends Stack {
         LOBBY_TABLE: lobbyTable.tableName,
         JWT_SECRET_ARN: jwtSecret.secretArn,
         ADMIN_TOKEN_SECRET_ARN: adminToken.secretArn,
+        RDS_HOST: rdsHost,
+        RDS_PORT: rdsPort,
+        RDS_DATABASE: rdsDatabase,
+        RDS_SECRET_ARN: rdsSecret.secretArn,
         BEDROCK_REGION: "us-east-2",
         USE_MOCK_DYNAMO: "false",
         USE_MOCK_RDS: "false",
@@ -84,5 +97,6 @@ export class TickHandlerStack extends Stack {
     // but kept symmetric with chatroom-api so shared helpers initialize cleanly.
     jwtSecret.grantRead(this.lambdaFunction);
     adminToken.grantRead(this.lambdaFunction);
+    rdsSecret.grantRead(this.lambdaFunction);
   }
 }

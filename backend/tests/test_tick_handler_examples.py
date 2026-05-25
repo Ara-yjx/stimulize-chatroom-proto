@@ -19,6 +19,7 @@ def _seed(*, max_duration_seconds=None, started_at_ms=None):
     config.USE_MOCK_LOBBY = True
     mock_dynamo.reset()
     mock_lobby.reset()
+    mock_rds._usage_records.clear()
 
     cid = "conv-" + uuid.uuid4().hex
     started_at_ms = started_at_ms or 1_700_000_000_000
@@ -136,3 +137,12 @@ def test_bedrock_resource_not_found_falls_back_to_default_model():
     assert calls == ["test-model", tick_handler._DEFAULT_MODEL_ID]
     events = mock_dynamo.get_events(cid)
     assert any(e.get("type") == "message" and e.get("content") == "fallback worked" for e in events)
+    assert len(mock_rds._usage_records) == 1
+    usage = mock_rds._usage_records[0]
+    assert usage["chatroom_id"] == CHATROOM_ID
+    assert usage["provider"] == "bedrock"
+    assert usage["model_id"] == tick_handler._DEFAULT_MODEL_ID
+    assert usage["pricing_key"] == "bedrock_claude_sonnet_4_6_global_standard"
+    assert usage["input_tokens"] == 1
+    assert usage["output_tokens"] == 1
+    assert usage["estimated_cost_usd"] > 0

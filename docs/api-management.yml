@@ -9,12 +9,10 @@ info:
 
     Auth: all endpoints require `Authorization: Bearer <token>` (see securitySchemes).
 
-    Note: Lambda reads chatroom settings and writes usage directly to RDS —
-    no internal management API endpoints needed for Phase 1.
-    # will-do: If Lambda moves to SQS-based usage reporting (Phase 2+),
-    # add POST /internal/usage endpoint here.
-    # will-do: If Lambda stops reading RDS directly,
-    # add GET /internal/chatroom/{id} endpoint here.
+    Note: the runtime Lambda reads chatroom settings directly from Stimulize
+    Postgres and writes one usage row per billable model invocation into
+    `chatroom_usage`. The editor reads aggregated usage totals through the
+    management API endpoints below.
 
 servers:
   - url: https://mock-mgmt.stimulize.org
@@ -135,35 +133,37 @@ paths:
     post:
       tags: [usage]
       summary: Get chatroom usage totals
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UsageQuery"
       parameters:
         - $ref: "#/components/parameters/ChatroomId"
-        - name: from
-          in: query
-          schema:
-            type: string
-            format: date
-          description: Start date filter (ISO date)
-        - name: to
-          in: query
-          schema:
-            type: string
-            format: date
-          description: End date filter (ISO date)
       responses:
         "200":
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  chatroom_id:
-                    type: string
-                  input_tokens:
-                    type: integer
-                  output_tokens:
-                    type: integer
-                  total_tokens:
-                    type: integer
+                $ref: "#/components/schemas/ChatroomUsageResponse"
+
+  /api/getUserUsage:
+    post:
+      tags: [usage]
+      summary: Get aggregated usage for the authenticated user
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UsageQuery"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserUsageResponse"
 
 components:
   securitySchemes:
@@ -238,6 +238,126 @@ components:
         id:
           type: string
           example: scid_550e8400-e29b-41d4-a716-446655440000
+    UsageQuery:
+      type: object
+      properties:
+        period:
+          type: string
+          enum: [hour, day, week, month]
+          nullable: true
+        from:
+          type: string
+          format: date-time
+          nullable: true
+        to:
+          type: string
+          format: date-time
+          nullable: true
+    UsageTotals:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        estimated_cost_usd:
+          type: number
+          format: double
+    UsageSeriesBucket:
+      type: object
+      properties:
+        period_start:
+          type: string
+          format: date-time
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        estimated_cost_usd:
+          type: number
+          format: double
+    ChatroomUsageEnvelope:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum: [chatroom]
+        chatroom_id:
+          type: string
+        period:
+          type: string
+          enum: [hour, day, week, month]
+          nullable: true
+        from:
+          type: string
+          format: date-time
+          nullable: true
+        to:
+          type: string
+          format: date-time
+          nullable: true
+        totals:
+          $ref: "#/components/schemas/UsageTotals"
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageSeriesBucket"
+    UserUsageEnvelope:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum: [user]
+        user_id:
+          type: integer
+        period:
+          type: string
+          enum: [hour, day, week, month]
+          nullable: true
+        from:
+          type: string
+          format: date-time
+          nullable: true
+        to:
+          type: string
+          format: date-time
+          nullable: true
+        totals:
+          $ref: "#/components/schemas/UsageTotals"
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageSeriesBucket"
+    ChatroomUsageResponse:
+      type: object
+      properties:
+        meta:
+          type: object
+          properties:
+            code:
+              type: integer
+            message:
+              type: string
+        data:
+          type: object
+          properties:
+            usage:
+              $ref: "#/components/schemas/ChatroomUsageEnvelope"
+    UserUsageResponse:
+      type: object
+      properties:
+        meta:
+          type: object
+          properties:
+            code:
+              type: integer
+            message:
+              type: string
+        data:
+          type: object
+          properties:
+            usage:
+              $ref: "#/components/schemas/UserUsageEnvelope"
         name:
           type: string
         status:

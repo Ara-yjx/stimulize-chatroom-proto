@@ -1,22 +1,12 @@
-"""HTTP-backed RDS provider that talks to the management API.
+"""HTTP-backed fallback provider that talks to the management API.
 
 Same interface as ``rds.py`` and ``mock_rds.py``, so the rest of the
-codebase can swap implementations transparently. Selected when
-``USE_MOCK_RDS=false`` and ``MGMT_API_URL`` is set (see
-``auth.py::_get_rds`` and friends).
+codebase can swap implementations transparently. Selected only when direct
+Postgres is intentionally unavailable and ``MGMT_API_URL`` is set.
 
-Why HTTP instead of Postgres direct: in beta, the chatroom backend lives
-in a different account/network from Stimulize's Postgres. Going through
-the management API keeps Lambda out of the Stimulize VPC. In prod, this
-provider can be replaced (or kept) depending on whether Lambda gets
-direct DB access.
-
-Usage write path is a no-op today: the management API does not expose a
-usage-write endpoint (only ``POST /api/getChatroom/:id`` for chatroom lookups).
-Per-tick token counts are already persisted on the conversation row's
-tick events, so no data is lost. A ``POST /internal/usage`` endpoint is
-on the prod TODO list (see ``docs/api-management.yml``); once it lands,
-``write_usage`` will issue an HTTP write here.
+This path is read-only by design. Usage accounting must write directly to
+Postgres so the billing row is created atomically from the runtime side
+without an extra management-API hop.
 """
 
 from __future__ import annotations
@@ -77,25 +67,23 @@ def get_chatroom(chatroom_id: str) -> Optional[dict]:
 
 
 def write_usage(
+    *,
+    usage_event_id: str,
+    owner_id: int | str,
     chatroom_id: str,
     conversation_id: str,
     session_id: str,
+    provider: str,
+    model_id: str,
+    pricing_key: str,
     input_tokens: int,
     output_tokens: int,
+    estimated_cost_usd,
+    invoked_at=None,
+    raw_usage_json: dict | None = None,
 ) -> None:
-    """No-op for beta — management API has no usage-write endpoint.
-
-    Per-tick token counts are still persisted on the conversation row's
-    tick events (see ``tick_handler._make_tick_event``), so usage data is
-    not lost; it just isn't aggregated centrally yet. Will become an HTTP
-    POST once ``POST /internal/usage`` is added to the management API.
-    """
-    logger.debug(
-        "management_api_rds.write_usage no-op "
-        "(chatroom=%s, conversation=%s, session=%s, in=%d, out=%d)",
-        chatroom_id,
-        conversation_id,
-        session_id,
-        input_tokens,
-        output_tokens,
+    """Usage writes are unsupported on the management-API fallback path."""
+    raise RuntimeError(
+        "management_api_rds does not support write_usage; "
+        "configure direct Postgres access for billing writes"
     )
