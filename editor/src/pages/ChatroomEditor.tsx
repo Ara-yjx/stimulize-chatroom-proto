@@ -17,6 +17,7 @@ import {
 } from '../lib/chatroomSetting'
 import ScriptGenerator from '../components/ScriptGenerator'
 import WidgetPreview from '../components/WidgetPreview'
+import { chatroomUsageRoute } from '../routes'
 
 const TextArea = Input.TextArea
 const FormItem = Form.Item
@@ -336,6 +337,11 @@ export default function ChatroomEditor() {
     }
   }
 
+  const handleOpenUsage = () => {
+    const url = `${window.location.origin}${import.meta.env.BASE_URL}#${chatroomUsageRoute(id ?? '')}`
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
   if (loading) return <Spin style={{ display: 'block', margin: '80px auto' }} />
   if (!chatroom) return <div style={{ padding: 24 }}>Chatroom not found</div>
 
@@ -365,9 +371,14 @@ export default function ChatroomEditor() {
           borderBottom: '1px solid #f0f0f0',
         }}>
           <h2 style={{ margin: 0 }}>Edit Chatroom</h2>
-          <Button type="primary" loading={saving} onClick={handleSaveSafe}>
-            Save
-          </Button>
+          <Space>
+            <Button onClick={handleOpenUsage}>
+              Token Usage
+            </Button>
+            <Button type="primary" loading={saving} onClick={handleSaveSafe}>
+              Save
+            </Button>
+          </Space>
         </div>
 
         <div style={{ marginBottom: 8, color: '#86909c', fontSize: 13 }}>

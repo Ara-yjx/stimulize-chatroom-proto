@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Layout, Menu, Input, Button, Message } from '@arco-design/web-react'
 import ChatroomList from './pages/ChatroomList'
 import ChatroomEditor from './pages/ChatroomEditor'
+import ChatroomUsage from './pages/ChatroomUsage'
 import { CHATROOM_LIST_ROUTE } from './routes'
 import {
   getAuthenticatedUsername,
@@ -108,6 +109,7 @@ export default function App() {
       <Content style={{ background: '#f7f8fa' }}>
         <Routes>
           <Route path={CHATROOM_LIST_ROUTE} element={<ChatroomList />} />
+          <Route path={`${CHATROOM_LIST_ROUTE}/:id/usage`} element={<ChatroomUsage />} />
           <Route path={`${CHATROOM_LIST_ROUTE}/:id`} element={<ChatroomEditor />} />
           <Route path="/chatrooms" element={<Navigate to={CHATROOM_LIST_ROUTE} replace />} />
           <Route path="/chatrooms/:id" element={<LegacyChatroomDetailRedirect />} />
