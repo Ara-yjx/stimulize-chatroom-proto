@@ -4,7 +4,21 @@
  * "Editor → Management API".
  */
 import { MANAGEMENT_API_URL } from '../config'
-import { getManagementToken, hasRefreshableCredentials } from './managementAuth'
+import { getManagementToken, hasRefreshableCredentials, logoutManagement } from './managementAuth'
+
+export class ManagementAuthExpiredError extends Error {
+  status: number
+
+  constructor(message = '登录已过期') {
+    super(message)
+    this.name = 'ManagementAuthExpiredError'
+    this.status = 401
+  }
+}
+
+export function isManagementAuthExpiredError(error: unknown): error is ManagementAuthExpiredError {
+  return error instanceof ManagementAuthExpiredError
+}
 
 function unwrapPayload<T>(payload: unknown): T {
   if (!payload || typeof payload !== 'object') return payload as T
@@ -54,6 +68,10 @@ export async function mgmtFetchJson<T>(path: string, init: RequestInit = {}): Pr
       typeof payload.error === 'string'
         ? payload.error
         : `Management API request failed (${resp.status})`
+    if (resp.status === 401) {
+      logoutManagement()
+      throw new ManagementAuthExpiredError('登录已过期')
+    }
     throw new Error(errorMessage)
   }
 

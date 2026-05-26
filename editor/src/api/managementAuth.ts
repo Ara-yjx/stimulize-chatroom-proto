@@ -5,57 +5,102 @@ import {
   MANAGEMENT_API_USERNAME,
 } from '../config'
 
-const TOKEN_STORAGE_KEY = 'stimulize.editor.managementToken'
-const USERNAME_STORAGE_KEY = 'stimulize.editor.managementUsername'
+const AUTH_STORAGE_KEY = 'stimulize.editor.managementAuth'
+const TOKEN_TTL_MS = 3 * 60 * 60 * 1000
 
-function loadStoredToken(): string {
-  if (typeof window === 'undefined') return ''
-  try {
-    return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? ''
-  } catch {
-    return ''
-  }
+type StoredManagementAuth = {
+  token: string
+  username: string
+  tokenCreatedAt: number
+  tokenExpiresAt: number
 }
 
-function loadStoredUsername(): string {
-  if (typeof window === 'undefined') return ''
-  try {
-    return window.sessionStorage.getItem(USERNAME_STORAGE_KEY) ?? ''
-  } catch {
-    return ''
-  }
-}
-
-function persistToken(token: string): void {
+function clearStoredAuth(): void {
   if (typeof window === 'undefined') return
   try {
-    if (token) {
-      window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token)
-    } else {
-      window.sessionStorage.removeItem(TOKEN_STORAGE_KEY)
-    }
+    window.localStorage.removeItem(AUTH_STORAGE_KEY)
   } catch {
     // Ignore storage failures and keep using in-memory auth.
   }
 }
 
-function persistUsername(username: string): void {
-  if (typeof window === 'undefined') return
+function isStoredManagementAuth(value: unknown): value is StoredManagementAuth {
+  if (!value || typeof value !== 'object') return false
+  const auth = value as Partial<StoredManagementAuth>
+  return (
+    typeof auth.token === 'string' &&
+    typeof auth.username === 'string' &&
+    typeof auth.tokenCreatedAt === 'number' &&
+    typeof auth.tokenExpiresAt === 'number'
+  )
+}
+
+function loadStoredAuth(): StoredManagementAuth | null {
+  if (typeof window === 'undefined') return null
   try {
-    if (username) {
-      window.sessionStorage.setItem(USERNAME_STORAGE_KEY, username)
-    } else {
-      window.sessionStorage.removeItem(USERNAME_STORAGE_KEY)
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as unknown
+    if (!isStoredManagementAuth(parsed)) {
+      clearStoredAuth()
+      return null
     }
+    if (Date.now() >= parsed.tokenExpiresAt) {
+      clearStoredAuth()
+      return null
+    }
+    return parsed
   } catch {
-    // Ignore storage failures and keep using in-memory auth.
+    return null
   }
 }
 
-let cachedToken = loadStoredToken() || MANAGEMENT_API_TOKEN
+function persistAuth(token: string, username: string): number | null {
+  if (!token) {
+    clearStoredAuth()
+    return null
+  }
+  const tokenCreatedAt = Date.now()
+  const tokenExpiresAt = tokenCreatedAt + TOKEN_TTL_MS
+  if (typeof window !== 'undefined') {
+    try {
+      const auth: StoredManagementAuth = {
+        token,
+        username,
+        tokenCreatedAt,
+        tokenExpiresAt,
+      }
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth))
+    } catch {
+      // Ignore storage failures and keep using in-memory auth.
+    }
+  }
+  return tokenExpiresAt
+}
+
+function clearCachedAuth(): void {
+  cachedToken = ''
+  cachedTokenExpiresAt = null
+  authenticatedUsername = ''
+  clearStoredAuth()
+}
+
+function hasUsableToken(): boolean {
+  if (!cachedToken) return false
+  if (cachedTokenExpiresAt !== null && Date.now() >= cachedTokenExpiresAt) {
+    clearCachedAuth()
+    return false
+  }
+  return true
+}
+
+const storedAuth = loadStoredAuth()
+
+let cachedToken = storedAuth?.token || MANAGEMENT_API_TOKEN
+let cachedTokenExpiresAt = storedAuth?.tokenExpiresAt ?? null
 let cachedUsername = MANAGEMENT_API_USERNAME
 let cachedPassword = MANAGEMENT_API_PASSWORD
-let authenticatedUsername = loadStoredUsername()
+let authenticatedUsername = storedAuth?.username ?? ''
 let loginPromise: Promise<string> | null = null
 
 export async function loginForToken(): Promise<string> {
@@ -99,9 +144,8 @@ export async function loginForToken(): Promise<string> {
 
     if (!token) throw new Error('Management API login did not return an access token')
     cachedToken = token
-    persistToken(token)
     authenticatedUsername = cachedUsername
-    persistUsername(authenticatedUsername)
+    cachedTokenExpiresAt = persistAuth(token, authenticatedUsername)
     return token
   })()
 
@@ -113,11 +157,11 @@ export async function loginForToken(): Promise<string> {
 }
 
 export async function getManagementToken(forceRefresh = false): Promise<string> {
-  if (!forceRefresh && cachedToken) return cachedToken
+  if (!forceRefresh && hasUsableToken()) return cachedToken
   if (cachedUsername && cachedPassword) {
     return loginForToken()
   }
-  if (cachedToken) return cachedToken
+  if (hasUsableToken()) return cachedToken
   throw new Error('No management API token or login credentials configured')
 }
 
@@ -126,26 +170,21 @@ export function hasRefreshableCredentials(): boolean {
 }
 
 export function hasManagementToken(): boolean {
-  return Boolean(cachedToken)
+  return hasUsableToken()
 }
 
 export function getAuthenticatedUsername(): string {
+  hasUsableToken()
   return authenticatedUsername
 }
 
 export async function loginWithCredentials(username: string, password: string): Promise<void> {
   cachedUsername = username.trim()
   cachedPassword = password
-  cachedToken = ''
-  persistToken('')
-  authenticatedUsername = ''
-  persistUsername('')
+  clearCachedAuth()
   await loginForToken()
 }
 
 export function logoutManagement(): void {
-  cachedToken = ''
-  persistToken('')
-  authenticatedUsername = ''
-  persistUsername('')
+  clearCachedAuth()
 }

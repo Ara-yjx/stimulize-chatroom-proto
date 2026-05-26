@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useParams } from 'react-router-dom'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import {
-  Form, Input, InputNumber, Switch, Select, Button, Message, Spin, Radio, Space, Popover,
+  Form, Input, InputNumber, Switch, Select, Button, Message, Spin, Radio, Space, Popover, Modal,
 } from '@arco-design/web-react'
 import { IconDelete, IconPlus, IconQuestionCircle } from '@arco-design/web-react/icon'
-import { mgmtFetchJson } from '../api/management'
-import { hasManagementToken } from '../api/managementAuth'
+import { isManagementAuthExpiredError, mgmtFetchJson } from '../api/management'
+import { hasManagementToken, logoutManagement } from '../api/managementAuth'
 import {
   ChatroomSetting,
   ChatroomMode,
@@ -19,7 +19,7 @@ import {
 } from '../lib/chatroomSetting'
 import ScriptGenerator from '../components/ScriptGenerator'
 import WidgetPreview from '../components/WidgetPreview'
-import { chatroomUsageRoute } from '../routes'
+import { CHATROOM_LIST_ROUTE, chatroomUsageRoute } from '../routes'
 
 const TextArea = Input.TextArea
 const FormItem = Form.Item
@@ -260,10 +260,12 @@ function normalizeLoadedSetting(setting: Partial<ChatroomSetting> | undefined): 
 
 export default function ChatroomEditor() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const [chatroom, setChatroom] = useState<Chatroom | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm<FormValues>()
+  const sessionExpiredModalShownRef = useRef(false)
   const watchedMode = Form.useWatch('mode', form) as ChatroomMode | undefined
   const watchedTargetHumanCount = Form.useWatch('target_human_count', form) as number | undefined
   const watchedAiStrategy = Form.useWatch('ai_join_strategy', form) as string | undefined
@@ -273,6 +275,28 @@ export default function ChatroomEditor() {
     if (typeof watchedTimerMaxMinutes === 'undefined') return
     form.setFieldValue('max_duration_seconds', deriveMaxDurationSeconds(watchedTimerMaxMinutes ?? null))
   }, [form, watchedTimerMaxMinutes])
+
+  const showSessionExpiredModal = useCallback(() => {
+    if (sessionExpiredModalShownRef.current) return
+    sessionExpiredModalShownRef.current = true
+    logoutManagement()
+    Modal.confirm({
+      title: '登录已过期',
+      content: '请重新登录。',
+      okText: '确定',
+      hideCancel: true,
+      onOk: () => {
+        sessionExpiredModalShownRef.current = false
+        navigate(CHATROOM_LIST_ROUTE, { replace: true })
+      },
+      onCancel: () => {
+        sessionExpiredModalShownRef.current = false
+      },
+      afterClose: () => {
+        sessionExpiredModalShownRef.current = false
+      },
+    })
+  }, [navigate])
 
   const fetchChatroom = useCallback(async () => {
     if (!hasManagementToken()) {
@@ -302,7 +326,7 @@ export default function ChatroomEditor() {
 
   const handleSave = async () => {
     if (!hasManagementToken()) {
-      Message.warning('Please log in first')
+      showSessionExpiredModal()
       return
     }
     const values = await form.validate()
@@ -361,6 +385,10 @@ export default function ChatroomEditor() {
     try {
       await handleSave()
     } catch (e: unknown) {
+      if (isManagementAuthExpiredError(e)) {
+        showSessionExpiredModal()
+        return
+      }
       // Already surfaced via Message.error in handleSave / form.validate.
       if (e instanceof Error && !e.message.startsWith('Validation')) {
         Message.error(e.message)
