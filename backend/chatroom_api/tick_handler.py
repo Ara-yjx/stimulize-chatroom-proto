@@ -190,6 +190,80 @@ def _render_history_block(conv: dict, now_ms: int) -> str:
     return "\n".join(lines) if lines else "(empty)"
 
 
+def _build_static_prefix_block(mode: str) -> str:
+    """Return the large static scaffold/examples block for this mode."""
+    return get_scaffold_for_mode(mode)
+
+
+def _build_semi_static_setup_blocks(
+    chatroom_setting: dict,
+    persona: str,
+    my_nickname: str,
+    participant_nicknames: list[str] | None = None,
+) -> list[str]:
+    """Return the mostly-stable per-chatroom / per-AI setup blocks.
+
+    This intentionally excludes the scaffold/examples block and the dynamic
+    conversation-history block. The returned block order matches the current
+    prompt shape so this refactor does not change model behavior yet.
+    """
+    parts: list[str] = []
+    topic = format_topic_block(chatroom_setting.get("topic_instruction", ""))
+    if topic:
+        parts.append(topic)
+    if persona:
+        parts.append(f"<your-persona>\n{persona}\n</your-persona>")
+    if participant_nicknames:
+        listed = sorted(set(participant_nicknames))
+        rendered = "\n".join(
+            f"- {n} (you)" if n == my_nickname else f"- {n}"
+            for n in listed
+        )
+        parts.append(f"<participants>\n{rendered}\n</participants>")
+    parts.append(f"<your-name>\n{my_nickname}\n</your-name>")
+    return parts
+
+
+def _build_dynamic_context_block(history_block: str) -> str:
+    """Return the current dynamic context block.
+
+    Phase 1 keeps the existing full visible history. Later phases can replace
+    this with summary + recent window without changing the outer assembly path.
+    """
+    return f"<conversation-history>\n{history_block}\n</conversation-history>"
+
+
+def _build_additional_prompt_block(chatroom_setting: dict) -> str:
+    """Return the optional last-mile reminder block."""
+    return (chatroom_setting.get("additional_prompt") or "").strip()
+
+
+def _build_prompt_blocks(
+    mode: str,
+    chatroom_setting: dict,
+    persona: str,
+    my_nickname: str,
+    history_block: str,
+    participant_nicknames: list[str] | None = None,
+) -> dict[str, str | list[str]]:
+    """Return explicit prompt segments for the current tick.
+
+    This is the first step of the token-saver refactor: make the prompt
+    structure explicit without changing prompt content yet.
+    """
+    return {
+        "static_prefix": _build_static_prefix_block(mode),
+        "semi_static_setup": _build_semi_static_setup_blocks(
+            chatroom_setting,
+            persona,
+            my_nickname,
+            participant_nicknames=participant_nicknames,
+        ),
+        "dynamic_context": _build_dynamic_context_block(history_block),
+        "additional_prompt": _build_additional_prompt_block(chatroom_setting),
+    }
+
+
 def _build_system_prompt(
     mode: str,
     chatroom_setting: dict,
@@ -215,33 +289,39 @@ def _build_system_prompt(
     last-mile reminders (e.g. "stay one-thought-per-turn") are the most
     recent thing the model sees before deciding what to say.
     """
-    scaffold = get_scaffold_for_mode(mode)
-    topic = format_topic_block(chatroom_setting.get("topic_instruction", ""))
-
-    parts: list[str] = [scaffold]
-    if topic:
-        parts.append(topic)
-    if persona:
-        parts.append(f"<your-persona>\n{persona}\n</your-persona>")
-    if participant_nicknames:
-        # Sort for stable prompts across ticks (Bedrock is stateless, but
-        # cross-tick consistency helps debugging and prompt caching). The
-        # caller's own nickname is annotated so the AI doesn't address
-        # itself when scanning for "who hasn't spoken".
-        listed = sorted(set(participant_nicknames))
-        rendered = "\n".join(
-            f"- {n} (you)" if n == my_nickname else f"- {n}"
-            for n in listed
-        )
-        parts.append(f"<participants>\n{rendered}\n</participants>")
-    parts.append(
-        f"<your-name>\n{my_nickname}\n</your-name>\n\n"
-        f"<conversation-history>\n{history_block}\n</conversation-history>"
+    blocks = _build_prompt_blocks(
+        mode,
+        chatroom_setting,
+        persona,
+        my_nickname,
+        history_block,
+        participant_nicknames=participant_nicknames,
     )
-    additional = (chatroom_setting.get("additional_prompt") or "").strip()
+    parts: list[str] = [str(blocks["static_prefix"])]
+    parts.extend(blocks["semi_static_setup"])
+    parts.append(str(blocks["dynamic_context"]))
+    additional = str(blocks["additional_prompt"])
     if additional:
         parts.append(additional)
     return "\n".join(parts)
+
+
+def _build_tick_trigger_message() -> dict:
+    """Return the thin user-side trigger appended when history ends on assistant.
+
+    The trigger stays separate from the system prompt so the provider request
+    remains well-formed even when visible history is empty.
+    """
+    return {
+        "role": "user",
+        "content": [{
+            "text": (
+                "Based on the conversation above, decide whether to speak. "
+                "Always call the `speak` tool. If you choose silence, call "
+                "it with an empty messages array."
+            )
+        }],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -357,16 +437,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     # "trigger" so the call is well-formed and the model has a clear cue to
     # call the speak tool. Mirrors ``experiment/group-poc.js``.
     if not bedrock_messages or bedrock_messages[-1]["role"] == "assistant":
-        bedrock_messages = (bedrock_messages or []) + [{
-            "role": "user",
-            "content": [{
-                "text": (
-                    "Based on the conversation above, decide whether to speak. "
-                    "Always call the `speak` tool. If you choose silence, call "
-                    "it with an empty messages array."
-                )
-            }],
-        }]
+        bedrock_messages = (bedrock_messages or []) + [_build_tick_trigger_message()]
 
     model_id = (
         (candidate_participant or {}).get("model_id")

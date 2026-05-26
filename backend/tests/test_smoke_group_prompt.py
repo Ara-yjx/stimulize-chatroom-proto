@@ -8,7 +8,12 @@ that mirrors the ``experiment/group-poc.js`` flow. No real Bedrock call.
 from __future__ import annotations
 
 from chatroom_api.conversation import build_bedrock_messages
-from chatroom_api.tick_handler import _build_system_prompt, _render_history_block
+from chatroom_api.tick_handler import (
+    _build_prompt_blocks,
+    _build_system_prompt,
+    _build_tick_trigger_message,
+    _render_history_block,
+)
 
 
 def _conv() -> dict:
@@ -119,6 +124,29 @@ def test_system_prompt_omits_participants_when_not_passed() -> None:
     assert "<participants>" not in prompt
 
 
+def test_prompt_blocks_are_split_as_expected() -> None:
+    conv = _conv()
+    conv["chatroom_setting"]["additional_prompt"] = "Reminder: stay concise."
+    history = _render_history_block(conv, now_ms=20_000)
+    blocks = _build_prompt_blocks(
+        mode="group",
+        chatroom_setting=conv["chatroom_setting"],
+        persona="upenn sophomore",
+        my_nickname="Mars",
+        history_block=history,
+        participant_nicknames=[p["nickname"] for p in conv["participants"]],
+    )
+
+    assert "Output format" in blocks["static_prefix"]
+    semi_static = "\n".join(blocks["semi_static_setup"])
+    assert "# Chatroom topic" in semi_static
+    assert "<your-persona>" in semi_static
+    assert "<participants>" in semi_static
+    assert "<your-name>" in semi_static
+    assert "<conversation-history>" in blocks["dynamic_context"]
+    assert blocks["additional_prompt"] == "Reminder: stay concise."
+
+
 def test_system_prompt_appends_additional_prompt_after_history() -> None:
     conv = _conv()
     conv["chatroom_setting"]["additional_prompt"] = (
@@ -152,6 +180,14 @@ def test_system_prompt_omits_empty_additional_prompt() -> None:
     # Trailing whitespace from the joined sections is fine, but the prompt
     # should end with the closing history tag — no extra empty section.
     assert prompt.rstrip().endswith("</conversation-history>")
+
+
+def test_tick_trigger_message_matches_expected_shape() -> None:
+    trigger = _build_tick_trigger_message()
+    assert trigger["role"] == "user"
+    text = trigger["content"][0]["text"]
+    assert "decide whether to speak" in text
+    assert "speak" in text
 
 
 def test_bedrock_messages_form_alternating_roles_for_each_ai() -> None:
