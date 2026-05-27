@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.tick_handler import (
+    _build_bedrock_cache_prefix_message,
+    _build_bedrock_system_blocks,
     _build_prompt_blocks,
+    _prepend_cache_prefix_message,
     _build_system_prompt,
     _build_tick_trigger_message,
     _render_history_block,
@@ -188,6 +191,86 @@ def test_tick_trigger_message_matches_expected_shape() -> None:
     text = trigger["content"][0]["text"]
     assert "decide whether to speak" in text
     assert "speak" in text
+
+
+def test_bedrock_system_blocks_add_cachepoint_for_sonnet_4_6() -> None:
+    conv = _conv()
+    history = _render_history_block(conv, now_ms=20_000)
+    blocks = _build_bedrock_system_blocks(
+        mode="group",
+        chatroom_setting=conv["chatroom_setting"],
+        persona="upenn sophomore",
+        my_nickname="Mars",
+        history_block=history,
+        model_id="global.anthropic.claude-sonnet-4-6",
+        participant_nicknames=[p["nickname"] for p in conv["participants"]],
+    )
+    assert len(blocks) == 1
+    assert "text" in blocks[0]
+    assert "Output format" in blocks[0]["text"]
+    assert "Chat freely about college life." not in blocks[0]["text"]
+    assert "upenn sophomore" not in blocks[0]["text"]
+
+
+def test_bedrock_system_blocks_fall_back_to_plain_prompt_for_other_models() -> None:
+    conv = _conv()
+    history = _render_history_block(conv, now_ms=20_000)
+    blocks = _build_bedrock_system_blocks(
+        mode="group",
+        chatroom_setting=conv["chatroom_setting"],
+        persona="upenn sophomore",
+        my_nickname="Mars",
+        history_block=history,
+        model_id="some-other-model",
+        participant_nicknames=[p["nickname"] for p in conv["participants"]],
+    )
+    assert len(blocks) == 1
+    assert "text" in blocks[0]
+    assert "Output format" in blocks[0]["text"]
+
+
+def test_bedrock_cache_prefix_message_puts_cachepoint_in_messages() -> None:
+    conv = _conv()
+    history = _render_history_block(conv, now_ms=20_000)
+    conv["chatroom_setting"]["additional_prompt"] = "Reminder: stay concise."
+    message = _build_bedrock_cache_prefix_message(
+        "group",
+        conv["chatroom_setting"],
+        "upenn sophomore",
+        "Mars",
+        history,
+        participant_nicknames=[p["nickname"] for p in conv["participants"]],
+    )
+
+    assert message["role"] == "user"
+    assert {"cachePoint": {"type": "default"}} in message["content"]
+    rendered = "\n".join(block.get("text", "") for block in message["content"] if "text" in block)
+    assert "<your-persona>" in rendered
+    assert "<participants>" in rendered
+    assert "Reminder: stay concise." in rendered
+    assert "<conversation-history>" in rendered
+
+
+def test_prepend_cache_prefix_message_merges_with_first_user_message() -> None:
+    prefix = {"role": "user", "content": [{"text": "prefix"}, {"cachePoint": {"type": "default"}}]}
+    messages = [{"role": "user", "content": [{"text": "history"}]}]
+    merged = _prepend_cache_prefix_message(messages, prefix)
+
+    assert len(merged) == 1
+    assert merged[0]["role"] == "user"
+    assert merged[0]["content"][0] == {"text": "prefix"}
+    assert merged[0]["content"][1] == {"cachePoint": {"type": "default"}}
+    assert merged[0]["content"][2] == {"text": "history"}
+
+
+def test_prepend_cache_prefix_message_inserts_before_assistant_message() -> None:
+    prefix = {"role": "user", "content": [{"text": "prefix"}, {"cachePoint": {"type": "default"}}]}
+    messages = [{"role": "assistant", "content": [{"text": "history"}]}]
+    merged = _prepend_cache_prefix_message(messages, prefix)
+
+    assert len(merged) == 2
+    assert merged[0] == prefix
+    assert merged[1]["role"] == "assistant"
 
 
 def test_bedrock_messages_form_alternating_roles_for_each_ai() -> None:

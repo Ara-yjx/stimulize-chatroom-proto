@@ -89,7 +89,18 @@ def _call_with_retry(call: Callable[[], dict]) -> dict:
     raise last_error or BedrockInferenceError("UnknownError", "max retries exceeded", retryable=True)
 
 
-def invoke(model_id: str, system_prompt: str, messages: list[dict]) -> dict:
+def _normalize_system_blocks(system_prompt: str | list[dict]) -> list[dict]:
+    """Return Bedrock Converse system blocks.
+
+    Existing callers can still pass a plain string. Cache-aware callers can
+    pass an explicit content-block list including ``cachePoint`` blocks.
+    """
+    if isinstance(system_prompt, str):
+        return [{"text": system_prompt}]
+    return system_prompt
+
+
+def invoke(model_id: str, system_prompt: str | list[dict], messages: list[dict]) -> dict:
     """Call Bedrock Converse API with retry for transient errors.
 
     Returns: {"text": str, "input_tokens": int, "output_tokens": int}
@@ -101,13 +112,15 @@ def invoke(model_id: str, system_prompt: str, messages: list[dict]) -> dict:
         response = client.converse(
             modelId=model_id,
             messages=messages,
-            system=[{"text": system_prompt}],
+            system=_normalize_system_blocks(system_prompt),
             inferenceConfig={"maxTokens": 512, "temperature": 0.7},
         )
         return {
             "text": response["output"]["message"]["content"][0]["text"],
             "input_tokens": response["usage"]["inputTokens"],
             "output_tokens": response["usage"]["outputTokens"],
+            "cache_read_input_tokens": response["usage"].get("cacheReadInputTokens", 0),
+            "cache_write_input_tokens": response["usage"].get("cacheWriteInputTokens", 0),
         }
 
     return _call_with_retry(_do_call)
@@ -115,7 +128,7 @@ def invoke(model_id: str, system_prompt: str, messages: list[dict]) -> dict:
 
 def invoke_speak_tool(
     model_id: str,
-    system_prompt: str,
+    system_prompt: str | list[dict],
     messages: list[dict],
 ) -> dict:
     """Call Bedrock Converse API forcing the `speak` tool.
@@ -127,6 +140,8 @@ def invoke_speak_tool(
             "messages": list[str],   # parsed via parse_speak_tool_call; [] if silent
             "input_tokens": int,
             "output_tokens": int,
+            "cache_read_input_tokens": int,
+            "cache_write_input_tokens": int,
             "raw_response": dict,    # the full Bedrock response, for audit
         }
 
@@ -138,7 +153,7 @@ def invoke_speak_tool(
         response = client.converse(
             modelId=model_id,
             messages=messages,
-            system=[{"text": system_prompt}],
+            system=_normalize_system_blocks(system_prompt),
             toolConfig=SPEAK_TOOL_CONFIG,
             inferenceConfig={"maxTokens": 512, "temperature": 0.7},
         )
@@ -146,6 +161,8 @@ def invoke_speak_tool(
             "messages": parse_speak_tool_call(response),
             "input_tokens": response["usage"]["inputTokens"],
             "output_tokens": response["usage"]["outputTokens"],
+            "cache_read_input_tokens": response["usage"].get("cacheReadInputTokens", 0),
+            "cache_write_input_tokens": response["usage"].get("cacheWriteInputTokens", 0),
             "raw_response": response,
         }
 

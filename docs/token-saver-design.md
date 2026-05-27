@@ -264,6 +264,18 @@ Do not put these into the cacheable prefix:
 [tick trigger]
 ```
 
+For the current Sonnet 4.6 Converse tool-use path, the cache checkpoint should
+live in `messages`, not in `system` or `tools`.
+
+Working layout:
+
+- `system`: static scaffold/examples only
+- leading `user` message:
+  - semi-static setup
+  - `cachePoint`
+  - dynamic history block
+- later messages: normal conversation history and trigger
+
 Why keep the prefix narrow:
 
 - scaffold/examples are the most reusable part

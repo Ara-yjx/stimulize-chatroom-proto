@@ -36,7 +36,7 @@ from chatroom_api.constants import TICK_DEDUPE_WINDOW_MS
 from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.delays import compute_visible_at, pick_delays_ms
 from chatroom_api.gate import run_gate
-from chatroom_api.pricing import estimate_cost_usd
+from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
 from chatroom_api.prompts.speech_scaffold import (
     SPEAK_TOOL_CONFIG,  # re-exported for callers that want to inspect it
     format_topic_block,
@@ -52,7 +52,7 @@ _DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
 def _invoke_with_model_fallback(
     model_id: str,
-    system_prompt: str,
+    system_prompt: str | list[dict],
     bedrock_messages: list[dict],
 ) -> dict:
     """Invoke Bedrock, falling back to the default model for stale saved ids.
@@ -139,6 +139,8 @@ def _make_tick_event(
     bedrock_invoked: bool = False,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+    cache_write_input_tokens: int = 0,
     error: Optional[str] = None,
 ) -> dict:
     """Build a ``type="tick"`` event for the conversation audit trail.
@@ -162,6 +164,8 @@ def _make_tick_event(
         "bedrock_invoked": bedrock_invoked,
         "input_tokens": int(input_tokens),
         "output_tokens": int(output_tokens),
+        "cache_read_input_tokens": int(cache_read_input_tokens),
+        "cache_write_input_tokens": int(cache_write_input_tokens),
         "error": error,
     }
 
@@ -264,6 +268,19 @@ def _build_prompt_blocks(
     }
 
 
+def _supports_bedrock_prompt_cache(model_id: str) -> bool:
+    """Return whether Bedrock prompt caching should be enabled for this model."""
+    normalized = (model_id or "").strip()
+    return normalized in {
+        "global.anthropic.claude-sonnet-4-6",
+        "anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-sonnet-4-6",
+        "eu.anthropic.claude-sonnet-4-6",
+        "jp.anthropic.claude-sonnet-4-6",
+        "au.anthropic.claude-sonnet-4-6",
+    }
+
+
 def _build_system_prompt(
     mode: str,
     chatroom_setting: dict,
@@ -304,6 +321,97 @@ def _build_system_prompt(
     if additional:
         parts.append(additional)
     return "\n".join(parts)
+
+
+def _build_bedrock_system_blocks(
+    mode: str,
+    chatroom_setting: dict,
+    persona: str,
+    my_nickname: str,
+    history_block: str,
+    *,
+    model_id: str,
+    participant_nicknames: list[str] | None = None,
+) -> list[dict]:
+    """Return Bedrock system blocks.
+
+    For cache-supported Claude tool-use calls, only the large static scaffold
+    stays in ``system``. The cache checkpoint itself must live in
+    ``messages``; putting it in ``system`` or ``tools`` did not produce cache
+    hits in our Bedrock probes.
+    """
+    if not _supports_bedrock_prompt_cache(model_id):
+        return [{
+            "text": _build_system_prompt(
+                mode,
+                chatroom_setting,
+                persona,
+                my_nickname,
+                history_block,
+                participant_nicknames=participant_nicknames,
+            )
+        }]
+
+    return [{"text": _build_static_prefix_block(mode)}]
+
+
+def _build_bedrock_cache_prefix_message(
+    mode: str,
+    chatroom_setting: dict,
+    persona: str,
+    my_nickname: str,
+    history_block: str,
+    *,
+    participant_nicknames: list[str] | None = None,
+) -> dict:
+    """Return the leading user message that carries the Bedrock cache point.
+
+    The message content is:
+    1. semi-static per-chatroom / per-AI setup blocks
+    2. optional additional prompt
+    3. the cache checkpoint
+    4. the dynamic textual history block
+
+    This shape preserves the existing prompt content while moving the cache
+    checkpoint to the one place Bedrock tool-use calls actually honored in our
+    live probes: a ``messages[*].content`` block.
+    """
+    blocks = _build_prompt_blocks(
+        mode=mode,
+        chatroom_setting=chatroom_setting,
+        persona=persona,
+        my_nickname=my_nickname,
+        history_block=history_block,
+        participant_nicknames=participant_nicknames,
+    )
+    content: list[dict] = []
+    for block in blocks["semi_static_setup"]:
+        content.append({"text": block})
+    additional = str(blocks["additional_prompt"])
+    if additional:
+        content.append({"text": additional})
+    content.append({"cachePoint": {"type": "default"}})
+    content.append({"text": str(blocks["dynamic_context"])})
+    return {"role": "user", "content": content}
+
+
+def _prepend_cache_prefix_message(
+    messages: list[dict],
+    prefix_message: dict,
+) -> list[dict]:
+    """Prepend the cache prefix, merging into the first user message when possible."""
+    if not messages:
+        return [prefix_message]
+
+    merged = [dict(m) for m in messages]
+    if merged[0]["role"] == "user":
+        merged[0] = {
+            "role": "user",
+            "content": list(prefix_message["content"]) + list(merged[0]["content"]),
+        }
+        return merged
+
+    return [prefix_message, *merged]
 
 
 def _build_tick_trigger_message() -> dict:
@@ -421,29 +529,43 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         p.get("nickname") for p in conv.get("participants", []) or []
         if p.get("nickname")
     ]
-    system_prompt = _build_system_prompt(
-        mode,
-        chatroom_setting,
-        persona,
-        candidate_nickname,
-        history_block,
-        participant_nicknames=participant_nicknames,
-    )
 
     bedrock_messages = build_bedrock_messages(conv, candidate_session_id, now_ms)
-    # Bedrock requires ``messages`` to start with the user role and cannot end
-    # with the assistant role. If our visible-message history is empty or
-    # ends with the candidate AI's own utterance, prepend a thin user
-    # "trigger" so the call is well-formed and the model has a clear cue to
-    # call the speak tool. Mirrors ``experiment/group-poc.js``.
-    if not bedrock_messages or bedrock_messages[-1]["role"] == "assistant":
-        bedrock_messages = (bedrock_messages or []) + [_build_tick_trigger_message()]
-
     model_id = (
         (candidate_participant or {}).get("model_id")
         or chatroom_setting.get("model_id")
         or _DEFAULT_MODEL_ID
     )
+    system_prompt = _build_bedrock_system_blocks(
+        mode,
+        chatroom_setting,
+        persona,
+        candidate_nickname,
+        history_block,
+        model_id=model_id,
+        participant_nicknames=participant_nicknames,
+    )
+    if _supports_bedrock_prompt_cache(model_id):
+        prefix_message = _build_bedrock_cache_prefix_message(
+            mode,
+            chatroom_setting,
+            persona,
+            candidate_nickname,
+            history_block,
+            participant_nicknames=participant_nicknames,
+        )
+        bedrock_messages = _prepend_cache_prefix_message(
+            bedrock_messages,
+            prefix_message,
+        )
+
+    # Bedrock requires ``messages`` to start with the user role and cannot end
+    # with the assistant role. If our visible-message history is empty or
+    # ends with the candidate AI's own utterance, append a thin user
+    # "trigger" so the call is well-formed and the model has a clear cue to
+    # call the speak tool. Mirrors ``experiment/group-poc.js``.
+    if not bedrock_messages or bedrock_messages[-1]["role"] == "assistant":
+        bedrock_messages = (bedrock_messages or []) + [_build_tick_trigger_message()]
 
     try:
         result = _invoke_with_model_fallback(model_id, system_prompt, bedrock_messages)
@@ -480,6 +602,8 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     messages = result.get("messages", []) or []
     input_tokens = result.get("input_tokens", 0)
     output_tokens = result.get("output_tokens", 0)
+    cache_read_input_tokens = result.get("cache_read_input_tokens", 0)
+    cache_write_input_tokens = result.get("cache_write_input_tokens", 0)
     resolved_model_id = result.get("resolved_model_id") or model_id
     provider = "bedrock"
 
@@ -494,7 +618,17 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
                 resolved_model_id,
                 input_tokens,
                 output_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_write_input_tokens=cache_write_input_tokens,
+                allow_unknown=True,
             )
+            pricing_estimated = not is_unknown_pricing_key(pricing_key)
+            if not pricing_estimated:
+                logger.warning(
+                    "tick: unknown pricing for provider=%s model_id=%s; writing token usage with zero estimated cost",
+                    provider,
+                    resolved_model_id,
+                )
             rds.write_usage(
                 usage_event_id=f"{conversation_id}:{now_ms}:{candidate_session_id}",
                 owner_id=owner_id,
@@ -511,6 +645,9 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
                 raw_usage_json={
                     "bedrock_invoked": True,
                     "messages_count": len(messages),
+                    "cache_read_input_tokens": cache_read_input_tokens,
+                    "cache_write_input_tokens": cache_write_input_tokens,
+                    "pricing_estimated": pricing_estimated,
                 },
             )
     except Exception as usage_exc:
@@ -525,6 +662,8 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         bedrock_invoked=True,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
     )]
 
     if messages:
@@ -556,6 +695,8 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         "candidate_session_id": candidate_session_id,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
+        "cache_write_input_tokens": cache_write_input_tokens,
     }
 
 
