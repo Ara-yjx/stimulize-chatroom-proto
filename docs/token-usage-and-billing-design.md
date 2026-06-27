@@ -29,6 +29,15 @@ The runtime already reads Bedrock cache fields and includes cache read/write cos
 
 Future implementation should add the normalized columns below. Until then, the current schema remains the deployed source of truth.
 
+Current admin reconciliation API:
+
+- `POST /api/getAdminBedrockUsage`
+- admin role required
+- aggregates `chatroom_usage.provider = "bedrock"` by day/week/month across all users/chatrooms
+- returns backend-recorded `estimated_cost_usd`, not AWS invoice truth
+
+This endpoint exists so we can compare backend estimates against AWS billing data before relying on app-side hard budget enforcement.
+
 ## Storage decision
 
 The chatroom runtime writes usage directly to RDS.
@@ -241,6 +250,148 @@ UI should show at least:
 - approximate total USD
 
 Do not make "total tokens" the primary billing number. The buckets have different prices.
+
+## Budget cap plan
+
+Goal: stop unexpected Bedrock spend during beta, then add stricter app-side
+budget enforcement after backend cost estimates are reconciled against AWS
+billing.
+
+Important distinction:
+
+- AWS Budgets is an emergency brake, not a real-time hard cap.
+- AWS Budget alerts depend on AWS cost reporting latency, so spend may exceed
+  the threshold before the alert fires.
+- True hard caps need app-side checks before invoking Bedrock.
+
+### Stage 1: AWS Budget emergency brake
+
+Current AWS Budget: `$20/day` for Bedrock usage.
+
+Recommended wiring:
+
+```text
+AWS Budget alert
+  -> SNS topic
+  -> small Lambda
+  -> budget-block state with expiry
+  -> chatroom runtime checks state before Bedrock invoke
+```
+
+Behavior:
+
+1. AWS Budget crosses the configured daily threshold.
+2. Budget notification publishes to SNS.
+3. SNS invokes a small Lambda handler.
+4. Handler writes a block flag:
+   - key: `bedrock_budget_block`
+   - value: blocked
+   - expiry: now + 24h
+   - source: AWS Budget/SNS message metadata
+5. `chatroom-tick-handler` checks the flag before Bedrock.
+6. If blocked, the tick skips inference and records a tick/audit event.
+
+The Lambda handler can be inline in the CDK package because it is tiny and
+stable:
+
+- parse the SNS event
+- compute expiry timestamp
+- write the block flag
+- log the source event
+
+Do not put provider/cost logic in this handler.
+
+#### State store choice
+
+Use DynamoDB for Stage 1 unless we strongly prefer zero new tables.
+
+Reason:
+
+- the runtime needs one small, reliable state check before Bedrock
+- DynamoDB gives key-value reads, strong consistency, and native TTL
+- this is a better fit than S3, which is object storage and has no per-object TTL
+- beta traffic/cost should be negligible
+
+SSM Parameter Store is the simplest zero-table fallback: store
+`blocked_until` and let the runtime interpret expiry. That is acceptable for
+Stage 1, but DynamoDB is cleaner if we want TTL and future state transitions.
+
+SQS is not recommended as the source of truth:
+
+- queues model work, not state
+- "any message exists" is approximate and awkward to check safely
+- a message can be consumed or hidden
+- queue retention is not the same as an explicit budget-block state
+
+Stage 1 decision: use a tiny DynamoDB table or a shared control-state table,
+not SQS. If minimizing infra is more important than clean semantics, SSM
+Parameter Store with a `blocked_until` timestamp is the simplest fallback.
+
+Suggested table shape:
+
+```text
+Table: chatroom-control-state
+PK: key
+
+Item:
+{
+  key: "bedrock_budget_block",
+  blocked_until_epoch: 1711300000,
+  source: "aws_budget",
+  reason: "daily Bedrock budget threshold reached",
+  updated_at: "2026-06-27T00:00:00Z",
+  ttl: 1711300000
+}
+```
+
+Runtime check:
+
+```text
+item = GetItem("bedrock_budget_block", ConsistentRead=true)
+if item exists and item.blocked_until_epoch > now:
+  skip Bedrock
+else:
+  invoke Bedrock
+```
+
+### Stage 2: app-side daily cap
+
+Implement only after recorded cost is reconciled against AWS billing.
+
+Before Bedrock:
+
+1. Check Stage 1 budget-block flag.
+2. Estimate the next invocation cost conservatively.
+3. Atomically reserve against a daily budget counter.
+4. If the reserve would exceed the cap, skip inference.
+
+After Bedrock:
+
+1. Write the normal `chatroom_usage` row with actual provider usage.
+2. Reconcile the reservation with actual estimated cost.
+3. Keep the daily counter conservative if exact reconciliation is complex.
+
+Suggested keys:
+
+```text
+global#bedrock#2026-06-27
+user#<owner_id>#bedrock#2026-06-27
+chatroom#<chatroom_id>#bedrock#2026-06-27
+```
+
+Stage 2 should support a global cap first. Per-user and per-chatroom caps can
+use the same pattern later.
+
+### Stage 3: product-level budget controls
+
+Add researcher/admin-configurable caps:
+
+- global beta spend cap
+- per-user daily cap
+- per-chatroom daily cap
+- per-conversation max estimated cost
+
+These should be proactive app-side controls, not AWS Budget alerts.
 
 ## Reconciliation notes
 

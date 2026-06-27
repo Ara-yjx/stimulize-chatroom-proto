@@ -61,6 +61,7 @@ Routes:
 - `POST /api/deleteChatroom/<id>`
 - `POST /api/getChatroomUsage/<id>`
 - `POST /api/getUserUsage`
+- `POST /api/getAdminBedrockUsage`
 
 The actual backend contract is documented in:
 
@@ -123,6 +124,21 @@ Current response totals include `input_tokens`, `output_tokens`, and `estimated_
 Get aggregated usage across all chatrooms owned by the current user.
 
 Request body supports the same `period`, `from`, and `to` fields as `getChatroomUsage`.
+
+### POST /api/getAdminBedrockUsage
+Admin-only aggregate of recorded Bedrock usage across all users/chatrooms.
+
+Request body:
+
+```json
+{
+  "period": "day",
+  "from": "2026-05-01T00:00:00Z",
+  "to": "2026-05-31T23:59:59Z"
+}
+```
+
+`period` defaults to `day` and must be `day`, `week`, or `month`. Response shape matches the usage envelope and includes `scope: "admin_bedrock"`, `provider: "bedrock"`, `cost_source: "chatroom_usage.estimated_cost_usd"`, `totals`, and `series`. This is for comparing backend estimated cost against AWS billing reports; it is not AWS invoice truth.
 
 ---
 

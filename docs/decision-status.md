@@ -26,6 +26,7 @@ This file records decisions that came from implementation/debug discussions afte
 - Chatrooms are user-owned standalone rows in shared Stimulize Postgres.
 - Runtime reads chatroom settings directly from RDS.
 - Runtime writes usage rows directly to RDS; management API only aggregates reads.
+- Admin-only `POST /api/getAdminBedrockUsage` aggregates recorded Bedrock cost by day/week/month across all users/chatrooms for AWS bill reconciliation.
 
 ### Runtime and Tick Loop
 
@@ -112,6 +113,7 @@ This file records decisions that came from implementation/debug discussions afte
 - Add additive RDS migration for existing `chatroom_usage`; `db.create_all()` will not add columns.
 - Extend pricing and usage adapters for direct OpenAI and Anthropic API-key inference.
 - UI currently shows aggregate `input_tokens`, `output_tokens`, and estimated USD; future UI should separate uncached input, cache read, cache write, and output buckets.
+- Add app-side hard budget enforcement only after backend estimated cost is reconciled against AWS billing. AWS Budget/SNS should be treated as an emergency brake because AWS Budget alerts are delayed.
 
 ### Prompt/Inference
 

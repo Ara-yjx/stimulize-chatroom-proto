@@ -32,6 +32,8 @@ tags:
     description: Chatroom CRUD (editor UI)
   - name: usage
     description: Usage queries (editor UI)
+  - name: admin-usage
+    description: Admin-only usage reconciliation queries
 
 paths:
   /api/createChatroom:
@@ -167,6 +169,30 @@ paths:
               schema:
                 $ref: "#/components/schemas/UserUsageResponse"
 
+  /api/getAdminBedrockUsage:
+    post:
+      tags: [admin-usage]
+      summary: Get admin-only Bedrock usage totals
+      description: |
+        Admin-only reconciliation endpoint. Aggregates all rows where
+        `chatroom_usage.provider = "bedrock"` across users/chatrooms.
+        `estimated_cost_usd` is the backend write-time estimate, not AWS
+        invoice truth.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminBedrockUsageQuery"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminBedrockUsageResponse"
+        "403":
+          description: Authenticated user is not an admin.
+
 components:
   securitySchemes:
     bearerAuth:
@@ -248,6 +274,19 @@ components:
         id:
           type: string
           example: scid_550e8400-e29b-41d4-a716-446655440000
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
+        setting:
+          $ref: "#/components/schemas/ChatroomSetting"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     UsageQuery:
       type: object
       properties:
@@ -255,6 +294,22 @@ components:
           type: string
           enum: [hour, day, week, month]
           nullable: true
+        from:
+          type: string
+          format: date-time
+          nullable: true
+        to:
+          type: string
+          format: date-time
+          nullable: true
+    AdminBedrockUsageQuery:
+      type: object
+      properties:
+        period:
+          type: string
+          enum: [day, week, month]
+          nullable: true
+          default: day
         from:
           type: string
           format: date-time
@@ -338,6 +393,35 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/UsageSeriesBucket"
+    AdminBedrockUsageEnvelope:
+      type: object
+      properties:
+        scope:
+          type: string
+          enum: [admin_bedrock]
+        provider:
+          type: string
+          enum: [bedrock]
+        period:
+          type: string
+          enum: [day, week, month]
+        from:
+          type: string
+          format: date-time
+          nullable: true
+        to:
+          type: string
+          format: date-time
+          nullable: true
+        cost_source:
+          type: string
+          example: chatroom_usage.estimated_cost_usd
+        totals:
+          $ref: "#/components/schemas/UsageTotals"
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageSeriesBucket"
     ChatroomUsageResponse:
       type: object
       properties:
@@ -368,19 +452,21 @@ components:
           properties:
             usage:
               $ref: "#/components/schemas/UserUsageEnvelope"
-        name:
-          type: string
-        status:
-          type: string
-          enum: [active, inactive]
-        setting:
-          $ref: "#/components/schemas/ChatroomSetting"
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
+    AdminBedrockUsageResponse:
+      type: object
+      properties:
+        meta:
+          type: object
+          properties:
+            code:
+              type: integer
+            message:
+              type: string
+        data:
+          type: object
+          properties:
+            usage:
+              $ref: "#/components/schemas/AdminBedrockUsageEnvelope"
 
     AiPersonaSetting:
       type: object
