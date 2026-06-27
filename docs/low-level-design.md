@@ -27,15 +27,14 @@ backend/                     # Chatroom Lambda API (Python)
     config.py                # Env vars
     constants.py             # EMOJI_POOL, default prompts, gate thresholds
     errors.py                # ChatroomNotFoundException, InactiveChatroomException, etc.
-  tick_loop/                 # Heartbeat container (separate Python entry; no Lambda runtime)
-    tick_loop.py             # Loops every N seconds; queries status-index; async-invokes tick handler
-    Dockerfile
-    requirements.txt
+  tick_loop/                 # Heartbeat loop used by the scheduled heartbeat Lambda and local dev
+    heartbeat_lambda.py      # EventBridge-triggered bounded loop; async-invokes tick handler
+    tick_loop.py             # Local/dev loop helpers
   tests/
   requirements.txt
   dev_server.py              # Local Flask wrapper (also spawns local heartbeat thread)
 
-mock_management/             # Mock chatroom management API (Phase 1 beta)
+mock_management/             # Local/dev mock management API
   app.py                     # Flask app (chatroom CRUD, usage)
   store.py                   # SQLite-backed storage (WAL mode)
   auth.py                    # Bearer token middleware
@@ -65,14 +64,17 @@ frontend/                    # Chat widget (TypeScript + jQuery)
 
 editor/                      # Editor UI (React + TypeScript + Vite + Arco Design)
   src/
-    App.tsx                  # Router: /chatroom, /chatroom/:id
+    App.tsx                  # HashRouter routes: /chatroom, /chatroom/:id, /chatroom/:id/usage
     pages/
       ChatroomList.tsx
       ChatroomEditor.tsx
+      ChatroomUsage.tsx
     components/
       ScriptGenerator.tsx
       WidgetPreview.tsx      # Iframe + blob URL; uses dev override for apiBaseUrl in dev mode
-    api.ts                   # Management API client with bearer token
+    api/
+      management.ts          # Management API client with auth refresh
+      managementAuth.ts      # Login/localStorage token handling
   package.json, tsconfig.json
 
 cdk/                         # CDK (TypeScript)
@@ -258,42 +260,11 @@ For `mode: "group"`, additional fields:
 
 ### RDS: `chatroom_usage` table
 
-**Write-path decision**
+Runtime writes one usage row per billable model invocation directly to Stimulize Postgres. Management API exposes only aggregated read endpoints (`getChatroomUsage`, `getUserUsage`).
 
-- Option A: tick/runtime Lambda writes usage through the management API.
-- Option B: tick/runtime Lambda writes usage directly to Stimulize Postgres.
-- Decision: **Option B**.
-- Reason:
-  - the runtime already knows the exact provider/model/token counts at the moment cost is incurred,
-  - direct Postgres avoids an extra network hop and auth layer,
-  - idempotent `usage_event_id` inserts are simpler when the runtime owns the write.
-- Consequence: management API exposes only aggregated read endpoints (`getChatroomUsage`, `getUserUsage`). It is not part of the write path.
+Current deployed schema stores `input_tokens`, `output_tokens`, write-time `estimated_cost_usd`, and provider-native `raw_usage_json`. Future schema should add normalized cache token and cost component columns instead of provider-specific union columns.
 
-```sql
-CREATE TABLE chatroom_usage (
-  id                 SERIAL PRIMARY KEY,
-  usage_event_id     VARCHAR(255) NOT NULL UNIQUE,
-  owner_id           INT NOT NULL REFERENCES users(id),
-  chatroom_id        VARCHAR(64) NOT NULL REFERENCES chatroom(id),
-  conversation_id    VARCHAR(255),
-  session_id         VARCHAR(255),
-  provider           VARCHAR(64) NOT NULL,
-  model_id           VARCHAR(255) NOT NULL,
-  pricing_key        VARCHAR(255) NOT NULL,
-  input_tokens       INT NOT NULL,
-  output_tokens      INT NOT NULL,
-  estimated_cost_usd NUMERIC(18, 8) NOT NULL,
-  currency           VARCHAR(8) NOT NULL DEFAULT 'USD',
-  invoked_at         TIMESTAMPTZ NOT NULL,
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  raw_usage_json     JSONB
-);
-CREATE INDEX idx_usage_chatroom ON chatroom_usage(chatroom_id);
-CREATE INDEX idx_usage_chatroom_invoked_at ON chatroom_usage(chatroom_id, invoked_at);
-CREATE INDEX idx_usage_owner_invoked_at ON chatroom_usage(owner_id, invoked_at);
-```
-
-Note: Bedrock API response token counts are raw counts — they do NOT include model pricing multipliers. The runtime applies the backend's hardcoded provider/model pricing table at write time and stores `estimated_cost_usd` in each usage row so historical rows do not silently reprice when vendor rates change later.
+Detailed write-path decision, current gap, future table shape, provider mappings, and cost computation rules live in [token-usage-and-billing-design.md](./token-usage-and-billing-design.md).
 
 
 ## JWT
@@ -322,7 +293,7 @@ response = bedrock.converse(
 )
 ```
 
-Token usage: `response["usage"]["inputTokens"]`, `outputTokens` — recorded into the corresponding `tick` event and written as one `chatroom_usage` row per billable model invocation.
+Token usage: Bedrock `response["usage"]` is recorded into the corresponding `tick` event and written as one `chatroom_usage` row per billable model invocation. Current code includes cache read/write tokens in cost estimation and preserves them in raw usage JSON; future schema makes cache buckets first-class columns.
 
 ### Conversation History Mapping
 
@@ -455,16 +426,17 @@ The reconnect button is the only recovery affordance. Once aborted, polling stop
 
 ## Async AI Conversation Flow
 
-Implements the design in [design.md](./design.md#async-ai-conversation-flow-tick-model). Two new components:
+Implements the design in [design.md](./design.md#async-ai-conversation-flow-tick-model). Two components:
 
-- **`chatroom-tick-heartbeat`** — ECS Fargate task, single-instance, fires ticks.
+- **`chatroom-tick-heartbeat`** — EventBridge-scheduled Lambda loop, reserved concurrency 1, fires ticks during a bounded window.
 - **`chatroom-tick-handler`** — Lambda, runs the gate + Bedrock call for one conversation.
 
-### Heartbeat container
+### Heartbeat Lambda loop
 
 ```python
-# tick_loop.py
+# tick_loop/heartbeat_lambda.py, simplified
 INTERVAL = int(os.environ["HEARTBEAT_INTERVAL_SEC"])  # default 5
+WINDOW = int(os.environ["HEARTBEAT_WINDOW_SEC"])      # current source: 840
 LAMBDA = os.environ["TICK_HANDLER_LAMBDA"]
 MAX_FAILURES = 3
 
@@ -472,7 +444,8 @@ ddb = boto3.client("dynamodb")
 lam = boto3.client("lambda")
 fail_count = 0
 
-while True:
+deadline = time.time() + WINDOW
+while time.time() < deadline:
     try:
         now = int(time.time() * 1000)
         convs = ddb.query(
@@ -494,13 +467,15 @@ while True:
     except Exception as e:
         fail_count += 1
         if fail_count >= MAX_FAILURES:
-            sys.exit(1)  # ECS restarts the task
+            raise
     time.sleep(INTERVAL)
 ```
 
-Env: `HEARTBEAT_INTERVAL_SEC` (default 5), `TICK_HANDLER_LAMBDA`, `AWS_REGION`.
+EventBridge starts the heartbeat every 15 minutes. Reserved concurrency is 1, so a late-running heartbeat cannot overlap with the next scheduled heartbeat.
+
+Env: `HEARTBEAT_INTERVAL_SEC` (current source default 5), `HEARTBEAT_WINDOW_SEC`, `TICK_HANDLER_LAMBDA`, `CONVERSATION_TABLE`, `CONVERSATION_STATUS_INDEX`, `HEARTBEAT_MAX_FAILURES`.
 IAM: `dynamodb:Query` on `status-index`, `lambda:InvokeFunction` on the tick handler.
-Resources: 256 CPU / 512 MB. `desiredCount=1`.
+Resources: Python 3.12 Lambda, 256 MB, 15 minute timeout.
 
 ### Tick handler
 
@@ -679,7 +654,7 @@ Future polish: scale delay by message length (~30-50 wpm). Out of scope for v1.
 
 ### Local dev
 
-`dev_server.py` runs the heartbeat as a daemon thread instead of a container, calling the handler in-process with the same code path:
+`dev_server.py` runs the heartbeat as a daemon thread instead of a scheduled Lambda, calling the handler in-process with the same code path:
 
 ```python
 def _local_heartbeat():
@@ -691,17 +666,16 @@ def _local_heartbeat():
 threading.Thread(target=_local_heartbeat, daemon=True).start()
 ```
 
-No ECS, no Lambda async invoke locally.
+No EventBridge and no Lambda async invoke locally.
 
 ### CDK additions (recap)
 
 These are landed in the per-stack sections above; restated here for quick reference.
 
-- New Lambda: `chatroom-tick-handler` (Python 3.12, in same VPC as chat Lambda, Bedrock + DynamoDB IAM).
-- New ECS Fargate cluster (or reuse existing) + task definition + service (`desiredCount=1`).
+- New Lambda: `chatroom-tick-handler` (Python 3.12, Bedrock + DynamoDB + Secrets Manager + RDS usage-write env).
+- New Lambda: `chatroom-tick-heartbeat` (Python 3.12, EventBridge schedule every 15 minutes, reserved concurrency 1).
 - New GSI on `chatroom-conversations`: `status-index`.
 - New DynamoDB table: `chatroom-lobbies` with two GSIs (`chatroom_id-status-index`, `conversation_id-index`).
-- Container image built from `backend/tick_loop/` (small Python image).
 
 
 ## Frontend Widget Internals
@@ -751,10 +725,16 @@ const _$ = (typeof jQuery !== "undefined" ? jQuery : $) as JQueryStatic;
 ### Script Loading in Qualtrics
 Use `jQuery.getScript()` for simpler loading:
 ```javascript
-jQuery.getScript("https://cdn.stimulize.org/chatroom.min.js", function() {
-  StimulizeChatroom.init({ element: chatDiv, chatroomId: "scid_..." });
+jQuery.getScript("https://ara-yjx.github.io/stimulize-chatroom-proto/chatroom.min.js", function() {
+  StimulizeChatroom.init({
+    element: chatDiv,
+    chatroomId: "scid_...",
+    apiBaseUrl: "https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod"
+  });
 });
 ```
+
+Future custom CDN target: `https://cdn.stimulize.org/chatroom.min.js`.
 
 ### Public API
 - `StimulizeChatroom.init(options)` — mount widget
@@ -765,19 +745,28 @@ jQuery.getScript("https://cdn.stimulize.org/chatroom.min.js", function() {
 
 ### API hostname configuration
 
-The widget talks only to the chatroom backend API (`/auth/token`, `/chat/send`, `/chat/messages`). It never talks to the management API. The default hostname is `https://chatroom.stimulize.org`.
+The widget talks only to the chatroom backend API (`/auth/token`, `/chat/send`, `/chat/messages`). It never talks to the management API. Current beta default hostname is `https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod`; future custom domain is `https://chatroom.stimulize.org`.
 
-`init()` accepts an optional `beta` flag. When `beta: true`, the widget renders an API hostname input box at widget start (before token exchange) and only proceeds once the user clicks "Start". This lets researchers point the widget at a non-prod backend during beta testing without a rebuild:
+`init()` accepts optional `apiBaseUrl`. Generated beta scripts pass the API Gateway URL explicitly until DNS is ready:
 
 ```javascript
 StimulizeChatroom.init({
   element: chatDiv,
   chatroomId: "scid_...",
-  beta: true        // shows hostname input box; default value pre-filled
+  apiBaseUrl: "https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod"
 });
 ```
 
-Without `beta: true`, the widget always uses `https://chatroom.stimulize.org` and never shows the input. The flag is the only way to override the hostname in production builds.
+The editor preview has dev-only hostname override controls; production/beta generated scripts should not show an API-hostname input to survey participants.
+
+### Qualtrics Embedded Data
+
+When running inside real Qualtrics, the widget writes on every history update:
+
+- `QUALTRICS_CHATROOM_HISTORY` — formatted text
+- `QUALTRICS_CHATROOM_HISTORY_JSON` — JSON string
+
+The integration checks for `Qualtrics?.SurveyEngine.setEmbeddedData` and skips known preview environments such as localhost and GitHub Pages.
 
 ### Reconnection UX
 
@@ -814,16 +803,25 @@ Uses `@arco-design/web-react` (v2.66.7) to match the main Stimulize editor proje
 ### Pages
 - `/chatroom` — list all chatrooms with status (active/inactive)
 - `/chatroom/:id` — edit chatroom setting, generate script, preview widget
+- `/chatroom/:id/usage` — usage totals, daily/weekly/monthly selector, table, and simple chart
+
+The editor uses `HashRouter` for GitHub Pages hosting. Hosted beta URL shape:
+
+```text
+https://ara-yjx.github.io/stimulize-chatroom-proto/#/chatroom
+```
 
 ### Chatroom Editor Form
 - Name, status toggle, mode toggle (`one_on_one` / `group`)
 - Mimic human switch (default on)
 - System prompt textarea
 - Model ID dropdown (Anthropic, Amazon Nova, Llama, DeepSeek, Qwen, Google, Mistral)
-- Simulate pairing seconds, timer min/max, `max_duration_seconds`
+- Simulate pairing seconds, timer min/max. `max_duration_seconds` is hidden and derived as `(timer_max_minutes + 1) * 60`.
 - Group-only: `target_human_count`, `ai_join_strategy` radio, `ai_strategy_value`, `max_wait_seconds`
+- Per-AI persona list; each entry may choose a specific model or "same model as chatroom default".
 - Generate Script button → Qualtrics-compatible JS snippet
 - Widget Preview (iframe with blob URL; "Launch another preview" button mounts side-by-side iframes for multi-participant testing)
+- Token Usage button → opens usage stats route in a new tab
 
 ### Form validation
 
@@ -831,35 +829,44 @@ Editor enforces these client-side; the management API re-validates server-side a
 - `target_human_count >= 1`
 - `total_participant_count >= target_human_count` (if `ai_strategy = total_participant_count`)
 - `max_wait_seconds <= 600`
-- `max_duration_seconds <= 900` for beta (15-minute hard cap; revisit in prod after event-history storage is split out)
+- Backend source-of-truth: `max_duration_seconds <= 900` for beta (15-minute hard cap; revisit in prod after event-history storage is split out)
+- Pending alignment: editor-side validation currently allows a wider hidden draft range, while save requests are still rejected by the backend above 900.
 - `ai_strategy_value >= 0` and `<= 7` (cap on AI count for cost safety)
 - For `mode: "one_on_one"`, settings are auto-derived: `target_human_count=1`, `ai_strategy=fixed_ai_count`, `value=1`, `max_wait_seconds=0`. The 1-on-1 form is a UI preset over the same group settings.
 
 ### Management API hostname configuration
 
-The editor reads `VITE_MOCK_MGMT_URL` from build env (default: `http://localhost:5000` in dev). For beta deployment, the URL is baked into the build.
+The editor reads `VITE_MOCK_MGMT_URL` from build env (default: `http://localhost:5000` in dev, beta API Gateway in deployed builds). For beta deployment, the URL is baked into the build.
 
-The editor authenticates to the management API with a bearer token from `VITE_MOCK_MGMT_TOKEN`. Token rotation requires a rebuild — acceptable for internal beta.
+The editor can authenticate with:
+
+- a build-time token from `VITE_MOCK_MGMT_TOKEN`, or
+- username/password login through `POST /api/login`.
+
+The issued token is stored in localStorage under `stimulize.editor.managementAuth` with a 3-hour local expiry. Logout clears it.
 
 For testing arbitrary backend hostnames during development, the editor exposes a dev-mode-only input field (visible when `import.meta.env.DEV`) that overrides the API hostname for the session. Hidden in production builds.
 
 ### Mode UX
 
 The editor surfaces mode as a toggle (`one_on_one` / `group`):
-- `one_on_one` form shows: name, model, topic_instruction, simulate_pairing_seconds, timer min/max, max_duration_seconds. Group fields hidden.
+- `one_on_one` form shows: name, model, topic_instruction, simulate_pairing_seconds, timer min/max. Group fields and `max_duration_seconds` are hidden.
 - `group` form additionally shows: target_human_count, ai_join_strategy radio (`fixed_ai_count` / `total_participant_count`), ai_strategy_value, max_wait_seconds.
 - `simulate_pairing_seconds` is hidden in group mode when `target_human_count > 1` — the lobby provides a real wait (`max_wait_seconds`), so a cosmetic wait on top would be confusing. With `target_human_count = 1` (1-on-1 preset under the hood, or a degenerate group room) the field stays visible because there is no real wait and the simulated pairing screen is the only pacing.
+- `max_duration_seconds` is derived on save as `(timer_max_minutes + 1) * 60`.
 - On save, the management API stores both sets of fields. For `one_on_one`, group fields are denormalized to fixed values (`target_human_count=1`, `ai_join_strategy=fixed_ai_count`, `ai_strategy_value=1`, `max_wait_seconds=0`) so the chat Lambda can branch uniformly on group fields without re-deriving from `mode`.
 
 ### Editor → Management API
 
-Editor talks to the management API (mock Flask container in beta, real Stimulize backend in prod). All requests carry `Authorization: Bearer <token>`.
+Editor talks to the management API (real `Stimulize-backend` in beta/prod, mock Flask for local/dev compatibility). Requests carry the raw Flask-Security token in `Authorization`.
 
 - `POST /api/getChatrooms` — list
 - `POST /api/createChatroom` — create
 - `POST /api/getChatroom/:id` — get
 - `POST /api/updateChatroom/:id` — update
 - `POST /api/deleteChatroom/:id` — deactivate
+- `POST /api/getChatroomUsage/:id` — chatroom usage totals/series
+- `POST /api/getUserUsage` — user usage totals/series
 
 
 ## CDK (TypeScript)
@@ -879,46 +886,41 @@ Stacks (one file per stack, see Project Structure):
 ### SecretsStack
 - JWT secret (HS256) — random value generated at first deploy.
 - Beta chatroom client access key — fixed beta value required by `/auth/token` before issuing a JWT.
-- Mock-management bearer token — random value, surfaced as env var to chatroom Lambda + heartbeat container, and as build-time secret to editor.
 - Admin bearer token (for `?include_ticks=true` debugging).
 
 ### ChatroomApiStack
-- Lambda `chatroom-api` (Python 3.12, 256MB, 30s timeout, deployed into existing Stimulize VPC).
+- Lambda `chatroom-api` (Python 3.12, 256MB, 30s timeout).
 - API Gateway HTTP API: `POST /auth/token`, `POST /chat/send`, `GET /chat/messages`.
 - CORS: `Access-Control-Allow-Origin: *`, no credentials.
-- Custom domain: `chatroom.stimulize.org` with ACM certificate.
+- Beta URL: API Gateway execute-api URL. Future custom domain: `chatroom.stimulize.org`.
 - IAM: DynamoDB R/W on conversation + lobby tables; Bedrock InvokeModel; RDS read; Secrets Manager read.
-- Env vars: `CONVERSATION_TABLE`, `LOBBY_TABLE`, `JWT_SECRET_ARN`, `ADMIN_TOKEN_SECRET_ARN`, `RDS_*`, `BEDROCK_REGION`, `MGMT_API_URL`, `MGMT_API_TOKEN_SECRET_ARN`.
+- Env vars: `CONVERSATION_TABLE`, `LOBBY_TABLE`, `JWT_SECRET_ARN`, `ADMIN_TOKEN_SECRET_ARN`, `RDS_*`, `BEDROCK_REGION`.
 - Also reads `CHATROOM_CLIENT_ACCESS_KEY_SECRET_ARN` for the fixed beta widget access key used by `/auth/token`.
-- RDS Proxy for Lambda connection pooling.
-- VPC endpoints (or NAT Gateway) for Bedrock + DynamoDB + Secrets Manager from VPC.
 
 ### TickHandlerStack
-- Lambda `chatroom-tick-handler` (Python 3.12, same VPC, same IAM as chatroom-api except no API Gateway).
+- Lambda `chatroom-tick-handler` (Python 3.12, async invoke target only).
 - Async invoke target only — no API Gateway integration.
+- Reads RDS env/secret so each billable model invocation can write one usage row.
 - Reserved concurrency: default for beta (revisit in prod).
 
 ### TickHeartbeatStack
-- ECS Fargate cluster (or reuse existing).
-- Task definition: 256 CPU / 512 MB. Image built from `backend/tick_loop/Dockerfile`.
-- Service: `desiredCount=1`, no load balancer.
-- Env: `HEARTBEAT_INTERVAL_SEC` (default 5), `TICK_HANDLER_LAMBDA`, `CONVERSATION_TABLE`, `AWS_REGION`.
+- Lambda `chatroom-tick-heartbeat` (Python 3.12, 256 MB, 15 minute timeout).
+- EventBridge schedule: every 15 minutes.
+- Reserved concurrency: 1.
+- Env: `HEARTBEAT_INTERVAL_SEC` (current source default 5), `HEARTBEAT_WINDOW_SEC`, `TICK_HANDLER_LAMBDA`, `CONVERSATION_TABLE`, `CONVERSATION_STATUS_INDEX`, `HEARTBEAT_MAX_FAILURES`.
 - IAM: `dynamodb:Query` on `status-index`, `lambda:InvokeFunction` on tick handler.
 
-### MockManagementStack (beta only)
-- ECS Fargate cluster (reuse heartbeat cluster) + task definition for `mock_management/Dockerfile`.
-- Service: `desiredCount=1` (SQLite is single-writer; multi-task corrupts).
-- EFS mount for SQLite file persistence across task replacements.
-- ALB + ACM cert for `mock-mgmt.stimulize.org`.
-- Env: `BEARER_TOKEN_SECRET_ARN`, `SQLITE_PATH=/data/chatrooms.db`.
-- Marked clearly as beta-only; replaced by real Stimulize backend in prod.
+### MockManagementStack (deprecated for deployed beta)
+- Mock management is no longer the deployed beta source of truth.
+- Keep `mock_management/` for local/dev compatibility and isolated tests.
+- Real beta management lives in `Stimulize-backend` with shared Postgres.
 
 
 ## Domain Setup
 
 Two subdomains, both managed via CNAME on domain.com (no Route 53). No changes to the main `stimulize.org` GitHub Pages setup.
 
-### `chatroom.stimulize.org` — chatroom API
+### `chatroom.stimulize.org` — future chatroom API custom domain
 
 Routes to API Gateway (chatroom Lambda).
 
@@ -927,20 +929,27 @@ Routes to API Gateway (chatroom Lambda).
 3. On domain.com DNS: add the ACM validation CNAME record.
 4. After certificate is issued, on domain.com DNS: add CNAME `chatroom` → API Gateway custom domain (e.g. `d-xxxx.execute-api.us-east-1.amazonaws.com`).
 
-### `cdn.stimulize.org` — widget bundle
+### Current beta GitHub Pages hosting
 
-Hosts `chatroom.min.js`. Beta uses GitHub Pages from a separate repo (e.g. `stimulize-widget-cdn`).
+Current beta hosts both editor and widget from this repo's GitHub Pages site:
 
-1. Create a separate GitHub repo for the widget bundle.
-2. Configure GitHub Pages on the repo, custom domain = `cdn.stimulize.org`, enforce HTTPS.
-3. On domain.com DNS: add CNAME `cdn` → `<github-username>.github.io`.
-4. Build pipeline pushes `dist/chatroom.min.js` to the repo on each release.
+```text
+https://ara-yjx.github.io/stimulize-chatroom-proto/#/chatroom
+https://ara-yjx.github.io/stimulize-chatroom-proto/chatroom.min.js
+```
 
-GitHub Pages handles cert provisioning. Cache invalidation on update is via filename versioning (`chatroom.min.js?v=1.2.3`) since GH Pages doesn't expose CDN headers. CloudFront migration is in the prod TODO if needed.
+Build path:
 
-### `mock-mgmt.stimulize.org` — beta management API
+- `scripts/build_pages_site.sh` builds editor + widget and assembles `publish/`.
+- `.github/workflows/deploy-pages-site.yml` deploys the Pages artifact.
 
-Routes to ALB → Fargate container (mock management API). Same pattern: ACM cert validation CNAME + final CNAME to ALB DNS name. Beta only.
+### `cdn.stimulize.org` — future widget bundle domain
+
+Deferred until DNS access is available. It should point at the widget bundle host or move to CloudFront/S3 if cache invalidation, edge logs, or stricter WAF rules are needed.
+
+### `mock-mgmt.stimulize.org` — deprecated beta management API idea
+
+Not current. Beta management uses the Stimulize backend API Gateway URL.
 
 CDK can automate API Gateway custom domain + ACM. Domain.com DNS records are manual one-time setup.
 

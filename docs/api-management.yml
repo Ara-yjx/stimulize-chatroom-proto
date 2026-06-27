@@ -4,21 +4,23 @@ info:
   version: 1.0.0
   description: |
     Management API called by the editor UI.
-    Phase 1 (beta): mock Flask server in a Fargate container with SQLite, behind a bearer token.
-    Phase 2 (prod): real Stimulize backend with Postgres and proper auth.
+    Current beta: real Stimulize backend with shared Postgres and token auth.
+    Local/dev compatibility: mock Flask server can still be used for isolated
+    testing, but it is not the current deployed beta source of truth.
 
     Auth: all endpoints require `Authorization: Bearer <token>` (see securitySchemes).
 
     Note: the runtime Lambda reads chatroom settings directly from Stimulize
     Postgres and writes one usage row per billable model invocation into
     `chatroom_usage`. The editor reads aggregated usage totals through the
-    management API endpoints below.
+    management API endpoints below. Detailed billing schema direction is in
+    `docs/token-usage-and-billing-design.md`.
 
 servers:
-  - url: https://mock-mgmt.stimulize.org
-    description: Beta (Fargate container)
+  - url: https://9wr63is7x6.execute-api.us-east-2.amazonaws.com/live
+    description: Beta Stimulize backend API Gateway
   - url: https://stimulize.org/api
-    description: Future production (Stimulize backend)
+    description: Future production Stimulize backend
   - url: http://localhost:5000
     description: Local mock
 

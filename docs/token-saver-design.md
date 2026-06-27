@@ -1,6 +1,19 @@
 # Token Saver Design
 
-Status: draft proposal
+Status: partially implemented.
+
+Implemented:
+
+- prompt blocks are explicit
+- static scaffold/examples were shortened
+- Bedrock prompt cache is enabled for Claude Sonnet 4.6 model IDs
+- cache checkpoint is placed in `messages[*].content` for the current Bedrock tool-use path
+
+Pending:
+
+- token-size instrumentation by prompt block
+- rolling summary + recent window
+- direct OpenAI/Anthropic adapters
 
 ## Goal
 
@@ -11,8 +24,8 @@ Reduce input tokens per AI tick without losing:
 - provider portability
 - per-AI persona consistency
 
-This doc is about prompt and inference design. Billing stays the same: record
-raw token counts and write-time estimated cost.
+This doc is about prompt and inference design. Billing details live in
+[token-usage-and-billing-design.md](./token-usage-and-billing-design.md).
 
 
 ## Current Problem
@@ -389,16 +402,25 @@ Suggested beta rule:
   - dynamic history
   - total input
 
+Status: prompt splitting and shortening are implemented; token composition
+measurement is pending.
+
 ### Phase 2
 
 - enable provider-side caching for the static prefix
 - keep the cached block deterministic
+
+Status: Bedrock cache is implemented for Claude Sonnet 4.6 model IDs. In live
+probes, the cache checkpoint had to live in `messages[*].content` for the
+current Converse tool-use path.
 
 ### Phase 3
 
 - add rolling summary fields
 - summarize only when prompt size needs it
 - keep full-history fallback if summarization fails
+
+Status: pending.
 
 
 ## Recommendation

@@ -1,6 +1,10 @@
-# Human To-Do: AWS & Infrastructure Setup
+# Historical Human To-Do: AWS & Infrastructure Setup
 
-## 🔴 Before First Deploy
+Status: deprecated archive. This was the pre-deploy checklist from the original infrastructure design. Current implementation and pending work are tracked in [decision-status.md](./decision-status.md), [low-level-design.md](./low-level-design.md), and [token-usage-and-billing-design.md](./token-usage-and-billing-design.md).
+
+Do not treat this file as the active launch checklist.
+
+## Deprecated: Before First Deploy
 
 - [ ] **Set up AWS CLI programmatic access** (needed for CDK deploy):
   - IAM Console → your user → Security credentials → Create access key
@@ -14,13 +18,15 @@
   - RDS endpoint, port, database name
   - RDS credentials secret ARN
 
-## 🟡 Domain: chatroom.stimulize.org
+## Deferred: Domain: chatroom.stimulize.org
 
 - [ ] **Add 2 CNAME records on domain.com** (values from CDK output):
   1. ACM validation CNAME
   2. `chatroom` → API Gateway custom domain name
 
-## 🟡 RDS Schema (run once)
+## Deprecated: RDS Schema (run once)
+
+The active backend model lives in `Stimulize-backend`; billing schema direction lives in [token-usage-and-billing-design.md](./token-usage-and-billing-design.md). Shared RDS migration must be additive. `db.create_all()` does not add columns to an existing table.
 
 ```sql
 CREATE TABLE chatroom (
@@ -46,12 +52,12 @@ CREATE TABLE chatroom_usage (
 CREATE INDEX idx_usage_chatroom ON chatroom_usage(chatroom_id);
 ```
 
-## 🟢 After Deploy
+## Deprecated: After Deploy
 
 - [ ] `curl https://chatroom.stimulize.org/auth/token` returns a response
 - [ ] Create test chatroom → generate script → test in Qualtrics
 
-## What Kiro Handles
+## Deprecated: What Kiro Handles
 
 - JWT secret in Secrets Manager (via CDK)
 - DynamoDB table (via CDK)

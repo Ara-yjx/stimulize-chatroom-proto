@@ -2,11 +2,13 @@ openapi: 3.0.3
 info:
   title: Stimulize Chatroom API
   version: 1.0.0
-  description: Runtime API called by the chat widget. Hosted at chatroom.stimulize.org.
+  description: Runtime API called by the chat widget. Beta uses API Gateway directly; chatroom.stimulize.org is the future custom domain.
 
 servers:
+  - url: https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod
+    description: Beta API Gateway
   - url: https://chatroom.stimulize.org
-    description: Production
+    description: Future production custom domain
   - url: http://localhost:5001
     description: Local dev
 

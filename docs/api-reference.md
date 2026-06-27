@@ -8,8 +8,8 @@ OpenAPI specs:
 
 Two API surfaces:
 
-1. **Chatroom API** (`chatroom.stimulize.org`) — called by the chat widget at runtime
-2. **Management API** (`stimulize.org` or mock Flask) — called by the editor UI and internally by the chatroom Lambda
+1. **Chatroom API** — called by the chat widget at runtime. Beta uses API Gateway directly; future DNS is `chatroom.stimulize.org`.
+2. **Management API** — called by the editor UI. Beta uses `Stimulize-backend` with shared Postgres; mock Flask is local/dev compatibility.
 
 ---
 
@@ -50,7 +50,7 @@ Status codes:
 
 ## Management API Implementation
 
-The current `Stimulize-backend` implementation only exposes the project's POST/action route style.
+The current `Stimulize-backend` implementation exposes the project's POST/action route style.
 
 Routes:
 
@@ -59,12 +59,14 @@ Routes:
 - `POST /api/getChatroom/<id>`
 - `POST /api/updateChatroom/<id>`
 - `POST /api/deleteChatroom/<id>`
+- `POST /api/getChatroomUsage/<id>`
+- `POST /api/getUserUsage`
 
 The actual backend contract is documented in:
 
 - [CHATROOM_MANAGEMENT_API.md](../../Stimulize-backend/CHATROOM_MANAGEMENT_API.md)
 
-Usage endpoints are deferred in the current backend implementation.
+Usage endpoints are implemented for aggregate reads. Future cache-bucket columns are deferred; see [token-usage-and-billing-design.md](./token-usage-and-billing-design.md).
 
 ---
 
@@ -115,7 +117,7 @@ Request body:
 }
 ```
 
-Response totals include `input_tokens`, `output_tokens`, and `estimated_cost_usd`. When `period` is provided, the response also includes a `series` array grouped by `hour`, `day`, `week`, or `month`.
+Current response totals include `input_tokens`, `output_tokens`, and `estimated_cost_usd`. When `period` is provided, the response also includes a `series` array grouped by `hour`, `day`, `week`, or `month`. Future usage schema will expose cache token buckets separately; see [token-usage-and-billing-design.md](./token-usage-and-billing-design.md).
 
 ### POST /api/getUserUsage
 Get aggregated usage across all chatrooms owned by the current user.
@@ -131,12 +133,12 @@ The chat widget is distributed as a single bundled script (`chatroom.min.js`). I
 ### Loading
 
 ```html
-<script src="https://cdn.stimulize.org/chatroom.min.js"></script>
+<script src="https://ara-yjx.github.io/stimulize-chatroom-proto/chatroom.min.js"></script>
 ```
 
 In Qualtrics (jQuery available):
 ```javascript
-jQuery.getScript("https://cdn.stimulize.org/chatroom.min.js", function() {
+jQuery.getScript("https://ara-yjx.github.io/stimulize-chatroom-proto/chatroom.min.js", function() {
   // widget ready
 });
 ```
@@ -205,14 +207,19 @@ Returns the conversation history as plain text, one line per message. Format:
 
 ### Qualtrics Embedded Data
 
-When running inside Qualtrics, the widget automatically writes the full history text to `Qualtrics.SurveyEngine.setEmbeddedData("chatroom_history", ...)` on every message event. No additional configuration needed — the widget detects the Qualtrics environment automatically.
+When running inside Qualtrics, the widget automatically writes history on every message event:
+
+- `QUALTRICS_CHATROOM_HISTORY`: formatted text
+- `QUALTRICS_CHATROOM_HISTORY_JSON`: plain JSON
+
+The widget checks `Qualtrics?.SurveyEngine.setEmbeddedData` before writing and skips local/GitHub Pages preview environments.
 
 ### Lifecycle
 
 1. **Token exchange** — calls `/auth/token` with `chatroomId`
-3. **Pairing screen** — animated "Finding a chat partner..." for `simulate_pairing_seconds` (configurable per chatroom)
-4. **Active chat** — message input, polling every 3s, AI messages appear with simulated typing delay
-5. **Conversation ended** — input disabled, "This conversation has ended." system message
+2. **Pairing screen** — animated "Finding a chat partner..." for `simulate_pairing_seconds` (configurable per chatroom)
+3. **Active chat** — message input, polling every 3s, AI messages appear with simulated typing delay
+4. **Conversation ended** — input disabled, "This conversation has ended." system message
 5. **Lobby aborted** (group mode, 410) — "No one else joined this chatroom." + "Reconnect" button
 
 ### Error states
@@ -225,4 +232,4 @@ When running inside Qualtrics, the widget automatically writes the full history 
 
 ## Note on Internal Endpoints
 
-Lambda reads chatroom settings directly from Stimulize Postgres in deploys where RDS credentials are configured. Each billable model invocation writes one `chatroom_usage` row containing `provider`, `model_id`, raw input/output token counts, and the write-time `estimated_cost_usd`. Aggregated usage is then queried through the management API.
+Lambda reads chatroom settings directly from Stimulize Postgres in deploys where RDS credentials are configured. Each billable model invocation writes one `chatroom_usage` row with provider/model identifiers, token usage, provider-native raw usage JSON, and write-time estimated cost. Aggregated usage is then queried through the management API. Detailed billing design lives in [token-usage-and-billing-design.md](./token-usage-and-billing-design.md).

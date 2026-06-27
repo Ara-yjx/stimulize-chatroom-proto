@@ -20,16 +20,17 @@
   - Group participant mode (1-on-1 is a UI preset over the group settings)
   - Standalone mode (portable script, independent of Stimulize trial)
   - Chatroom ID + fixed beta client access key — no per-chatroom "Channel" or "Key"
-  - Chatroom settings cloud-managed via mock management API (Fargate + SQLite + bearer token)
+  - Chatroom settings cloud-managed via real `Stimulize-backend` beta API and shared Postgres
   - Auto-generated participant nicknames + emoji avatars (random)
-  - Async AI flow via the tick model (heartbeat container + tick handler Lambda)
+  - Async AI flow via the tick model (EventBridge-scheduled heartbeat Lambda + tick handler Lambda)
   - Conversation recorded in Qualtrics ED
   - Lobby-based pairing (`target_human_count`, `ai_join_strategy`, `max_wait_seconds`)
   - `max_duration_seconds` cap per chatroom; beta hard cap is 15 minutes
   - Researcher-facing audit via debug endpoint (`include_ticks=true`)
+  - Editor and widget hosted through GitHub Pages for beta
 
 - **Prod (v2)**
-  - Migrate mock management API → real Stimulize backend (Postgres + proper auth)
+  - Harden real Stimulize backend management API for public launch
   - Lobby pruning enabled (currently no-op in beta)
   - CORS allowlist
   - Cost guardrails (per-conversation token caps)
@@ -38,11 +39,11 @@
   - See [Beta → Prod TODO](#beta--prod-todo) for the full list.
 
 - **Phase 1.1 (follow-up, in scope of beta but lower priority)**
-  - Token usage estimation in editor
+  - Live token usage/cost estimation before save
   - Customizable Qualtrics ED name
   - Hide-next-button-until-min-time
   - Image avatars
-  - Usage by day / month dashboards
+  - Usage dashboard cache-bucket breakdown after billing schema migration
 
 - **Phase 99 (discussed but likely won't do)**
   - Trial-integrated mode
@@ -66,6 +67,20 @@
 
 **Usage and Billing**
 - Chatroom total usage
+
+## Current Implementation Snapshot
+
+See [decision-status.md](./decision-status.md) for a maintained list of implemented, pending, and deprecated decisions.
+
+Current beta implementation:
+
+- Editor: GitHub Pages app at `https://ara-yjx.github.io/stimulize-chatroom-proto/#/chatroom`, using `HashRouter`.
+- Widget bundle: `https://ara-yjx.github.io/stimulize-chatroom-proto/chatroom.min.js`.
+- Runtime API: beta API Gateway URL `https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod`; `chatroom.stimulize.org` is future DNS.
+- Management API: real `Stimulize-backend` beta API using POST/action routes and shared RDS.
+- Tick loop: EventBridge-scheduled heartbeat Lambda loops over active conversations and async-invokes `chatroom-tick-handler`.
+- Usage: runtime writes one RDS row per billable model invocation; management API aggregates reads.
+- Prompt cache: Bedrock cache is implemented for Claude Sonnet 4.6 model IDs.
 
 ## Core Design
 
@@ -104,7 +119,10 @@ Future settings (out of scope for beta)
 - API
   - Host page can access conversation history (structured + plain text) for data collection.
     - Exposes `getHistory()` and `getHistoryText()` for host page integration.
-    - Allow directly write to Qualtrics Embedded Data onChange (auto write). 
+    - Auto-writes Qualtrics Embedded Data when `Qualtrics?.SurveyEngine.setEmbeddedData` exists:
+      - `QUALTRICS_CHATROOM_HISTORY`
+      - `QUALTRICS_CHATROOM_HISTORY_JSON`
+    - Skips ED writes in local/GitHub Pages preview environments.
 - Distributed as a CDN package. Host page loads and mounts it inside a target HTML element.
 - Script loading in Qualtrics: since Qualtrics has jQuery, consider using `jQuery.getScript()`
 
@@ -121,18 +139,14 @@ Future settings (out of scope for beta)
   - Events model: each entry has a `type` ("message", "system", "error").
   - 1-on-1 mode: new `conversation_id` per session.  
     Group mode: might reuse conversation with matching logic.
-- Use URL `chatroom.stimulize.org` (better data segregation than `stimulize.org/chatroom`).
+- Beta uses API Gateway directly. Future stable URL: `chatroom.stimulize.org` (better data segregation than `stimulize.org/chatroom`).
 
 ### Billing
-- Token-based usage tracking, mirroring Bedrock pricing (input + output tokens), with one persisted usage row per billable model invocation and write-time `estimated_cost_usd` so historical records stay stable if provider pricing changes later.
-- Decision on write path:
-  - Option A: runtime writes usage through the management API.
-  - Option B: runtime writes usage directly to Stimulize Postgres.
-  - Decision: **Option B**.
-  - Brief comparison:
-    - Option A adds one more network hop, one more auth surface, and turns the management backend into a write-through proxy for data the runtime already owns.
-    - Option B keeps the billable event adjacent to the Bedrock invocation, reduces moving parts, and makes idempotent `usage_event_id` writes straightforward.
-  - Result: management API is read-only for billing aggregation; the chatroom runtime writes `chatroom_usage` rows directly to RDS.
+- One persisted usage row per billable model invocation.
+- Runtime writes usage directly to Stimulize Postgres; management API only reads and aggregates.
+- Current implementation stores raw input/output tokens, write-time `estimated_cost_usd`, and provider-native usage JSON.
+- Future design adds first-class cache token and cost component columns so Bedrock, OpenAI, and Anthropic usage can be compared without provider-specific SQL.
+- Details: [token-usage-and-billing-design.md](./token-usage-and-billing-design.md).
 
 
 ## Design Details
@@ -237,27 +251,28 @@ The naive "user sends message → all AIs reply" pattern doesn't fit group mode 
 - Why hybrid over pure-prompt: cost-bounded; small models love to talk regardless of instructions.
 - Why tool use over control tokens (`<EOM>`/`<br>`): structured output, model-agnostic, no parsing brittleness across Claude/Nova/Llama.
 
-**Tick mechanism: container heartbeat + Lambda async invoke**
+**Tick mechanism: EventBridge-scheduled heartbeat Lambda + tick handler Lambda**
 
-A small ECS Fargate task (`desiredCount=1`) loops every N seconds, queries `status="active"` conversations from a sparse GSI, and async-invokes a tick handler Lambda for each. The handler runs the gate + Bedrock + DDB writes.
+EventBridge starts `chatroom-tick-heartbeat` on a schedule. Each heartbeat invocation loops for a bounded window, queries `status="active"` conversations from a sparse GSI, and async-invokes `chatroom-tick-handler` for each. The handler runs the gate + Bedrock + DDB writes. Reserved concurrency is 1 for the heartbeat Lambda so overlapping schedules cannot create duplicate heartbeat loops.
 
 Options considered:
 1. EventBridge cron + fan-out Lambda. EventBridge minimum is 1 minute — too coarse for 5-15s ticks.
 2. SQS self-trigger chain. Each handler invocation enqueues the next. Lower idle cost but needs explicit watchdog + healing logic when chains break.
-3. Container heartbeat (chosen). Simple mental model, central cadence control, no per-conversation healing logic. Restart recovery via ECS.
+3. ECS/Fargate container heartbeat. Simple mental model, central cadence control, but adds container/service lifecycle overhead.
+4. EventBridge-scheduled long-running heartbeat Lambda (chosen for current beta source). Keeps the short tick cadence without maintaining a separate ECS heartbeat service.
 
 Why async Lambda invoke over SQS: built-in retry (2x), built-in throttling buffer (6h queue), no queue infra to provision. Race control is required regardless — the handler conditionally acquires an `active_tick_id` / `active_tick_until` marker before any Bedrock call.
 
 **Configurability and ops:**
-- `HEARTBEAT_INTERVAL_SEC` env var on the container (tunable without redeploy; default 5s).
-- Container healthcheck: exits after N consecutive DDB query failures so ECS restarts.
+- `HEARTBEAT_INTERVAL_SEC` env var on the heartbeat Lambda (current source default: 5s).
+- `HEARTBEAT_WINDOW_SEC` bounds each heartbeat Lambda's loop duration.
 - `max_duration_seconds` chatroom setting: researcher caps total conversation duration. Tick handler stops ticking and flips `status="ended"` past this deadline. Beta hard cap: 900 seconds (15 minutes), primarily to bound Bedrock spend and keep embedded DynamoDB event history safely below item-size limits.
 
 **Active tick race control**
 
 The heartbeat may skip conversations whose `active_tick_until > now`, but that is only an optimization. The tick handler itself is authoritative: before reading history or calling Bedrock, it conditionally sets `active_tick_id=<lambda request id>` and `active_tick_until=now+timeout` on the conversation row. If another handler already owns an unexpired active tick, the new handler returns. All final state writes and AI message appends condition on `active_tick_id` still matching the handler's tick id. If a Lambda dies, the timeout expires and the next heartbeat can recover the conversation.
 
-**Beta vs production note:** Single-task ECS means ~30s gap during container restart — no ticks fire in that window. Acceptable for beta research traffic. **Revisit at production phase**: options include 2 tasks with leader election or shard assignment, EventBridge-driven fan-out, or migrating to the SQS self-trigger model.
+**Beta vs production note:** The current scheduled heartbeat Lambda is acceptable for beta. Revisit before public launch for stronger scheduling/availability guarantees: multi-runner leader election, sharding, EventBridge fan-out, or SQS self-triggering.
 
 **Audit: all events recorded**
 
@@ -285,19 +300,7 @@ Conceptually, a 1-on-1 chatroom is just `target_human_count=1, ai_strategy=fixed
 
 ### Usage/Billing Architecture
 
-Options for storage and transmission of usage data
-- A) Direct HTTP to management API:  
-  Simple fire-and-forget, but data lost if backend is down.
-- B) Lambda → RDS directly:  
-  Accurate, no middleman. But requires VPC (adds cold start latency) and RDS Proxy (connection pooling for concurrent Lambdas).
-- C) Lambda → SQS → billing Lambda or Stimulize backend → RDS:  
-  Decoupled yet still resilient. No VPC needed for chatroom Lambda.
-- D) Lambda → DynamoDB usage table:  
-  No VPC needed, fast writes. But bad support for aggregation queries (no native SUM).
-- E) CloudWatch Logs/EMF:  
-  Zero coupling, but slow/expensive for aggregation queries. Better for monitoring than billing.
-
-**Decision -> start with B, migrate to C.**
+Decision: chatroom runtime writes usage directly to Stimulize Postgres; management API is read-only for usage aggregation. See [token-usage-and-billing-design.md](./token-usage-and-billing-design.md) for the detailed write-path tradeoff, current schema gap, and future provider-neutral table shape.
 
 
 ### Editor UI
@@ -307,10 +310,10 @@ Options for storage and transmission of usage data
 
 **Chatroom Editor Page:**
 - Edit chatroom settings
-- Generate embeddable script: `fetch('http://stimulize-chatroom/script').start({chatroomId: '...'})`.
+- Generate embeddable Qualtrics script that loads `chatroom.min.js` and calls `StimulizeChatroom.init({ chatroomId, apiBaseUrl })`.
 - Preview the chatroom widget inline.
 - Chatroom setting is saved to cloud
-- Token usage estimation (`timer * model * total participants`)
+- Token Usage button opens usage stats in a new tab.
 
 
 ### Editor backend (Stimulize Backend)
@@ -358,10 +361,10 @@ Decision: Lambda in VPC is OK.
 
 These non-critical features will be done lastly as follow-up (although in scope of beta)
 - Mimic human by not always 1-ask-1-reply
-- Token usage estimation
+- Live pre-save token/cost estimation
 - Allow customizing the ED name to output
 - Hide next button in Qualtrics
-- Usage by day/month
+- Cache-bucket usage breakdown after billing schema migration
 - Use actual emoji image as avatar (start with emoji text elementLKet')
 
 
@@ -370,7 +373,9 @@ These non-critical features will be done lastly as follow-up (although in scope 
 
 
 
-## Alternative/Future Designs
+## Deprecated / Deferred Design Archive
+
+The active design is above. This section keeps older options and raw discussion notes for traceability only; do not treat it as the current implementation.
 
 ### Multi-Participant Conversation Mapping
 - Each AI sees the full history from its own perspective:
@@ -534,23 +539,23 @@ Then simplify by reducing two corner case.
 Items deferred during the internal-beta phase. Revisit before public launch.
 
 **Reliability and ops**
-- ECS heartbeat is single-task. ~30s tick gap on container restart. Move to 2-task with leader election or shard assignment, or migrate to SQS-self-trigger model.
-- Mock management API runs as a single Fargate container with SQLite + bearer token. Migrate to real Stimulize backend (Postgres + proper auth).
+- Heartbeat is currently one scheduled Lambda loop with reserved concurrency 1. Evaluate multi-runner leader election, sharding, EventBridge fan-out, or SQS-self-trigger before public launch.
+- Mock management API is no longer the deployed beta management backend. Keep it for local/dev; real beta uses `Stimulize-backend` + shared Postgres.
 - Lambda concurrency limit set to default. Add explicit `reservedConcurrentExecutions` and a Bedrock-throttling alarm.
 - Bedrock cross-region inference latency varies (`global.` / `us.` prefixed models). Measure and document; consider regional pinning if it matters.
 - Lobby pruning: schema includes `last_seen_at` per participant but pruning logic is not implemented for beta. Implement before opening to wider users so abandoned tabs don't ghost-fill lobbies.
-- Bundle CDN: beta uses GitHub Pages on `cdn.stimulize.org`. Move to CloudFront + S3 if we need cache invalidation, edge logs, or stricter WAF rules.
+- Bundle CDN: beta uses GitHub Pages at `ara-yjx.github.io/stimulize-chatroom-proto`. Move to `cdn.stimulize.org` after DNS access, then CloudFront + S3 if we need cache invalidation, edge logs, or stricter WAF rules.
 - CORS is `*` for beta. Tighten to a Qualtrics-domain allowlist (or Cognito-style auth) before prod.
 - JWT TTL is fixed at 3h. Revisit if researchers want longer sessions (`max_duration_seconds > 3h` would expire mid-conversation).
 - Beta keeps events embedded in the conversation DynamoDB item and caps conversations at 15 minutes. Before prod, split historical events into an append-only `chatroom-events` table to avoid the 400KB item limit, reduce hot-row contention, and support pagination/export.
 
 **Cost guardrails**
 - No per-chatroom Bedrock spend cap. Add daily / per-conversation token caps.
-- Editor cost estimation only listed in Phase 1.1. Surface live "estimated max cost" before researcher saves a chatroom.
+- Surface live "estimated max cost" before researcher saves a chatroom.
 
 **Researcher experience**
-- Token usage estimation in editor (live, based on duration × strategy × model rate).
-- Usage-by-day / usage-by-month dashboards in editor.
+- Live pre-save token/cost estimation in editor.
+- Usage dashboard exists for aggregate input/output/USD. Add cache-bucket breakdown after usage schema migration.
 
 **Data and privacy**
 - Conversation TTL is 2.5 years. Confirm with research compliance before prod.

@@ -1,6 +1,10 @@
 # Mock Management API
 
-Flask mock for chatroom key validation and usage tracking. No chatroom config storage — config comes from the client.
+Local/dev mock for the chatroom management API.
+
+Status: not the current deployed beta source of truth. Beta management now uses
+the real `Stimulize-backend` API with shared Postgres. Keep this package for
+isolated local tests and preview flows.
 
 ## Setup
 ```bash
@@ -21,14 +25,15 @@ pytest tests/
 
 ## Endpoints
 
-Internal (called by Lambda):
-- `GET /internal/keys/{chatroom_key}` — validate key
-- `POST /internal/usage` — report token usage
+Editor-compatible routes:
 
-Admin (called by Editor UI):
-- `POST /keys` — create key
-- `GET /keys` — list keys
-- `PUT /keys/{key_id}` — update restrictions
-- `DELETE /keys/{key_id}` — revoke key
+- `POST /api/getChatrooms`
+- `POST /api/createChatroom`
+- `POST /api/getChatroom/<id>`
+- `POST /api/updateChatroom/<id>`
+- `POST /api/deleteChatroom/<id>`
+- `POST /api/getChatroomUsage/<id>`
+- `POST /api/getUserUsage`
 
-Seed key for testing: `stimulize_ckv1_0000000000000001`
+The runtime should not write usage through this mock in current design; usage
+writes belong next to provider invocation and go directly to RDS in beta/prod.
