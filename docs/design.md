@@ -280,7 +280,7 @@ The conversation `events[]` records every tick — including skipped ticks, "ask
 
 **Stateless ticks: full message history per tick**
 
-Bedrock Converse calls are stateless — Bedrock retains nothing across ticks. Each tick rebuilds the full prompt. The conversation history sent to Bedrock includes **all** prior messages, not a truncated window. This is the only way to keep AI identity (school, major, etc.) and topic state consistent across ticks. Token cost per tick grows linearly with conversation length; bounded by `max_duration_seconds`. Per-AI persona facts are also persisted on the conversation row and re-injected each tick, and each AI may also carry its own resolved `model_id` that overrides the chatroom default for that participant. See LLD for prompt composition.
+Bedrock Converse calls are stateless — Bedrock retains nothing across ticks. Each tick rebuilds the prompt from the conversation row and chatroom setting. The conversation history sent to Bedrock includes **all** prior messages for v1, not a truncated window. Per-AI persona facts are persisted on the conversation row and re-injected each tick, and each AI may carry its own resolved `model_id` and `temperature`. See [prompt-construction-design.md](./prompt-construction-design.md) for prompt composition.
 
 **AIs don't know who else is AI**
 

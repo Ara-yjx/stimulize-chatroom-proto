@@ -610,28 +610,18 @@ Forcing `toolChoice` ensures the model always returns structured output.
 
 ### Prompt structure (per-AI per-tick)
 
-Each Bedrock Converse call is stateless — Bedrock holds no state across ticks. The full prompt is reassembled every tick:
+Prompt construction is defined in [prompt-construction-design.md](./prompt-construction-design.md).
 
-```
-SPEECH_SCAFFOLD            # platform-managed: tool use, silence rules, examples
-+ CHATROOM_TOPIC_INSTRUCTION  # researcher-supplied per chatroom (e.g. "chat about college life")
-+ PER_AI_PERSONA           # auto-generated identity facts (school, major, gender), persisted on conversation row
-+ PARTICIPANTS             # <participants> block listing every nickname (caller annotated "(you)")
-+ CONVERSATION_CONTEXT     # <your-name>, <conversation-history> with now-relative timestamps
-+ ADDITIONAL_PROMPT        # researcher-supplied free-form, appended after history (last-mile reminders)
-```
+Runtime summary:
 
-- `SPEECH_SCAFFOLD` and the `speak` tool config are not exposed to researchers — they live in our codebase and are versioned with the platform.
-- `CHATROOM_TOPIC_INSTRUCTION` is the researcher's chatroom setting (`topic_instruction` in RDS). The backend wraps it in a `# Chatroom topic` block before stitching it into the system prompt.
-- `PER_AI_PERSONA` is generated at conversation start and stored on the conversation row so each AI keeps a consistent identity across ticks. Without this, AIs drift across ticks (different school, different major) since Bedrock conversations are stateless. The persona is drawn from the chatroom setting's `ai_personas` pool using a round-robin-style assignment: without replacement when the pool has at least `ai_count` entries; otherwise assign whole shuffled rounds of the pool first, then fill the final partial round without replacement; empty pool → no persona block.
-- Each selected AI also gets a resolved `model_id` on its participant row. If the chosen persona entry omits `model_id`, the chatroom-level default `model_id` is copied onto that participant at conversation creation time. Ticks then read the participant's `model_id` first and fall back to the chatroom default.
-- `PARTICIPANTS` lists every nickname in the room (no role markers — see "AIs don't know who else is AI"). Without this, an AI can't notice a participant who never speaks, defeating the inclusivity rules in the scaffold.
-- `CONVERSATION_CONTEXT` is built fresh every tick. Timestamps in `<conversation-history>` are computed as `now - event.timestamp`, so the model sees correct relative deltas at every call.
-- `ADDITIONAL_PROMPT` is researcher-supplied free-form text (`additional_prompt` in RDS). Lands AFTER the history so last-mile reminders ("stay one-thought-per-turn") are the most recent thing the model sees before deciding what to say. Optional; omitted from the prompt when empty.
-
-**Drift prevention**: do NOT truncate `<conversation-history>` during a conversation. Each tick must include the full message history. Truncation causes identity drift and topic-loop. Token cost per tick grows linearly, which is the explicit tradeoff. Conversation length is bounded by `max_duration_seconds`.
-
-**Inclusivity rule**: the scaffold instructs AIs to notice silent participants and invite them in with group-addressed phrasing (no name targeting), with a ~15s cooldown after another participant has just invited them. Pairs with the `<participants>` block — without that block, an AI can't reliably see a participant who hasn't spoken.
+- Bedrock Converse is stateless; the backend rebuilds the prompt every tick.
+- `mimic_human=true` uses the human-mimic scaffold and examples.
+- `mimic_human=false` uses a short generic AI-assistant scaffold.
+- Bedrock prompt cache uses separate static prefixes for those two modes.
+- Each resolved AI participant stores `internal_name`, `nickname`, `persona`,
+  `model_id`, and `temperature`.
+- The full visible conversation history is still included for v1. Summary/window
+  optimization is deferred.
 
 ### Simulated typing delay
 
@@ -817,8 +807,9 @@ https://ara-yjx.github.io/stimulize-chatroom-proto/#/chatroom
 - System prompt textarea
 - Model ID dropdown (Anthropic, Amazon Nova, Llama, DeepSeek, Qwen, Google, Mistral)
 - Simulate pairing seconds, timer min/max. `max_duration_seconds` is hidden and derived as `(timer_max_minutes + 1) * 60`.
-- Group-only: `target_human_count`, `ai_join_strategy` radio, `ai_strategy_value`, `max_wait_seconds`
-- Per-AI persona list; each entry may choose a specific model or "same model as chatroom default".
+- Group-only: `human_count`, `ai_count`, `replace_human_with_ai`, `max_wait_seconds`
+- Chatroom-level `temperature` default (`0.0..1.0` for Bedrock beta)
+- Per-AI persona list; each entry may set `internal_name`, display `nickname`, persona text, model override, and temperature override.
 - Generate Script button → Qualtrics-compatible JS snippet
 - Widget Preview (iframe with blob URL; "Launch another preview" button mounts side-by-side iframes for multi-participant testing)
 - Token Usage button → opens usage stats route in a new tab
@@ -826,12 +817,12 @@ https://ara-yjx.github.io/stimulize-chatroom-proto/#/chatroom
 ### Form validation
 
 Editor enforces these client-side; the management API re-validates server-side as the source of truth:
-- `target_human_count >= 1`
-- `total_participant_count >= target_human_count` (if `ai_strategy = total_participant_count`)
+- `human_count >= 1`
+- `ai_count >= 0` and `<= 7` (cap on AI count for cost safety)
+- `temperature` is `0.0..1.0` for Bedrock beta. OpenAI/Anthropic direct API limits may differ later.
 - `max_wait_seconds <= 600`
 - Backend source-of-truth: `max_duration_seconds <= 900` for beta (15-minute hard cap; revisit in prod after event-history storage is split out)
 - Pending alignment: editor-side validation currently allows a wider hidden draft range, while save requests are still rejected by the backend above 900.
-- `ai_strategy_value >= 0` and `<= 7` (cap on AI count for cost safety)
 - For `mode: "one_on_one"`, settings are auto-derived: `target_human_count=1`, `ai_strategy=fixed_ai_count`, `value=1`, `max_wait_seconds=0`. The 1-on-1 form is a UI preset over the same group settings.
 
 ### Management API hostname configuration
@@ -851,8 +842,10 @@ For testing arbitrary backend hostnames during development, the editor exposes a
 
 The editor surfaces mode as a toggle (`one_on_one` / `group`):
 - `one_on_one` form shows: name, model, topic_instruction, simulate_pairing_seconds, timer min/max. Group fields and `max_duration_seconds` are hidden.
-- `group` form additionally shows: target_human_count, ai_join_strategy radio (`fixed_ai_count` / `total_participant_count`), ai_strategy_value, max_wait_seconds.
-- `simulate_pairing_seconds` is hidden in group mode when `target_human_count > 1` — the lobby provides a real wait (`max_wait_seconds`), so a cosmetic wait on top would be confusing. With `target_human_count = 1` (1-on-1 preset under the hood, or a degenerate group room) the field stays visible because there is no real wait and the simulated pairing screen is the only pacing.
+- `group` form additionally shows: `human_count`, `ai_count`, `replace_human_with_ai`, `max_wait_seconds`.
+- `replace_human_with_ai=false`: start at timeout with available humans plus exactly `ai_count` AIs.
+- `replace_human_with_ai=true`: start at timeout with total participants equal to `human_count + ai_count`, replacing missing humans with extra AIs.
+- `simulate_pairing_seconds` is hidden in group mode when `human_count > 1` — the lobby provides a real wait (`max_wait_seconds`), so a cosmetic wait on top would be confusing. With `human_count = 1` the field stays visible because there is no real wait and the simulated pairing screen is the only pacing.
 - `max_duration_seconds` is derived on save as `(timer_max_minutes + 1) * 60`.
 - On save, the management API stores both sets of fields. For `one_on_one`, group fields are denormalized to fixed values (`target_human_count=1`, `ai_join_strategy=fixed_ai_count`, `ai_strategy_value=1`, `max_wait_seconds=0`) so the chat Lambda can branch uniformly on group fields without re-deriving from `mode`.
 

@@ -107,11 +107,11 @@ AI Chatroom实际使用中的几个点：
 - Let's use these options
   - human count
   - ai count
-  - `replace_human_with_ai_if_insufficient_human` boolean, configurable only when human count > 1
+  - `replace_human_with_ai` boolean, configurable only when human count > 1
 - Meaning:
   - `human_count`: desired human participant count
   - `ai_count`: desired AI participant count
-  - if `replace_human_with_ai_if_insufficient_human=false`, wait timeout starts with available humans plus `ai_count` AIs
+  - if `replace_human_with_ai=false`, wait timeout starts with available humans plus `ai_count` AIs
   - if `true`, wait timeout guarantees total participants equals `human_count + ai_count` by replacing missing humans with extra AIs
 - No need for backward compatibility in the widget.
 - Editor should transform old saved schema to the new schema for compatibility with existing beta chatrooms.
@@ -176,5 +176,4 @@ Qualtrics.SurveyEngine.addOnload(function() {
   - isolate Qualtrics preview detection in a small environment/helper module
   - keep widget rendering and runtime join logic independent from this check
   - future full solution may still split state management from display rendering
-
 
