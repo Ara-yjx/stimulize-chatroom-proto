@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
 import boto3
@@ -51,6 +52,23 @@ def _ensure_visible_at(event: dict) -> dict:
     if "visible_at" in event:
         return event
     return {**event, "visible_at": event.get("timestamp", 0)}
+
+
+def _to_dynamodb_safe(value):
+    """Recursively convert JSON-ish values into DynamoDB-safe values.
+
+    boto3's DynamoDB resource rejects Python floats. Chatroom settings and
+    participant snapshots can legitimately contain fractional beta values such
+    as temperature, so normalize floats at the adapter boundary instead of
+    forcing every caller to remember DynamoDB serialization rules.
+    """
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, list):
+        return [_to_dynamodb_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _to_dynamodb_safe(v) for k, v in value.items()}
+    return value
 
 
 def get_events(conversation_id: str, after: int = 0) -> list[dict]:
@@ -128,7 +146,7 @@ def append_events(
     now = datetime.now(timezone.utc).isoformat()
     ttl = int(time.time()) + TTL_SECONDS
 
-    normalized = [_ensure_visible_at(e) for e in events]
+    normalized = _to_dynamodb_safe([_ensure_visible_at(e) for e in events])
 
     try:
         table.update_item(
@@ -163,9 +181,9 @@ def append_events(
             "ttl": ttl,
         }
         if chatroom_setting is not None:
-            item["chatroom_setting"] = chatroom_setting
+            item["chatroom_setting"] = _to_dynamodb_safe(chatroom_setting)
         if participants is not None:
-            item["participants"] = participants
+            item["participants"] = _to_dynamodb_safe(participants)
         table.put_item(Item=item)
 
 
