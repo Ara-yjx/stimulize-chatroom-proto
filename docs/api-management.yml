@@ -226,12 +226,18 @@ components:
           items:
             $ref: "#/components/schemas/AiPersonaSetting"
           description: |
-            Optional per-AI persona/model pool. Each entry may override the
-            chatroom default model; null `model_id` means "same model as the
-            chatroom default".
+            Optional per-AI identity/persona/model/temperature pool.
         model_id:
           type: string
           example: global.anthropic.claude-sonnet-4-6
+        mimic_human:
+          type: boolean
+          default: true
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Bedrock beta range. Direct OpenAI/Anthropic limits may differ later.
         simulate_pairing_seconds:
           type: integer
           default: 0
@@ -249,19 +255,32 @@ components:
             Cap on total conversation duration. Tick handler ends the
             conversation past this deadline. Applies to both modes.
             Beta maximum: 900 seconds (15 minutes).
+        human_count:
+          type: integer
+          nullable: true
+          description: Group mode desired human participant count.
+        ai_count:
+          type: integer
+          nullable: true
+          maximum: 7
+          description: Desired base AI participant count.
+        replace_human_with_ai:
+          type: boolean
+          nullable: true
+          description: If true, missing humans are replaced by extra AIs at wait deadline.
         target_human_count:
           type: integer
           nullable: true
-          description: Group mode only; for one_on_one this is stored as 1.
+          description: Runtime compatibility field derived from human_count.
         ai_join_strategy:
           type: string
           nullable: true
           enum: [fixed_ai_count, total_participant_count]
-          description: Group mode only.
+          description: Runtime compatibility field derived from replace_human_with_ai.
         ai_strategy_value:
           type: integer
           nullable: true
-          description: Fixed AI count or target total participant count, depending on ai_join_strategy.
+          description: Runtime compatibility field derived from ai_count and human_count.
         max_wait_seconds:
           type: integer
           nullable: true
@@ -471,12 +490,26 @@ components:
     AiPersonaSetting:
       type: object
       properties:
+        internal_name:
+          type: string
+          nullable: true
+          description: Analysis label used in exported formatted history.
+        nickname:
+          type: string
+          nullable: true
+          description: Participant-visible AI display name.
         persona:
           type: string
         model_id:
           type: string
           nullable: true
           description: Null means use the chatroom-level `model_id`.
+        temperature:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: Null means use the chatroom-level `temperature`.
 
     ChatroomSummary:
       type: object

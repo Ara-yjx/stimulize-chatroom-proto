@@ -44,7 +44,7 @@ paths:
                 properties:
                   token:
                     type: string
-                    description: JWT (3h TTL). Claims: session_id, conversation_id, chatroom_id, iat, exp.
+                    description: "JWT (3h TTL). Claims: session_id, conversation_id, chatroom_id, iat, exp."
                   session_id:
                     type: string
                   conversation_id:
@@ -201,6 +201,14 @@ components:
         model_id:
           type: string
           example: global.anthropic.claude-sonnet-4-6
+        mimic_human:
+          type: boolean
+          default: true
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Bedrock beta range. Direct OpenAI/Anthropic limits may differ later.
         simulate_pairing_seconds:
           type: integer
           default: 0
@@ -218,19 +226,32 @@ components:
             Researcher-set cap on total conversation duration.
             Tick handler stops ticking and ends the conversation past this deadline.
             Beta maximum: 900 seconds (15 minutes).
+        human_count:
+          type: integer
+          nullable: true
+          description: Group mode desired human participant count.
+        ai_count:
+          type: integer
+          nullable: true
+          maximum: 7
+          description: Desired base AI participant count.
+        replace_human_with_ai:
+          type: boolean
+          nullable: true
+          description: If true, missing humans are replaced by extra AIs at wait deadline.
         target_human_count:
           type: integer
           nullable: true
-          description: Group mode only; for one_on_one this is stored as 1.
+          description: Runtime compatibility field derived from human_count.
         ai_join_strategy:
           type: string
           nullable: true
           enum: [fixed_ai_count, total_participant_count]
-          description: Group mode only.
+          description: Runtime compatibility field derived from replace_human_with_ai.
         ai_strategy_value:
           type: integer
           nullable: true
-          description: Fixed AI count or target total participant count, depending on ai_join_strategy.
+          description: Runtime compatibility field derived from ai_count and human_count.
         max_wait_seconds:
           type: integer
           nullable: true

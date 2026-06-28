@@ -77,7 +77,9 @@ Usage endpoints are implemented for aggregate reads. Future cache-bucket columns
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
 The create request is the first persisted save, so any editor-provided default `setting` values are stored immediately at creation time.
 
-Request: `{ name, setting: { mode, topic_instruction, additional_prompt?, ai_personas?: [{ persona, model_id? }], model_id, simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, target_human_count?, ai_join_strategy?, ai_strategy_value?, max_wait_seconds? } }`
+Request: `{ name, setting: { mode, topic_instruction, additional_prompt?, mimic_human?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count?, ai_count?, replace_human_with_ai?, max_wait_seconds? } }`
+
+The backend also stores derived runtime compatibility fields: `target_human_count`, `ai_join_strategy`, and `ai_strategy_value`.
 Response: `{ id, name, status, setting, created_at, updated_at }`
 
 ### POST /api/getChatrooms
