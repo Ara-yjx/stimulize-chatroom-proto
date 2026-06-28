@@ -26,6 +26,37 @@ The static scaffold is selected by `mimic_human`:
 For Bedrock prompt caching, these are separate static prefixes. Cache hits for
 one `mimic_human` mode do not apply to the other mode.
 
+## Bedrock Prompt Caching
+
+Some Bedrock models support prompt caching through the Converse API
+`cachePoint` content block. We use this only for models explicitly listed in
+the backend.
+
+Current implementation:
+
+- Static scaffold stays in the Bedrock `system` block.
+- A leading `user` message carries setup blocks and the cache point.
+- That leading message currently contains: chatroom topic, persona,
+  participant list, AI name, additional prompt, `cachePoint`, then
+  conversation history.
+- The normal conversation messages are prepended after that leading message.
+
+Effect:
+
+- The provider-managed cache is content-based; we do not create or name cache
+  records ourselves.
+- Cache reuse varies by prompt prefix content, so changes to topic, persona,
+  participant list, AI name, or additional prompt can create a different cache
+  prefix.
+- This means the cache is effectively per resolved AI setup/version, not one
+  global cache for the chatroom.
+
+Known gap: the logical prompt order above says additional prompt follows
+conversation history, but the cache path currently places it before the cache
+point and before history. Product copy should describe additional prompt as a
+general fine-tuning instruction until we either move it after history in the
+cache path or intentionally keep it cached.
+
 ## AI Identity
 
 Each resolved AI participant stores:
