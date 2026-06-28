@@ -1,6 +1,4 @@
-declare const $: JQueryStatic;
-declare const jQuery: JQueryStatic;
-const _$ = (typeof jQuery !== "undefined" ? jQuery : $) as JQueryStatic;
+import { _$ } from "../lib/jquery";
 
 /**
  * Render the pairing screen HTML into *element*. Returns nothing — caller

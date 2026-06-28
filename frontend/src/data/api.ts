@@ -3,10 +3,7 @@ import type {
   SendMessageResponse,
   PollMessagesResponse,
 } from "./types";
-
-declare const $: JQueryStatic;
-declare const jQuery: JQueryStatic;
-const _$ = (typeof jQuery !== "undefined" ? jQuery : $) as JQueryStatic;
+import { _$ } from "../lib/jquery";
 
 export async function exchangeToken(
   apiBaseUrl: string,

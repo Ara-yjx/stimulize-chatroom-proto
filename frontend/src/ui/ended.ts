@@ -1,6 +1,4 @@
-declare const $: JQueryStatic;
-declare const jQuery: JQueryStatic;
-const _$ = (typeof jQuery !== "undefined" ? jQuery : $) as JQueryStatic;
+import { _$ } from "../lib/jquery";
 
 export function showConversationEnded(container: string | HTMLElement): void {
   const $el = _$(container as any) as JQuery;

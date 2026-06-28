@@ -14,11 +14,9 @@ import { formatTimerText } from "./ui/timer";
 import { writeToED } from "./qualtrics/embedded-data";
 import { isQualtricsMobilePreview } from "./qualtrics/environment";
 import { lockQualtricsNextUntilTimerMin } from "./qualtrics/next-button";
+import { _$ } from "./lib/jquery";
 import styles from "./ui/styles.css";
 
-declare const $: JQueryStatic;
-declare const jQuery: JQueryStatic;
-const _$ = (typeof jQuery !== "undefined" ? jQuery : $) as JQueryStatic;
 const DEFAULT_API_BASE_URL = "https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod";
 
 let state: ChatroomState | null = null;

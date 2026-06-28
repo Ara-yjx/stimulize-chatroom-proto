@@ -1,6 +1,4 @@
-declare const $: JQueryStatic;
-declare const jQuery: JQueryStatic;
-const _$ = (typeof jQuery !== "undefined" ? jQuery : $) as JQueryStatic;
+import { _$ } from "../lib/jquery";
 
 /**
  * Load a script via jQuery.getScript (useful in Qualtrics).
