@@ -8,10 +8,11 @@ import { isManagementAuthExpiredError, mgmtFetchJson } from '../api/management'
 import { hasManagementToken, logoutManagement } from '../api/managementAuth'
 import {
   ChatroomSetting,
-  ChatroomMode,
   AiPersonaSetting,
+  defaultChatroomSetting,
   defaultSettingForMode,
   denormalizeForSave,
+  deriveChatroomMode,
   deriveMaxDurationSeconds,
   normalizeAiPersonas,
   validateChatroomSetting,
@@ -229,8 +230,8 @@ interface FormValues extends ChatroomSetting {
  * sensible defaults so the form doesn't crash.
  */
 function normalizeLoadedSetting(setting: Partial<ChatroomSetting> | undefined): ChatroomSetting {
-  const mode: ChatroomMode = setting?.mode === 'group' ? 'group' : 'one_on_one'
-  const defaults = defaultSettingForMode(mode)
+  const legacyMode = (setting as { mode?: unknown } | undefined)?.mode
+  const defaults = legacyMode === 'group' ? defaultSettingForMode('group') : defaultChatroomSetting()
   const timerMaxMinutes =
     typeof setting?.timer_max_minutes === 'number' ? setting.timer_max_minutes : defaults.timer_max_minutes
   const humanCount =
@@ -254,7 +255,6 @@ function normalizeLoadedSetting(setting: Partial<ChatroomSetting> | undefined): 
   return {
     ...defaults,
     ...setting,
-    mode,
     ai_personas: normalizeAiPersonas(setting?.ai_personas),
     mimic_human: typeof setting?.mimic_human === 'boolean' ? setting.mimic_human : defaults.mimic_human,
     temperature: typeof setting?.temperature === 'number' ? setting.temperature : defaults.temperature,
@@ -273,9 +273,9 @@ export default function ChatroomEditor() {
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm<FormValues>()
   const sessionExpiredModalShownRef = useRef(false)
-  const previousModeRef = useRef<ChatroomMode | undefined>(undefined)
-  const watchedMode = Form.useWatch('mode', form) as ChatroomMode | undefined
   const watchedHumanCount = Form.useWatch('human_count', form) as number | undefined
+  const watchedAiCount = Form.useWatch('ai_count', form) as number | undefined
+  const watchedMimicHuman = Form.useWatch('mimic_human', form) as boolean | undefined
   const watchedTimerMaxMinutes = Form.useWatch('timer_max_minutes', form) as number | null | undefined
 
   useEffect(() => {
@@ -284,27 +284,15 @@ export default function ChatroomEditor() {
   }, [form, watchedTimerMaxMinutes])
 
   useEffect(() => {
-    const previousMode = previousModeRef.current
-    previousModeRef.current = watchedMode
-    if (previousMode === 'one_on_one' && watchedMode === 'group') {
-      const groupDefaults = defaultSettingForMode('group')
-      form.setFieldsValue({
-        human_count: groupDefaults.human_count,
-        ai_count: groupDefaults.ai_count,
-        replace_human_with_ai: groupDefaults.replace_human_with_ai,
-        target_human_count: groupDefaults.target_human_count,
-        ai_join_strategy: groupDefaults.ai_join_strategy,
-        ai_strategy_value: groupDefaults.ai_strategy_value,
-        max_wait_seconds: groupDefaults.max_wait_seconds,
-      })
-    }
-  }, [form, watchedMode])
-
-  useEffect(() => {
     if (typeof watchedHumanCount === 'number' && watchedHumanCount <= 1) {
       form.setFieldValue('replace_human_with_ai', false)
     }
   }, [form, watchedHumanCount])
+
+  useEffect(() => {
+    if (watchedHumanCount === 1 && watchedMimicHuman === true) return
+    form.setFieldValue('simulate_pairing_seconds', 0)
+  }, [form, watchedHumanCount, watchedMimicHuman])
 
   const showSessionExpiredModal = useCallback(() => {
     if (sessionExpiredModalShownRef.current) return
@@ -363,7 +351,6 @@ export default function ChatroomEditor() {
 
     // Layer custom validation on top of Form's built-in rules.
     const settingToValidate: ChatroomSetting = {
-      mode: values.mode,
       topic_instruction: values.topic_instruction,
       additional_prompt: values.additional_prompt,
       ai_personas: normalizeAiPersonas(values.ai_personas),
@@ -439,11 +426,12 @@ export default function ChatroomEditor() {
   if (loading) return <Spin style={{ display: 'block', margin: '80px auto' }} />
   if (!chatroom) return <div style={{ padding: 24 }}>Chatroom not found</div>
 
-  const isGroup = watchedMode === 'group'
-  // Hide simulated pairing wait when there are real other humans to wait for.
-  // 1-on-1 mode and group-with-target-1 still show the field — both are
-  // single-human flows where the wait is purely cosmetic.
-  const hideSimulatePairing = isGroup && (watchedHumanCount ?? 0) > 1
+  const derivedMode = deriveChatroomMode({
+    human_count: watchedHumanCount ?? 1,
+    ai_count: watchedAiCount ?? 1,
+  })
+  const isGroup = derivedMode === 'group'
+  const enableSimulatePairing = (watchedHumanCount ?? 1) === 1 && watchedMimicHuman === true
 
   return (
     <div style={{ padding: 24 }}>
@@ -489,15 +477,6 @@ export default function ChatroomEditor() {
             </FormItem>
             <FormItem label="Status" field="status" triggerPropName="checked" style={{ flex: 0, minWidth: 140 }}>
               <Switch checkedText="Active" uncheckedText="Inactive" />
-            </FormItem>
-          </Row>
-
-          <Row>
-            <FormItem label="Mode" field="mode" rules={[{ required: true }]} style={{ flex: 0, minWidth: 160 }}>
-              <Select options={[
-                { label: '1 Human x 1 AI', value: 'one_on_one' },
-                { label: 'Group', value: 'group' },
-              ]} />
             </FormItem>
           </Row>
 
@@ -619,7 +598,13 @@ avoid talking about politics; keep messages under 12 words.
           </FormItem>
 
           <Row>
-            <FormItem label="⏱️ Simulate Pairing (sec)" field="simulate_pairing_seconds" hidden={hideSimulatePairing} style={{ flex: 1, minWidth: 180 }}>
+            <FormItem
+              label="⏱️ Simulate Pairing (sec)"
+              field="simulate_pairing_seconds"
+              hidden={!enableSimulatePairing}
+              extra="Server-managed lobby duration before a one-human mimic-human chat starts."
+              style={{ flex: 1, minWidth: 180 }}
+            >
               <InputNumber min={0} style={{ width: '100%' }} />
             </FormItem>
           </Row>
@@ -642,58 +627,56 @@ avoid talking about politics; keep messages under 12 words.
             </FormItem>
           </Row>
 
-          {/* ─── Group mode ────────────────────────────────────────── */}
-          {isGroup && (
-            <>
-              <SectionHeader>👥 Group mode</SectionHeader>
+          {/* ─── Participants ─────────────────────────────────────── */}
+          <SectionHeader>👥 Participants</SectionHeader>
 
-              <Row>
-                <FormItem
-                  label="Human Count"
-                  field="human_count"
-                  rules={[{ required: true, type: 'number', min: VALIDATION_LIMITS.targetHumanCountMin }]}
-                  style={{ flex: 1, minWidth: 200 }}
-                >
-                  <InputNumber min={VALIDATION_LIMITS.targetHumanCountMin} style={{ width: '100%' }} />
-                </FormItem>
-                <FormItem
-                  label="AI Count"
-                  field="ai_count"
-                  rules={[{
-                    required: true,
-                    type: 'number',
-                    min: VALIDATION_LIMITS.aiStrategyValueMin,
-                    max: VALIDATION_LIMITS.aiStrategyValueMax,
-                  }]}
-                  style={{ flex: 1, minWidth: 200 }}
-                >
-                  <InputNumber
-                    min={VALIDATION_LIMITS.aiStrategyValueMin}
-                    max={VALIDATION_LIMITS.aiStrategyValueMax}
-                    style={{ width: '100%' }}
-                  />
-                </FormItem>
-                <FormItem
-                  label="⏰ Max Wait (sec)"
-                  field="max_wait_seconds"
-                  extra="Lobby cap before starting with as-many-humans-as-possible."
-                  rules={[{ required: true, type: 'number', min: 0, max: VALIDATION_LIMITS.maxWaitSecondsMax }]}
-                  style={{ flex: 1, minWidth: 200 }}
-                >
-                  <InputNumber min={0} max={VALIDATION_LIMITS.maxWaitSecondsMax} style={{ width: '100%' }} />
-                </FormItem>
-              </Row>
+          <Row>
+            <FormItem
+              label="Human Count"
+              field="human_count"
+              rules={[{ required: true, type: 'number', min: VALIDATION_LIMITS.targetHumanCountMin }]}
+              style={{ flex: 1, minWidth: 200 }}
+            >
+              <InputNumber min={VALIDATION_LIMITS.targetHumanCountMin} style={{ width: '100%' }} />
+            </FormItem>
+            <FormItem
+              label="AI Count"
+              field="ai_count"
+              rules={[{
+                required: true,
+                type: 'number',
+                min: VALIDATION_LIMITS.aiStrategyValueMin,
+                max: VALIDATION_LIMITS.aiStrategyValueMax,
+              }]}
+              style={{ flex: 1, minWidth: 200 }}
+            >
+              <InputNumber
+                min={VALIDATION_LIMITS.aiStrategyValueMin}
+                max={VALIDATION_LIMITS.aiStrategyValueMax}
+                style={{ width: '100%' }}
+              />
+            </FormItem>
+            <FormItem
+              label="⏰ Max Wait (sec)"
+              field="max_wait_seconds"
+              hidden={!isGroup || (watchedHumanCount ?? 1) <= 1}
+              extra="Lobby cap before starting with as-many-humans-as-possible."
+              rules={[{ required: true, type: 'number', min: 0, max: VALIDATION_LIMITS.maxWaitSecondsMax }]}
+              style={{ flex: 1, minWidth: 200 }}
+            >
+              <InputNumber min={0} max={VALIDATION_LIMITS.maxWaitSecondsMax} style={{ width: '100%' }} />
+            </FormItem>
+          </Row>
 
-              <FormItem
-                label="Replace missing humans with AI"
-                field="replace_human_with_ai"
-                triggerPropName="checked"
-                extra="When on, missing human seats are filled by additional AIs at the wait deadline."
-              >
-                <Switch checkedText="On" uncheckedText="Off" disabled={(watchedHumanCount ?? 1) <= 1} />
-              </FormItem>
-            </>
-          )}
+          <FormItem
+            label="Replace missing humans with AI"
+            field="replace_human_with_ai"
+            triggerPropName="checked"
+            hidden={(watchedHumanCount ?? 1) <= 1}
+            extra="When on, missing human seats are filled by additional AIs at the wait deadline."
+          >
+            <Switch checkedText="On" uncheckedText="Off" />
+          </FormItem>
         </Form>
 
         <div style={{ borderTop: '1px solid #e5e6eb', margin: '24px 0' }} />

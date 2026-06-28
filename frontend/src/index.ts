@@ -7,7 +7,7 @@ import {
   appendErrorBubble,
   updateTimerBar,
 } from "./ui/renderer";
-import { showPairingScreen, renderPairingScreen, showLobbyAborted } from "./ui/pairing";
+import { renderPairingScreen, showLobbyAborted } from "./ui/pairing";
 import { showConversationEnded } from "./ui/ended";
 import { showReconnectBanner, hideReconnectBanner } from "./ui/reconnect";
 import { formatTimerText } from "./ui/timer";
@@ -164,59 +164,32 @@ export async function init(options: InitOptions): Promise<void> {
     return;
   }
 
-  const setting = state.chatroomSetting;
-
-  // 4. Pre-chat-UI phase: pairing screen + lobby wait.
+  // 4. Pre-chat-UI phase: server-managed lobby wait.
   //
-  // Three cases:
-  //   (a) Multi-human group (target_human_count > 1) → real lobby.
-  //       Show "Finding a chat partner…" until the lobby closes
-  //       (other humans arrived or deadline reached) or aborts (410).
-  //       No cosmetic simulated wait on top — the lobby IS the wait.
-  //   (b) Single-human (one_on_one or group with target=1) with a
-  //       simulate_pairing_seconds > 0 → cosmetic timed wait. Backend
-  //       closes the lobby automatically since target=1 is reached on
-  //       this caller's join.
-  //   (c) Single-human and no simulate_pairing_seconds → just prefetch.
-  //
-  // Mirrors the editor visibility rule documented in
-  // docs/low-level-design.md "Mode UX".
-  const isMultiHumanGroup =
-    setting?.mode === "group" && (setting?.target_human_count ?? 0) > 1;
-  const rawPairingSeconds = setting?.simulate_pairing_seconds || 0;
-
-  if (isMultiHumanGroup) {
+  // The widget no longer sleeps locally for simulate_pairing_seconds. The
+  // server owns all pairing waits: multi-human waits use max_wait_seconds;
+  // one-human mimic-human simulated waits use simulate_pairing_seconds as the
+  // lobby deadline. The widget simply keeps the pairing screen up while
+  // /chat/messages returns a lobby block.
+  await state.prefetchEvents();
+  if (state.isInLobby()) {
     renderPairingScreen(element);
-    await state.prefetchEvents();
 
-    // If the lobby was already closed by the time prefetch ran (e.g. the
-    // last human just arrived), skip the wait. Otherwise watch the lobby
-    // until it closes or aborts. We use the dedicated lobby-poll loop
-    // (not startPolling) so events that land at lobby-close don't get
-    // dispatched into the still-pairing-screen DOM. After it closes, we
-    // re-prefetch from the top so the conversation row's join/system
-    // events show up in chat history when we finally render the UI.
-    if (state.isInLobby()) {
-      try {
-        await state.pollLobbyUntilClosed();
-      } catch (err) {
-        if (err instanceof Error && err.message === "lobby_aborted") {
-          // onLobbyAborted (registered above) has already swapped the DOM
-          // to the abort screen. Bail before rendering chat UI.
-          return;
-        }
-        throw err;
+    // Use the dedicated lobby-poll loop (not startPolling) so events that
+    // land at lobby-close don't get dispatched into the still-pairing-screen
+    // DOM. After it closes, re-prefetch from the top so the rendered chat
+    // includes joins + system events from the start.
+    try {
+      await state.pollLobbyUntilClosed();
+    } catch (err) {
+      if (err instanceof Error && err.message === "lobby_aborted") {
+        // onLobbyAborted (registered above) has already swapped the DOM to
+        // the abort screen. Bail before rendering chat UI.
+        return;
       }
-      // Lobby closed: re-fetch the now-visible conversation history so
-      // the renderer replays joins + system events from the start.
-      await state.prefetchEvents();
+      throw err;
     }
-  } else if (rawPairingSeconds > 0) {
-    await Promise.all([
-      showPairingScreen(element, rawPairingSeconds),
-      state.prefetchEvents(),
-    ]);
-  } else {
+    // Lobby closed: re-fetch the now-visible conversation history.
     await state.prefetchEvents();
   }
 
@@ -232,8 +205,8 @@ export async function init(options: InitOptions): Promise<void> {
   state.startPolling();
 
   // 8. Start timer if configured
-  const minMin = setting?.timer_min_minutes;
-  const maxMin = setting?.timer_max_minutes;
+  const minMin = state.chatroomSetting?.timer_min_minutes;
+  const maxMin = state.chatroomSetting?.timer_max_minutes;
   if (minMin || maxMin) {
     updateTimerBar(formatTimerText(0, minMin, maxMin));
 

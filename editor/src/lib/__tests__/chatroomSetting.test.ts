@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   ChatroomSetting,
+  defaultChatroomSetting,
   defaultSettingForMode,
+  deriveChatroomMode,
   denormalizeForSave,
   ONE_ON_ONE_FIXED,
   validateChatroomSetting,
@@ -22,19 +24,15 @@ describe('validateChatroomSetting', () => {
     expect(validateChatroomSetting(baseGroupSetting())).toEqual({ ok: true, errors: {} })
   })
 
-  it('returns ok=true for a valid one_on_one setting (group fields are ignored)', () => {
+  it('returns ok=true for a valid one-human one-ai setting', () => {
     const setting: ChatroomSetting = {
-      ...defaultSettingForMode('one_on_one'),
-      // pretend bad group fields — they should be ignored for one_on_one
-      target_human_count: 0,
-      ai_strategy_value: 99,
-      max_wait_seconds: 9999,
+      ...defaultChatroomSetting(),
     }
     const result = validateChatroomSetting(setting)
     expect(result.ok).toBe(true)
   })
 
-  it('rejects human_count = 0 in group mode', () => {
+  it('rejects human_count = 0', () => {
     const setting = { ...baseGroupSetting(), human_count: 0 }
     const result = validateChatroomSetting(setting)
     expect(result.ok).toBe(false)
@@ -85,9 +83,9 @@ describe('validateChatroomSetting', () => {
     expect(result.errors.max_duration_seconds).toBeDefined()
   })
 
-  it('enforces max_duration_seconds in one_on_one mode too', () => {
+  it('enforces max_duration_seconds for one-human defaults too', () => {
     const setting: ChatroomSetting = {
-      ...defaultSettingForMode('one_on_one'),
+      ...defaultChatroomSetting(),
       max_duration_seconds: 5000,
     }
     const result = validateChatroomSetting(setting)
@@ -118,9 +116,9 @@ describe('validateChatroomSetting', () => {
 })
 
 describe('denormalizeForSave', () => {
-  it('forces fixed group values when mode = one_on_one and preserves max_duration_seconds', () => {
+  it('derives fixed runtime values for one-human one-ai and preserves max_duration_seconds', () => {
     const input: ChatroomSetting = {
-      ...defaultSettingForMode('one_on_one'),
+      ...defaultChatroomSetting(),
       // arbitrary bad group field values to verify they are overwritten
       target_human_count: 99,
       ai_join_strategy: 'total_participant_count',
@@ -132,12 +130,23 @@ describe('denormalizeForSave', () => {
     expect(out.target_human_count).toBe(ONE_ON_ONE_FIXED.target_human_count)
     expect(out.ai_join_strategy).toBe(ONE_ON_ONE_FIXED.ai_join_strategy)
     expect(out.ai_strategy_value).toBe(ONE_ON_ONE_FIXED.ai_strategy_value)
-    expect(out.max_wait_seconds).toBe(ONE_ON_ONE_FIXED.max_wait_seconds)
+    expect(out.max_wait_seconds).toBe(input.simulate_pairing_seconds)
     // preserved across both modes
     expect(out.max_duration_seconds).toBe(1200)
   })
 
-  it('derives runtime group fields when mode = group', () => {
+  it('ignores simulated pairing when one-human mimic_human is off', () => {
+    const input: ChatroomSetting = {
+      ...defaultChatroomSetting(),
+      mimic_human: false,
+      simulate_pairing_seconds: 15,
+    }
+    const out = denormalizeForSave(input)
+    expect(out.simulate_pairing_seconds).toBe(0)
+    expect(out.max_wait_seconds).toBe(0)
+  })
+
+  it('derives runtime group fields from participant counts', () => {
     const input: ChatroomSetting = {
       ...defaultSettingForMode('group'),
       human_count: 4,
@@ -157,7 +166,7 @@ describe('denormalizeForSave', () => {
 
   it('does not mutate the input', () => {
     const input: ChatroomSetting = {
-      ...defaultSettingForMode('one_on_one'),
+      ...defaultChatroomSetting(),
       target_human_count: 99,
     }
     const before = JSON.stringify(input)
@@ -167,9 +176,9 @@ describe('denormalizeForSave', () => {
 })
 
 describe('defaultSettingForMode', () => {
-  it('one_on_one returns the denormalized fixed values', () => {
-    const setting = defaultSettingForMode('one_on_one')
-    expect(setting.mode).toBe('one_on_one')
+  it('defaultChatroomSetting returns one-human one-ai values', () => {
+    const setting = defaultChatroomSetting()
+    expect(deriveChatroomMode(setting)).toBe('one_on_one')
     expect(setting.target_human_count).toBe(ONE_ON_ONE_FIXED.target_human_count)
     expect(setting.ai_join_strategy).toBe(ONE_ON_ONE_FIXED.ai_join_strategy)
     expect(setting.ai_strategy_value).toBe(ONE_ON_ONE_FIXED.ai_strategy_value)
@@ -180,7 +189,7 @@ describe('defaultSettingForMode', () => {
 
   it('group returns sensible defaults that pass validation', () => {
     const setting = defaultSettingForMode('group')
-    expect(setting.mode).toBe('group')
+    expect(deriveChatroomMode(setting)).toBe('group')
     expect(setting.human_count).toBe(2)
     expect(setting.ai_count).toBe(1)
     expect(setting.replace_human_with_ai).toBe(false)

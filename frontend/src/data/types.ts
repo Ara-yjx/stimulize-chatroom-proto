@@ -28,7 +28,6 @@ export interface ConversationEvent {
 }
 
 export interface ChatroomSetting {
-  mode: "one_on_one" | "group";
   topic_instruction: string;
   additional_prompt?: string;
   ai_personas?: string[];

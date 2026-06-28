@@ -17,7 +17,7 @@
 ## Scope
 
 - **Beta (v1)** — current target
-  - Group participant mode (1-on-1 is a UI preset over the group settings)
+  - Participant-count based chatrooms (1-on-1 is derived from `human_count=1 && ai_count=1`)
   - Standalone mode (portable script, independent of Stimulize trial)
   - Chatroom ID + fixed beta client access key — no per-chatroom "Channel" or "Key"
   - Chatroom settings cloud-managed via real `Stimulize-backend` beta API and shared Postgres
@@ -54,7 +54,7 @@
 ## Requirements
 
 **Chatroom**
-- Two participant modes: 1-on-1 mode and Group mode (1-on-1 is a UI preset over group settings)
+- Participant counts determine the preset; `mode` is not stored.
 - AI Should simulate human texting habit 
 - Simulated "waiting for pairing" screen before entering chat
 - Optional timer: show status like "Please stay 5 to 10 minutes in the chatroom. Now: 4 minutes."
@@ -85,13 +85,13 @@ Current beta implementation:
 ## Core Design
 
 ### Chatroom
-- Two participant modes:
-  - 1-on-1 mode: one human, one AI per conversation. Implemented as a UI preset over the group settings (`target_human_count=1, ai_strategy=fixed_ai_count, value=1, max_wait_seconds=0`).
-  - Group mode: multiple humans and AIs per conversation. Server dynamically manages bot participants.
+- Participant counts drive behavior:
+  - `human_count=1 && ai_count=1` is the 1-on-1 preset.
+  - Other count combinations use the group prompt/runtime preset. Server dynamically manages bot participants.
 - Should simulate human texting habit 
   - Might have delay due to texting
   - Might reply in 2 messages or no reply, not always 1-ask-1-reply
-- Simulated "waiting for pairing" screen before entering chat (configurable duration).
+- Simulated "waiting for pairing" is server-managed lobby duration, enabled only for one-human + `mimic_human=true`.
 - Optional timer: show status like "Please stay 5 to 10 minutes in the chatroom. Now: 4 minutes."
 - No revision management. If user want to keep the old revision running, they should create a new chatroom.
 
@@ -99,10 +99,11 @@ Current beta implementation:
 ### Chatroom Settings
 - Status: Active/Inactive (should be at a higher level in data schema)
 - Chatroom Name
-- Participant mode: 1-on-1 / group
+- Participant counts: human count and AI count
 - Prompt
   - Mimic human (on/off, default on)
-  - AI instruction(s) (allow per-AI instructions in group mode)- Simulate pairing time (seconds)
+  - AI instruction(s), with per-AI instructions for multi-AI rooms
+  - Simulate pairing time (seconds), only for one-human + mimic-human rooms
 - Timer: min / max (minutes)
 
 Future settings (out of scope for beta)
@@ -137,8 +138,8 @@ Future settings (out of scope for beta)
   - Directly writes usage info to Stimulize RDS billing table.
 - Conversation data
   - Events model: each entry has a `type` ("message", "system", "error").
-  - 1-on-1 mode: new `conversation_id` per session.  
-    Group mode: might reuse conversation with matching logic.
+  - Each lobby allocates a `conversation_id`; one-human rooms close the lobby immediately unless simulated pairing is enabled.
+  - Multi-human rooms reuse the open lobby until human capacity or wait deadline is reached.
 - Beta uses API Gateway directly. Future stable URL: `chatroom.stimulize.org` (better data segregation than `stimulize.org/chatroom`).
 
 ### Billing
@@ -171,7 +172,7 @@ Future settings (out of scope for beta)
 **Session token**
 - Short-lived JWT (3h)
 - Claims: `session_id`, `conversation_id`, `chatroom_id`, `iat`, `exp`
-- `session_id` is kept separate from `conversation_id` because in group mode multiple participants share one conversation but each needs a distinct session.
+- `session_id` is kept separate from `conversation_id` because multiple participants can share one conversation but each needs a distinct session.
 - Nickname, avatar, and role are NOT in the JWT — they're stored in DynamoDB alongside the conversation and looked up when needed. Keeps the token small.
 
 
@@ -294,9 +295,9 @@ AI messages don't appear instantly. Each message gets a `visible_at` timestamp =
 
 While an AI message has `visible_at > now`, no "Mars is typing…" indicator is shown to the user. Backend `/chat/messages` filters events by `visible_at <= now`, so clients have no awareness of pending messages. This keeps the contract simple. A typing indicator is in the prod TODO list — it would require either a separate `typing` event type or exposing pending messages with content stripped.
 
-**1-on-1 mode is a special case of group mode**
+**1-on-1 is derived from participant counts**
 
-Conceptually, a 1-on-1 chatroom is just `target_human_count=1, ai_strategy=fixed_ai_count, value=1, max_wait_seconds=0`. Backend treats it the same way: same lobby flow, same tick handler, same conversation schema. The editor exposes 1-on-1 as a separate preset in the UI (because the researcher's mental model is different), but under the hood `mode` is just a discriminator that picks default values for the group settings. We keep `mode` as an explicit field for clarity and forward compatibility, not because the runtime needs it.
+Conceptually, a 1-on-1 chatroom is `human_count=1 && ai_count=1`. `mode` is not stored. Backend uses the same lobby flow, tick handler, and conversation schema for all chatrooms; prompt mode is derived from participant counts.
 
 ### Usage/Billing Architecture
 

@@ -4,7 +4,7 @@ import { Table, Button, Modal, Input, Tag, Message } from '@arco-design/web-reac
 import type { ColumnProps } from '@arco-design/web-react/es/Table'
 import { mgmtFetchJson } from '../api/management'
 import { hasManagementToken } from '../api/managementAuth'
-import { defaultSettingForMode } from '../lib/chatroomSetting'
+import { defaultChatroomSetting } from '../lib/chatroomSetting'
 import { chatroomDetailRoute } from '../routes'
 
 interface ChatroomSummary {
@@ -54,7 +54,7 @@ export default function ChatroomList() {
     }
     setCreating(true)
     try {
-      const setting = defaultSettingForMode('one_on_one')
+      const setting = defaultChatroomSetting()
       await mgmtFetchJson('/api/createChatroom', {
         method: 'POST',
         body: JSON.stringify({

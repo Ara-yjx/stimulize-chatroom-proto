@@ -1,4 +1,4 @@
-"""DynamoDB lobby store for group-mode pairing.
+"""DynamoDB lobby store for server-managed pairing.
 
 Sibling of ``dynamo.py``. Reads/writes the ``chatroom-lobbies`` table that
 holds the at-most-one open lobby per chatroom (sparse GSI on ``status="open"``)
@@ -91,7 +91,7 @@ def create_open_lobby(
 ) -> dict:
     """Create a new ``status="open"`` lobby and return the stored item.
 
-    *setting* must carry the group-mode fields ``target_human_count``,
+    *setting* must carry the lobby fields ``target_human_count``,
     ``ai_join_strategy``, ``ai_strategy_value``, ``max_wait_seconds``.
     """
     table = _get_table()

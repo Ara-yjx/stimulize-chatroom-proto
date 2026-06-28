@@ -23,7 +23,6 @@ CHATROOMS: dict[str, dict] = {
         "name": "Test Chatroom",
         "status": "active",
         "setting": {
-            "mode": "one_on_one",
             "topic_instruction": _DEFAULT_TOPIC,
             "additional_prompt": "",
             "ai_personas": [],
@@ -51,7 +50,6 @@ CHATROOMS: dict[str, dict] = {
         "name": "Local Group 2H 2AI",
         "status": "active",
         "setting": {
-            "mode": "group",
             "topic_instruction": _DEFAULT_TOPIC,
             "additional_prompt": "",
             "ai_personas": [],

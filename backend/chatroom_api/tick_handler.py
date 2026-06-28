@@ -37,7 +37,7 @@ from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.delays import compute_visible_at, pick_delays_ms
 from chatroom_api.gate import run_gate
 from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
-from chatroom_api.settings import normalize_temperature
+from chatroom_api.settings import derive_runtime_mode, normalize_temperature
 from chatroom_api.prompts.speech_scaffold import (
     SPEAK_TOOL_CONFIG,  # re-exported for callers that want to inspect it
     format_topic_block,
@@ -544,7 +544,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     persona = (candidate_participant or {}).get("persona", "") or ""
 
     # --- Step 4: Bedrock with the speak tool. ------------------------------
-    mode = chatroom_setting.get("mode", "group")
+    mode = derive_runtime_mode(chatroom_setting)
     history_block = _render_history_block(conv, now_ms)
     participant_nicknames = [
         p.get("nickname") for p in conv.get("participants", []) or []

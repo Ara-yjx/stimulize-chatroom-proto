@@ -20,6 +20,20 @@ def _coerce_int(value, default: int) -> int:
         return default
 
 
+def derive_runtime_mode(setting: dict | None) -> str:
+    """Return the prompt/runtime preset derived from participant counts."""
+    normalized = setting or {}
+    human_count = _coerce_int(
+        normalized.get("human_count", normalized.get("target_human_count", 1)),
+        1,
+    )
+    ai_count = _coerce_int(
+        normalized.get("ai_count", normalized.get("ai_strategy_value", 1)),
+        1,
+    )
+    return "one_on_one" if human_count == 1 and ai_count == 1 else "group"
+
+
 def resolve_runtime_setting(setting: dict | None) -> dict:
     """Return a setting dict with legacy runtime lobby fields populated.
 
@@ -34,11 +48,16 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
     - ``ai_strategy_value``
     """
     normalized = deepcopy(setting or {})
-    mode = normalized.get("mode") or "one_on_one"
-    normalized["mode"] = mode
+    legacy_mode = normalized.pop("mode", None)
 
     human_count = _coerce_int(
-        normalized.get("human_count", normalized.get("target_human_count", 1)),
+        normalized.get(
+            "human_count",
+            normalized.get(
+                "target_human_count",
+                2 if legacy_mode == "group" else 1,
+            ),
+        ),
         1,
     )
     ai_count = _coerce_int(
@@ -52,14 +71,20 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
         normalized.get("replace_human_with_ai", False)
     )
 
-    if mode == "one_on_one":
-        human_count = 1
-        ai_count = 1
+    mimic_human = bool(normalized.get("mimic_human", True))
+    simulate_pairing_seconds = max(
+        0,
+        _coerce_int(normalized.get("simulate_pairing_seconds", 0), 0),
+    )
+
+    if human_count <= 1:
         replace_human_with_ai = False
         normalized["target_human_count"] = 1
         normalized["ai_join_strategy"] = "fixed_ai_count"
-        normalized["ai_strategy_value"] = 1
-        normalized["max_wait_seconds"] = 0
+        normalized["ai_strategy_value"] = ai_count
+        normalized["max_wait_seconds"] = (
+            simulate_pairing_seconds if mimic_human else 0
+        )
     else:
         normalized["target_human_count"] = human_count
         if replace_human_with_ai:
@@ -68,11 +93,18 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
         else:
             normalized["ai_join_strategy"] = "fixed_ai_count"
             normalized["ai_strategy_value"] = ai_count
+        normalized["max_wait_seconds"] = max(
+            0,
+            _coerce_int(normalized.get("max_wait_seconds", 60), 60),
+        )
 
     normalized["human_count"] = human_count
     normalized["ai_count"] = ai_count
     normalized["replace_human_with_ai"] = replace_human_with_ai
-    normalized["mimic_human"] = bool(normalized.get("mimic_human", True))
+    normalized["mimic_human"] = mimic_human
+    normalized["simulate_pairing_seconds"] = (
+        simulate_pairing_seconds if human_count == 1 and mimic_human else 0
+    )
 
     temperature = normalized.get("temperature", 0.7)
     normalized["temperature"] = normalize_temperature(temperature, default=0.7)

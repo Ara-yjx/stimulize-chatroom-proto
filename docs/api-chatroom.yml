@@ -59,7 +59,7 @@ paths:
                   lobby:
                     type: object
                     nullable: true
-                    description: Present only when the session is waiting in a group-mode lobby.
+                    description: Present only when the session is waiting in a server-managed lobby.
                     properties:
                       status:
                         type: string
@@ -188,11 +188,12 @@ components:
 
     ChatroomSetting:
       type: object
+      description: |
+        `mode` is not persisted. Runtime derives the 1-on-1 preset from
+        `human_count=1 && ai_count=1`; other count combinations use the group
+        preset. For one-human mimic-human chatrooms, `simulate_pairing_seconds`
+        is server-managed as the lobby duration.
       properties:
-        mode:
-          type: string
-          enum: [one_on_one, group]
-          default: one_on_one
         topic_instruction:
           type: string
           description: |
@@ -229,7 +230,7 @@ components:
         human_count:
           type: integer
           nullable: true
-          description: Group mode desired human participant count.
+          description: Desired human participant count.
         ai_count:
           type: integer
           nullable: true
@@ -256,7 +257,7 @@ components:
           type: integer
           nullable: true
           maximum: 600
-          description: Group lobby wait deadline. For one_on_one this is stored as 0.
+          description: Multi-human lobby wait deadline. One-human mimic-human rooms use simulate_pairing_seconds instead.
 
     ConversationEvent:
       type: object

@@ -7,7 +7,7 @@
  * - docs/api-management.yml "ChatroomSetting"
  */
 
-export type ChatroomMode = 'one_on_one' | 'group'
+export type DerivedChatroomMode = 'one_on_one' | 'group'
 
 export type AiJoinStrategy = 'fixed_ai_count' | 'total_participant_count'
 
@@ -28,7 +28,6 @@ export interface AiPersonaSetting {
 }
 
 export interface ChatroomSetting {
-  mode: ChatroomMode
   /**
    * Researcher-supplied topic. Just the topic — the human-mimicry speech
    * scaffold (rules, tool-use mechanics, examples) lives in the backend
@@ -142,7 +141,7 @@ export function deriveMaxDurationSeconds(timerMaxMinutes: number | null): number
 /**
  * Validate a chatroom setting per the rules in docs/low-level-design.md.
  *
- * Rules (only enforced for `mode === "group"`; one_on_one denormalizes on save):
+ * Rules:
  * - target_human_count >= 1
  * - if ai_join_strategy = total_participant_count: ai_strategy_value >= target_human_count
  * - 0 <= max_wait_seconds <= 600
@@ -191,73 +190,81 @@ export function validateChatroomSetting(setting: ChatroomSetting): ValidationRes
     }
   }
 
-  if (setting.mode === 'group') {
-    if (
-      !Number.isFinite(setting.human_count) ||
-      setting.human_count < VALIDATION_LIMITS.targetHumanCountMin
-    ) {
-      errors.human_count = `human_count must be >= ${VALIDATION_LIMITS.targetHumanCountMin}`
-    }
+  if (
+    !Number.isFinite(setting.human_count) ||
+    setting.human_count < VALIDATION_LIMITS.targetHumanCountMin
+  ) {
+    errors.human_count = `human_count must be >= ${VALIDATION_LIMITS.targetHumanCountMin}`
+  }
 
-    if (
-      !Number.isFinite(setting.ai_count) ||
-      setting.ai_count < VALIDATION_LIMITS.aiStrategyValueMin ||
-      setting.ai_count > VALIDATION_LIMITS.aiStrategyValueMax
-    ) {
-      errors.ai_count = `ai_count must be between ${VALIDATION_LIMITS.aiStrategyValueMin} and ${VALIDATION_LIMITS.aiStrategyValueMax}`
-    }
+  if (
+    !Number.isFinite(setting.ai_count) ||
+    setting.ai_count < VALIDATION_LIMITS.aiStrategyValueMin ||
+    setting.ai_count > VALIDATION_LIMITS.aiStrategyValueMax
+  ) {
+    errors.ai_count = `ai_count must be between ${VALIDATION_LIMITS.aiStrategyValueMin} and ${VALIDATION_LIMITS.aiStrategyValueMax}`
+  }
 
-    if (
-      !Number.isFinite(setting.max_wait_seconds) ||
-      setting.max_wait_seconds < 0 ||
-      setting.max_wait_seconds > VALIDATION_LIMITS.maxWaitSecondsMax
-    ) {
-      errors.max_wait_seconds = `max_wait_seconds must be between 0 and ${VALIDATION_LIMITS.maxWaitSecondsMax}`
-    }
+  if (
+    !Number.isFinite(setting.max_wait_seconds) ||
+    setting.max_wait_seconds < 0 ||
+    setting.max_wait_seconds > VALIDATION_LIMITS.maxWaitSecondsMax
+  ) {
+    errors.max_wait_seconds = `max_wait_seconds must be between 0 and ${VALIDATION_LIMITS.maxWaitSecondsMax}`
   }
 
   return { ok: Object.keys(errors).length === 0, errors }
 }
 
 /**
- * Compute the on-save setting. For one_on_one, group fields are forced to
- * fixed values so the chat Lambda can branch on group fields uniformly
- * without re-deriving from `mode`. max_duration_seconds is preserved in
- * both modes.
+ * Compute the on-save setting. `mode` is intentionally not persisted; it is
+ * a derived UI/runtime concept based on participant counts.
  */
 export function denormalizeForSave(values: ChatroomSetting): ChatroomSetting {
-  if (values.mode === 'one_on_one') {
-    return {
-      ...values,
-      human_count: 1,
-      ai_count: 1,
-      replace_human_with_ai: false,
-      ...ONE_ON_ONE_FIXED,
-    }
-  }
   const targetHumanCount = values.human_count
-  const aiStrategyValue = values.replace_human_with_ai
+  const replaceHumanWithAi = values.human_count > 1 && values.replace_human_with_ai
+  const aiStrategyValue = replaceHumanWithAi
     ? values.human_count + values.ai_count
     : values.ai_count
+  const shouldUseSimulatedLobby =
+    values.human_count === 1 &&
+    values.mimic_human &&
+    values.simulate_pairing_seconds > 0
   return {
     ...values,
+    replace_human_with_ai: replaceHumanWithAi,
     target_human_count: targetHumanCount,
-    ai_join_strategy: values.replace_human_with_ai ? 'total_participant_count' : 'fixed_ai_count',
+    ai_join_strategy: replaceHumanWithAi ? 'total_participant_count' : 'fixed_ai_count',
     ai_strategy_value: aiStrategyValue,
+    simulate_pairing_seconds: shouldUseSimulatedLobby
+      ? values.simulate_pairing_seconds
+      : 0,
+    max_wait_seconds: shouldUseSimulatedLobby
+      ? values.simulate_pairing_seconds
+      : values.human_count === 1
+        ? 0
+        : values.max_wait_seconds,
   }
 }
 
 /**
- * Default setting for a freshly-created chatroom in the given mode. Used by
- * the create-chatroom modal.
+ * Derive the UI/runtime preset from participant counts. The setting does not
+ * persist a `mode` field.
  */
-export function defaultSettingForMode(mode: ChatroomMode): ChatroomSetting {
+export function deriveChatroomMode(setting: Pick<ChatroomSetting, 'human_count' | 'ai_count'>): DerivedChatroomMode {
+  return setting.human_count === 1 && setting.ai_count === 1 ? 'one_on_one' : 'group'
+}
+
+/**
+ * Default setting for a freshly-created chatroom. Used by the create-chatroom
+ * modal.
+ */
+export function defaultChatroomSetting(): ChatroomSetting {
   const base: Omit<
     ChatroomSetting,
     'human_count' | 'ai_count' | 'replace_human_with_ai' |
     'target_human_count' | 'ai_join_strategy' | 'ai_strategy_value' | 'max_wait_seconds'
   > = {
-    mode,
     topic_instruction: 'Anything about your college life.',
     additional_prompt: '',
     ai_personas: [],
@@ -270,20 +277,22 @@ export function defaultSettingForMode(mode: ChatroomMode): ChatroomSetting {
     max_duration_seconds: deriveMaxDurationSeconds(5),
   }
 
-  if (mode === 'one_on_one') {
-    return {
-      ...base,
-      human_count: 1,
-      ai_count: 1,
-      replace_human_with_ai: false,
-      ...ONE_ON_ONE_FIXED,
-    }
+  return {
+    ...base,
+    human_count: 1,
+    ai_count: 1,
+    replace_human_with_ai: false,
+    ...ONE_ON_ONE_FIXED,
   }
+}
+
+export function defaultSettingForMode(mode: DerivedChatroomMode): ChatroomSetting {
+  const base = defaultChatroomSetting()
+  if (mode === 'one_on_one') return base
   return {
     ...base,
     human_count: 2,
     ai_count: 1,
-    replace_human_with_ai: false,
     target_human_count: 2,
     ai_join_strategy: 'fixed_ai_count',
     ai_strategy_value: 1,

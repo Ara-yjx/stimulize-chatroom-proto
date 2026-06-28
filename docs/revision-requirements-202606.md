@@ -177,3 +177,10 @@ Qualtrics.SurveyEngine.addOnload(function() {
   - keep widget rendering and runtime join logic independent from this check
   - future full solution may still split state management from display rendering
 
+## Follow-up Decision: Server-Managed Simulated Pairing
+
+- `simulate_pairing_seconds` is not a widget-side sleep.
+- It is server-managed lobby duration only for one-human chatrooms with `mimic_human=true`, so refresh/reconnect sees the same lobby state.
+- For multi-human rooms, the real lobby wait is `max_wait_seconds`.
+- For `mimic_human=false`, simulated pairing is disabled because we are not implying that the participant is being paired with a real human.
+- `mode` is no longer stored in chatroom settings; 1-on-1 is derived from `human_count=1 && ai_count=1`.

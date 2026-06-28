@@ -77,7 +77,7 @@ Usage endpoints are implemented for aggregate reads. Future cache-bucket columns
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
 The create request is the first persisted save, so any editor-provided default `setting` values are stored immediately at creation time.
 
-Request: `{ name, setting: { mode, topic_instruction, additional_prompt?, mimic_human?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count?, ai_count?, replace_human_with_ai?, max_wait_seconds? } }`
+Request: `{ name, setting: { topic_instruction, additional_prompt?, mimic_human?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count, ai_count, replace_human_with_ai?, max_wait_seconds? } }`
 
 The backend also stores derived runtime compatibility fields: `target_human_count`, `ai_join_strategy`, and `ai_strategy_value`.
 Response: `{ id, name, status, setting, created_at, updated_at }`
@@ -235,10 +235,10 @@ The widget checks `Qualtrics?.SurveyEngine.setEmbeddedData` before writing and s
 ### Lifecycle
 
 1. **Token exchange** — calls `/auth/token` with `chatroomId`
-2. **Pairing screen** — animated "Finding a chat partner..." for `simulate_pairing_seconds` (configurable per chatroom)
+2. **Pairing screen** — animated "Finding chat partner(s)..." while the server reports an open lobby. For one-human + `mimic_human=true`, `simulate_pairing_seconds` is the server lobby duration; for multi-human rooms, `max_wait_seconds` is the lobby duration.
 3. **Active chat** — message input, polling every 3s, AI messages appear with simulated typing delay
 4. **Conversation ended** — input disabled, "This conversation has ended." system message
-5. **Lobby aborted** (group mode, 410) — "No one else joined this chatroom." + "Reconnect" button
+5. **Lobby aborted** (multi-human wait, 410) — "No one else joined this chatroom." + "Reconnect" button
 
 ### Error states
 

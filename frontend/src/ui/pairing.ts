@@ -12,7 +12,7 @@ export function renderPairingScreen(element: string | HTMLElement): void {
   $el.html(`
     <div class="stim-chatroom">
       <div class="stim-pairing">
-        <span>Finding a chat partner<span class="stim-pairing-dots"></span></span>
+        <span>Finding chat partner(s)<span class="stim-pairing-dots"></span></span>
       </div>
     </div>
   `);

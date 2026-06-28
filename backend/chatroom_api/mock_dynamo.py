@@ -46,8 +46,8 @@ def _dump_filename_prefix(room: dict) -> str:
     Preference order, picking the earliest on-row timestamp so files sort
     chronologically by when the cohort started:
 
-    1. The first ``lobby_created`` audit event's ``created_at`` (group mode).
-    2. The row's ``started_at`` (one_on_one mode, or rows missing the audit
+    1. The first ``lobby_created`` audit event's ``created_at``.
+    2. The row's ``started_at`` (rows missing the audit
        event).
     3. The row's ``created_at`` (defensive fallback).
 

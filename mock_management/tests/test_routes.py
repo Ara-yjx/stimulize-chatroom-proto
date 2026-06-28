@@ -25,12 +25,13 @@ def reset_state():
         "name": "Test Chatroom",
         "status": "active",
         "setting": {
-            "mode": "one_on_one",
             "topic_instruction": "test topic",
             "model_id": "global.anthropic.claude-sonnet-4-6",
             "simulate_pairing_seconds": 5,
             "timer_min_minutes": 5,
             "timer_max_minutes": 10,
+            "human_count": 1,
+            "ai_count": 1,
         },
         "created_at": now,
         "updated_at": now,
@@ -44,12 +45,13 @@ def test_create_chatroom(client):
     resp = client.post("/api/createChatroom", json={
         "name": "My Chatroom",
         "setting": {
-            "mode": "one_on_one",
             "topic_instruction": "Be nice",
             "model_id": "global.anthropic.claude-sonnet-4-6",
             "simulate_pairing_seconds": 3,
             "timer_min_minutes": None,
             "timer_max_minutes": None,
+            "human_count": 1,
+            "ai_count": 1,
         },
     })
     assert resp.status_code == 201
@@ -86,7 +88,7 @@ def test_get_chatroom(client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["id"] == "scid_test-chatroom-001"
-    assert data["setting"]["mode"] == "one_on_one"
+    assert "mode" not in data["setting"]
     assert data["setting"]["topic_instruction"] == "test topic"
 
 
@@ -105,7 +107,7 @@ def test_update_chatroom_name(client):
     data = resp.get_json()
     assert data["name"] == "Renamed Chatroom"
     # Setting should be unchanged
-    assert data["setting"]["mode"] == "one_on_one"
+    assert "mode" not in data["setting"]
 
 
 def test_update_chatroom_status(client):
@@ -119,17 +121,19 @@ def test_update_chatroom_status(client):
 def test_update_chatroom_setting(client):
     resp = client.post("/api/updateChatroom/scid_test-chatroom-001", json={
         "setting": {
-            "mode": "group",
             "topic_instruction": "new topic",
             "model_id": "global.anthropic.claude-sonnet-4-6",
             "simulate_pairing_seconds": 0,
             "timer_min_minutes": None,
             "timer_max_minutes": None,
+            "human_count": 2,
+            "ai_count": 1,
+            "max_wait_seconds": 60,
         },
     })
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["setting"]["mode"] == "group"
+    assert "mode" not in data["setting"]
     assert data["setting"]["topic_instruction"] == "new topic"
 
 

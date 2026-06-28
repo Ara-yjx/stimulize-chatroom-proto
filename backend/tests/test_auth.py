@@ -1,6 +1,7 @@
 """Tests for chatroom_api.auth (v2: chatroom_id only, no management API)."""
 
 from unittest.mock import patch, MagicMock
+from chatroom_api import mock_dynamo, mock_lobby
 from chatroom_api.auth import handle_auth_token
 
 SAMPLE_CHATROOM = {
@@ -9,12 +10,14 @@ SAMPLE_CHATROOM = {
     "name": "College Chat",
     "status": "active",
     "setting": {
-        "mode": "one_on_one",
         "topic_instruction": "Talk about your college life.",
         "model_id": "global.anthropic.claude-sonnet-4-6",
-        "simulate_pairing_seconds": 3,
+        "simulate_pairing_seconds": 0,
         "timer_min_minutes": 5,
         "timer_max_minutes": 10,
+        "human_count": 1,
+        "ai_count": 1,
+        "replace_human_with_ai": False,
     },
 }
 
@@ -29,9 +32,10 @@ def _mocks():
 class TestHandleAuthTokenV2:
 
     def test_valid_chatroom_returns_session_info(self):
-        rds, db = _mocks()
+        mock_lobby.reset()
+        mock_dynamo.reset()
+        rds, _db = _mocks()
         with patch("chatroom_api.auth._get_rds", return_value=rds), \
-             patch("chatroom_api.auth._get_db", return_value=db), \
              patch("chatroom_api.auth.jwt_utils") as jwt_mock:
             jwt_mock.create_token.return_value = "fake-token"
             s, b = handle_auth_token({"chatroom_id": "scid_test-chatroom-001"})
@@ -39,7 +43,9 @@ class TestHandleAuthTokenV2:
         assert b["token"] == "fake-token"
         assert b["nickname"].startswith("Participant")
         assert "emojiText" in b["avatar"]
-        assert b["chatroom_setting"]["mode"] == "one_on_one"
+        assert "mode" not in b["chatroom_setting"]
+        assert b["chatroom_setting"]["human_count"] == 1
+        assert b["chatroom_setting"]["ai_count"] == 1
 
     def test_not_found_returns_404(self):
         rds = MagicMock()
@@ -61,22 +67,51 @@ class TestHandleAuthTokenV2:
         assert s == 400
 
     def test_participants_stored(self):
-        rds, db = _mocks()
+        mock_lobby.reset()
+        mock_dynamo.reset()
+        rds, _db = _mocks()
         with patch("chatroom_api.auth._get_rds", return_value=rds), \
-             patch("chatroom_api.auth._get_db", return_value=db), \
              patch("chatroom_api.auth.jwt_utils") as jwt_mock:
             jwt_mock.create_token.return_value = "t"
-            handle_auth_token({"chatroom_id": "scid_test-chatroom-001"})
-        parts = db.append_events.call_args.kwargs["participants"]
+            _status, body = handle_auth_token({"chatroom_id": "scid_test-chatroom-001"})
+        parts = mock_dynamo.get_conversation(body["conversation_id"])["participants"]
         assert len(parts) == 2
         assert {p["role"] for p in parts} == {"human", "ai"}
 
-    def test_nicknames_differ(self):
-        rds, db = _mocks()
+    def test_simulated_wait_keeps_conversation_uncreated_until_lobby_closes(self):
+        mock_lobby.reset()
+        mock_dynamo.reset()
+        chatroom = {
+            **SAMPLE_CHATROOM,
+            "setting": {
+                **SAMPLE_CHATROOM["setting"],
+                "mimic_human": True,
+                "simulate_pairing_seconds": 15,
+            },
+        }
+        rds = MagicMock()
+        rds.get_chatroom.return_value = chatroom
         with patch("chatroom_api.auth._get_rds", return_value=rds), \
-             patch("chatroom_api.auth._get_db", return_value=db), \
              patch("chatroom_api.auth.jwt_utils") as jwt_mock:
             jwt_mock.create_token.return_value = "t"
-            handle_auth_token({"chatroom_id": "scid_test-chatroom-001"})
-        parts = db.append_events.call_args.kwargs["participants"]
+            status, body = handle_auth_token({"chatroom_id": "scid_test-chatroom-001"})
+
+        assert status == 200
+        assert body["lobby"]["status"] == "open"
+        assert body["lobby"]["target_human_count"] == 1
+        assert mock_dynamo.get_conversation(body["conversation_id"]) is None
+        open_lobby = mock_lobby.query_by_conversation_id(body["conversation_id"])
+        assert open_lobby is not None
+        assert open_lobby["status"] == "open"
+        assert open_lobby["max_wait_seconds"] == 15
+
+    def test_nicknames_differ(self):
+        mock_lobby.reset()
+        mock_dynamo.reset()
+        rds, _db = _mocks()
+        with patch("chatroom_api.auth._get_rds", return_value=rds), \
+             patch("chatroom_api.auth.jwt_utils") as jwt_mock:
+            jwt_mock.create_token.return_value = "t"
+            _status, body = handle_auth_token({"chatroom_id": "scid_test-chatroom-001"})
+        parts = mock_dynamo.get_conversation(body["conversation_id"])["participants"]
         assert parts[0]["nickname"] != parts[1]["nickname"]

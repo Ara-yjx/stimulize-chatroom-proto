@@ -9,7 +9,7 @@ See [api-reference.md](./api-reference.md) for full API contracts.
 backend/                     # Chatroom Lambda API (Python)
   chatroom_api/
     handler.py               # Lambda entry point, API Gateway router
-    auth.py                  # POST /auth/token (one_on_one + group lobby flow)
+    auth.py                  # POST /auth/token (lobby-backed flow)
     chat.py                  # POST /chat/send, GET /chat/messages
     lobby.py                 # Lobby DDB read/write + close_lobby subroutine
     mock_lobby.py            # Lobby in-memory mock for local dev
@@ -165,14 +165,14 @@ GSI: `status-index` (PK: `status`). Sparse — only `status="active"` rows. Hear
 
 Tick events (`type: "tick"`) are recorded for full audit (every gate skip, every "asked but silent" decision, token costs). `/chat/messages` filters them out before returning to clients; they are never exposed to AI history either.
 
-`lobby_created` events are written as the very first event when a lobby closes (group mode). They carry the lobby's `created_at` timestamp + pairing config (target_human_count, ai_join_strategy, ai_strategy_value, max_wait_seconds) so researchers can audit "how long did this cohort wait?". Filtered out of `/chat/messages` and AI history by the same audit-event rule as ticks; admin callers (`?include_ticks=true` with the admin bearer) see them.
+`lobby_created` events are written as the very first event when a lobby closes. They carry the lobby's `created_at` timestamp + pairing config (target_human_count, ai_join_strategy, ai_strategy_value, max_wait_seconds) so researchers can audit "how long did this cohort wait?". Filtered out of `/chat/messages` and AI history by the same audit-event rule as ticks; admin callers (`?include_ticks=true` with the admin bearer) see them.
 
 **Beta storage guardrail**: events remain embedded in the conversation item for beta to keep implementation small. To reduce the chance of hitting DynamoDB's 400KB item limit during beta, the editor and management API cap `max_duration_seconds` at 900 seconds (15 minutes). Before production, move events to an append-only `chatroom-events` table and keep only conversation metadata/state in `chatroom-conversations` (see Beta -> Prod TODO).
 
 TTL is set to `created_at + 2.5 years` to allow fetching conversation history from the editor website later. The TTL field is derived from `created_at`, so if the retention policy changes, existing items can be batch-updated by recalculating TTL from `created_at`.
 ```
 
-### DynamoDB: `chatroom-lobbies` (group mode only)
+### DynamoDB: `chatroom-lobbies`
 
 Partition key: `lobby_id` (S, UUID)
 
@@ -224,7 +224,6 @@ CREATE TABLE chatroom (
 The `setting` JSON column contains:
 ```json
 {
-  "mode": "one_on_one",
   "topic_instruction": "Anything about your college life.",
   "ai_personas": [
     {
@@ -237,26 +236,21 @@ The `setting` JSON column contains:
     }
   ],
   "model_id": "global.anthropic.claude-sonnet-4-6",
+  "mimic_human": true,
   "simulate_pairing_seconds": 5,
   "timer_min_minutes": 5,
-  "timer_max_minutes": 10
-}
-```
-
-For `mode: "group"`, additional fields:
-```json
-{
-  "mode": "group",
-  "target_human_count": 4,
-  "ai_join_strategy": "total_participant_count",
-  "ai_strategy_value": 6,
+  "timer_max_minutes": 10,
+  "human_count": 1,
+  "ai_count": 1,
+  "replace_human_with_ai": false,
   "max_wait_seconds": 60,
   "max_duration_seconds": 600
 }
 ```
-- `ai_strategy_value` semantics depend on `ai_join_strategy`: total participant count (compensates) vs fixed AI count.
+- `mode` is not stored. Runtime/editor derive the preset from counts: `human_count=1 && ai_count=1` is 1-on-1; all other count combinations use the group prompt/runtime preset.
+- Runtime compatibility fields (`target_human_count`, `ai_join_strategy`, `ai_strategy_value`) are derived from `human_count`, `ai_count`, and `replace_human_with_ai`.
+- For one-human + `mimic_human=true`, `simulate_pairing_seconds` is server-managed as the lobby duration. For multi-human rooms, `max_wait_seconds` is the real lobby wait. For one-human + `mimic_human=false`, simulated pairing is ignored.
 - `max_duration_seconds` applies to both modes. Tick handler stops ticking and ends the conversation past this deadline. Beta hard cap: 900 seconds (15 minutes).
-- For `mode: "one_on_one"`, the group fields are **stored denormalized** with fixed values (`target_human_count=1, ai_join_strategy="fixed_ai_count", ai_strategy_value=1, max_wait_seconds=0`). The chat Lambda branches on the group fields uniformly and never re-derives from `mode`.
 
 ### RDS: `chatroom_usage` table
 
@@ -274,7 +268,7 @@ Detailed write-path decision, current gap, future table shape, provider mappings
   - For local testing: create a Secrets Manager secret or set `JWT_SECRET` env var as fallback. Code tries Secrets Manager first, falls back to env var.
 - TTL: 3 hours (fixed). Independent of `max_duration_seconds`. If a researcher sets `max_duration_seconds > 3h`, the JWT expires mid-conversation — flagged as a prod TODO to revisit if researchers want longer sessions.
 - Claims: `session_id`, `conversation_id`, `chatroom_id`, `iat`, `exp`
-- `conversation_id` is **pre-allocated at lobby creation** (group mode) or at conversation creation (one_on_one). The JWT carries it from the start so clients can poll `/chat/messages` even before the conversation row exists. The lobby's `conversation_id-index` GSI is used to find the lobby state during the lobby phase.
+- `conversation_id` is **pre-allocated at lobby creation**. The JWT carries it from the start so clients can poll `/chat/messages` even before the conversation row exists. The lobby's `conversation_id-index` GSI is used to find the lobby state during the lobby phase.
 
 
 ## Bedrock Integration
@@ -322,18 +316,16 @@ Fatal — Application errors (no retry):
 On failure during a tick: the tick handler appends a `tick` event with `bedrock_invoked=true, ai_decision=null, error=<class>` and a `system` event describing the error to the conversation. The conversation continues — the next tick still fires. The frontend renders the `system` event inline ("Chatroom server error: ..."). No `error: true` field is returned in the API response since `/chat/send` doesn't trigger inference.
 
 
-## Group Mode Pairing
+## Server-Managed Lobby Pairing
 
 Implements the design in [design.md](./design.md#group-chatroom). Lobby state lives in `chatroom-lobbies`; deadline is enforced by client polling, not SQS.
 
-### `POST /auth/token` (group mode branch)
+### `POST /auth/token` (lobby-backed branch)
 
 ```python
 validate access_key against CHATROOM_CLIENT_ACCESS_KEY secret
 load chatroom from RDS
-if mode == "one_on_one": existing flow, return immediately
 
-# group mode
 loop:
   lobby = query chatroom_id-status-index for status="open"
   if lobby found and now >= lobby.deadline_at:
@@ -415,7 +407,7 @@ The `attribute_not_exists` guard on step 4 makes the close idempotent under raci
 
 ### Lobby UX (widget)
 
-While in lobby, the widget shows the same animated dots screen used for `simulate_pairing_seconds` ("Finding a chat partner..."). No counts, no countdown — researchers don't want to telegraph that other humans may not arrive.
+While in lobby, the widget shows the same animated dots screen used for `simulate_pairing_seconds` ("Finding chat partner(s)..."). No counts, no countdown — researchers don't want to telegraph that other humans may not arrive.
 
 When `/chat/messages` returns 410 Gone (lobby `aborted` because no humans remained at deadline, or pruning left 0 humans), the widget replaces the pairing screen with an **aborted state**:
 - Message: "No one else joined this chatroom."
@@ -802,12 +794,12 @@ https://ara-yjx.github.io/stimulize-chatroom-proto/#/chatroom
 ```
 
 ### Chatroom Editor Form
-- Name, status toggle, mode toggle (`one_on_one` / `group`)
+- Name, status toggle, participant counts
 - Mimic human switch (default on)
 - System prompt textarea
 - Model ID dropdown (Anthropic, Amazon Nova, Llama, DeepSeek, Qwen, Google, Mistral)
 - Simulate pairing seconds, timer min/max. `max_duration_seconds` is hidden and derived as `(timer_max_minutes + 1) * 60`.
-- Group-only: `human_count`, `ai_count`, `replace_human_with_ai`, `max_wait_seconds`
+- `human_count`, `ai_count`, `replace_human_with_ai`, `max_wait_seconds`
 - Chatroom-level `temperature` default (`0.0..1.0` for Bedrock beta)
 - Per-AI persona list; each entry may set `internal_name`, display `nickname`, persona text, model override, and temperature override.
 - Generate Script button → Qualtrics-compatible JS snippet
@@ -823,7 +815,7 @@ Editor enforces these client-side; the management API re-validates server-side a
 - `max_wait_seconds <= 600`
 - Backend source-of-truth: `max_duration_seconds <= 900` for beta (15-minute hard cap; revisit in prod after event-history storage is split out)
 - Pending alignment: editor-side validation currently allows a wider hidden draft range, while save requests are still rejected by the backend above 900.
-- For `mode: "one_on_one"`, settings are auto-derived: `target_human_count=1`, `ai_strategy=fixed_ai_count`, `value=1`, `max_wait_seconds=0`. The 1-on-1 form is a UI preset over the same group settings.
+- `mode` is not stored; 1-on-1 is derived from `human_count=1 && ai_count=1`.
 
 ### Management API hostname configuration
 
@@ -838,16 +830,16 @@ The issued token is stored in localStorage under `stimulize.editor.managementAut
 
 For testing arbitrary backend hostnames during development, the editor exposes a dev-mode-only input field (visible when `import.meta.env.DEV`) that overrides the API hostname for the session. Hidden in production builds.
 
-### Mode UX
+### Participant Count UX
 
-The editor surfaces mode as a toggle (`one_on_one` / `group`):
-- `one_on_one` form shows: name, model, topic_instruction, simulate_pairing_seconds, timer min/max. Group fields and `max_duration_seconds` are hidden.
-- `group` form additionally shows: `human_count`, `ai_count`, `replace_human_with_ai`, `max_wait_seconds`.
+The editor surfaces participant counts directly; `mode` is not stored:
+- `human_count=1 && ai_count=1` is the 1-on-1 preset; all other count combinations use the group preset.
 - `replace_human_with_ai=false`: start at timeout with available humans plus exactly `ai_count` AIs.
 - `replace_human_with_ai=true`: start at timeout with total participants equal to `human_count + ai_count`, replacing missing humans with extra AIs.
-- `simulate_pairing_seconds` is hidden in group mode when `human_count > 1` — the lobby provides a real wait (`max_wait_seconds`), so a cosmetic wait on top would be confusing. With `human_count = 1` the field stays visible because there is no real wait and the simulated pairing screen is the only pacing.
+- `simulate_pairing_seconds` is enabled only when `human_count=1 && mimic_human=true`. It is not a widget sleep; the server keeps the lobby open for that duration so reconnects see the same state.
+- With `human_count > 1`, the real lobby wait is `max_wait_seconds`.
 - `max_duration_seconds` is derived on save as `(timer_max_minutes + 1) * 60`.
-- On save, the management API stores both sets of fields. For `one_on_one`, group fields are denormalized to fixed values (`target_human_count=1`, `ai_join_strategy=fixed_ai_count`, `ai_strategy_value=1`, `max_wait_seconds=0`) so the chat Lambda can branch uniformly on group fields without re-deriving from `mode`.
+- On save, the management API stores count fields and derives runtime compatibility fields (`target_human_count`, `ai_join_strategy`, `ai_strategy_value`).
 
 ### Editor → Management API
 
