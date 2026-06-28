@@ -11,6 +11,7 @@ export interface ChatMessage {
   role: "user" | "ai" | "system";
   timestamp: number;
   session_id?: string;
+  internal_name?: string | null;
   avatar?: Avatar;
 }
 
@@ -23,6 +24,7 @@ export interface ConversationEvent {
   timestamp: number;
   visible_at?: number;
   avatar?: Avatar;
+  internal_name?: string | null;
 }
 
 export interface ChatroomSetting {
@@ -31,6 +33,8 @@ export interface ChatroomSetting {
   additional_prompt?: string;
   ai_personas?: string[];
   model_id: string;
+  mimic_human?: boolean;
+  temperature?: number;
   simulate_pairing_seconds: number;
   timer_min_minutes?: number;
   timer_max_minutes?: number;
@@ -38,6 +42,9 @@ export interface ChatroomSetting {
   target_human_count?: number;
   ai_join_strategy?: "fixed_ai_count" | "total_participant_count";
   ai_strategy_value?: number;
+  human_count?: number;
+  ai_count?: number;
+  replace_human_with_ai?: boolean;
   max_wait_seconds?: number;
 }
 
@@ -49,7 +56,9 @@ export interface LobbyState {
 }
 
 export interface InitOptions {
-  element: string | HTMLElement;
+  element?: string | HTMLElement;
+  parentElement?: string | HTMLElement;
+  elementStyle?: Partial<CSSStyleDeclaration>;
   chatroomId: string;
   apiBaseUrl?: string;
   beta?: boolean;

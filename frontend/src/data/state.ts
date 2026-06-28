@@ -363,6 +363,7 @@ export class ChatroomState {
         role: messageRole,
         timestamp: evt.timestamp,
         session_id: evt.session_id,
+        internal_name: evt.internal_name ?? null,
         avatar: evt.avatar,
       };
       this.chatHistory.push(msg);
@@ -415,7 +416,10 @@ export class ChatroomState {
     return this.chatHistory
       .map((m) => {
         if (m.role === "system") return `[SYS] ${m.content}`;
-        if (m.role === "ai") return `[${m.sender}] [AI] ${m.content}`;
+        if (m.role === "ai") {
+          const sender = m.internal_name ? `${m.sender} (${m.internal_name})` : m.sender;
+          return `[${sender}] [AI] ${m.content}`;
+        }
         return `[${m.sender}] ${m.content}`;
       })
       .join("\n");

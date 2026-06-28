@@ -102,6 +102,7 @@ def _decorate_with_avatar(events: list[dict], avatar_map: dict) -> list[dict]:
             "visible_at": e.get("visible_at", e.get("timestamp", 0)),
             "session_id": e.get("session_id"),
             "avatar": avatar_map.get(sender) if sender else None,
+            "internal_name": e.get("internal_name"),
         }
         # Pass tick-specific fields through untouched when present (admin path).
         for key in (

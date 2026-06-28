@@ -12,6 +12,7 @@ import { showConversationEnded } from "./ui/ended";
 import { showReconnectBanner, hideReconnectBanner } from "./ui/reconnect";
 import { formatTimerText } from "./ui/timer";
 import { writeToED } from "./qualtrics/embedded-data";
+import { isQualtricsMobilePreview } from "./qualtrics/environment";
 import styles from "./ui/styles.css";
 
 declare const $: JQueryStatic;
@@ -20,6 +21,46 @@ const _$ = (typeof jQuery !== "undefined" ? jQuery : $) as JQueryStatic;
 const DEFAULT_API_BASE_URL = "https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod";
 
 let state: ChatroomState | null = null;
+
+function resolveMountElement(options: InitOptions): HTMLElement {
+  if (options.element) {
+    if (typeof options.element === "string") {
+      const existing = document.querySelector(options.element);
+      if (!(existing instanceof HTMLElement)) {
+        throw new Error(`Chatroom element not found: ${options.element}`);
+      }
+      return existing;
+    }
+    return options.element;
+  }
+
+  if (!options.parentElement) {
+    throw new Error("StimulizeChatroom.init requires element or parentElement");
+  }
+
+  const parent =
+    typeof options.parentElement === "string"
+      ? document.querySelector(options.parentElement)
+      : options.parentElement;
+  if (!(parent instanceof HTMLElement)) {
+    throw new Error("Chatroom parentElement not found");
+  }
+
+  const child = document.createElement("div");
+  if (options.elementStyle) {
+    Object.assign(child.style, options.elementStyle);
+  }
+  parent.appendChild(child);
+  return child;
+}
+
+function showMobilePreviewDisabledMessage(element: HTMLElement): void {
+  element.innerHTML = `
+    <div class="stim-chatroom">
+      <div class="stim-error">Please use the Qualtrics desktop preview to avoid data collision issue</div>
+    </div>
+  `;
+}
 
 function injectStyles(): void {
   if (!document.getElementById("stim-chatroom-styles")) {
@@ -57,15 +98,24 @@ export async function init(options: InitOptions): Promise<void> {
   }
   state = new ChatroomState();
 
-  const $el = _$(options.element as any) as JQuery;
+  const element = resolveMountElement(options);
+  const resolvedOptions: InitOptions = { ...options, element };
+  const $el = _$(element as any) as JQuery;
 
   // 1. Inject styles
   injectStyles();
 
+  if (isQualtricsMobilePreview()) {
+    showMobilePreviewDisabledMessage(element);
+    return;
+  }
+
   // 2. Beta mode: show URL input before anything else
   if (options.beta) {
-    const url = await showBetaUrlInput(options.element, options);
-    options = { ...options, apiBaseUrl: url };
+    const url = await showBetaUrlInput(element, options);
+    options = { ...resolvedOptions, apiBaseUrl: url };
+  } else {
+    options = resolvedOptions;
   }
 
   // Wire UI callbacks before init so they're ready
@@ -86,19 +136,19 @@ export async function init(options: InitOptions): Promise<void> {
 
   state.onConversationEnded(() => {
     appendSystemBubble("This conversation has ended.");
-    showConversationEnded(options.element);
+    showConversationEnded(element);
     writeToED(state!.getHistory(), state!.getHistoryText());
   });
 
   state.onLobbyAborted(() => {
-    showLobbyAborted(options.element, () => {
+    showLobbyAborted(element, () => {
       init(state!.getInitOptions()!);
     });
   });
 
   state.onReconnecting((reconnecting: boolean) => {
     if (reconnecting) {
-      showReconnectBanner(options.element);
+      showReconnectBanner(element);
     } else {
       hideReconnectBanner();
     }
@@ -136,7 +186,7 @@ export async function init(options: InitOptions): Promise<void> {
   const rawPairingSeconds = setting?.simulate_pairing_seconds || 0;
 
   if (isMultiHumanGroup) {
-    renderPairingScreen(options.element);
+    renderPairingScreen(element);
     await state.prefetchEvents();
 
     // If the lobby was already closed by the time prefetch ran (e.g. the
@@ -163,7 +213,7 @@ export async function init(options: InitOptions): Promise<void> {
     }
   } else if (rawPairingSeconds > 0) {
     await Promise.all([
-      showPairingScreen(options.element, rawPairingSeconds),
+      showPairingScreen(element, rawPairingSeconds),
       state.prefetchEvents(),
     ]);
   } else {
@@ -171,7 +221,7 @@ export async function init(options: InitOptions): Promise<void> {
   }
 
   // 5. Render chatroom UI
-  renderChatroom(options.element, (text: string) => {
+  renderChatroom(element, (text: string) => {
     state!.send(text);
   });
 

@@ -20,23 +20,16 @@ export default function ScriptGenerator({ chatroomId }: Props) {
   const [snippet, setSnippet] = useState('')
 
   const generate = () => {
-    // const initBlock = `    StimulizeChatroom.init({
-    //   element: chatDiv,
-    //   chatroomId: "${chatroomId}",
-    //   beta: true,
-    //   apiBaseUrl: "${apiBaseUrl}"
-    // });`
     const initBlock = `    StimulizeChatroom.init({
-      element: chatDiv,
+      parentElement: questionContainer,
+      elementStyle: { height: "500px" },
       chatroomId: "${chatroomId}",
     });`
 
     const widgetScriptUrl = CHATROOM_WIDGET_URL
 
-    const script = `Qualtrics.SurveyEngine.addOnload(function() {
-  var chatDiv = document.createElement("div");
-  chatDiv.style.height = "500px";
-  this.questionContainer.appendChild(chatDiv);
+  const script = `Qualtrics.SurveyEngine.addOnload(function() {
+  var questionContainer = this.questionContainer;
   var s = document.createElement("script");
   s.src = "${widgetScriptUrl}";
   s.onload = function() {
