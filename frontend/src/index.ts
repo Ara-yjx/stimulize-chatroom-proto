@@ -134,7 +134,8 @@ export async function init(options: InitOptions): Promise<void> {
   });
 
   state.onConversationEnded(() => {
-    appendSystemBubble("This conversation has ended.");
+    // The backend emits the terminal system event. This callback only applies
+    // local UI state; rendering here would duplicate the final system bubble.
     showConversationEnded(element);
     writeToED(state!.getHistory(), state!.getHistoryText());
   });
