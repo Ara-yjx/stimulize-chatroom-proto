@@ -58,6 +58,10 @@ export interface InitOptions {
   element?: string | HTMLElement;
   parentElement?: string | HTMLElement;
   elementStyle?: Partial<CSSStyleDeclaration>;
+  qualtricsQuestion?: {
+    hideNextButton?: () => void;
+    showNextButton?: () => void;
+  };
   chatroomId: string;
   apiBaseUrl?: string;
   beta?: boolean;

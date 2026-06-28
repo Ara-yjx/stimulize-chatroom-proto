@@ -13,6 +13,7 @@ import { showReconnectBanner, hideReconnectBanner } from "./ui/reconnect";
 import { formatTimerText } from "./ui/timer";
 import { writeToED } from "./qualtrics/embedded-data";
 import { isQualtricsMobilePreview } from "./qualtrics/environment";
+import { lockQualtricsNextUntilTimerMin } from "./qualtrics/next-button";
 import styles from "./ui/styles.css";
 
 declare const $: JQueryStatic;
@@ -209,9 +210,11 @@ export async function init(options: InitOptions): Promise<void> {
   const maxMin = state.chatroomSetting?.timer_max_minutes;
   if (minMin || maxMin) {
     updateTimerBar(formatTimerText(0, minMin, maxMin));
+    const unlockQualtricsNext = lockQualtricsNextUntilTimerMin(options, minMin);
 
     state.onTimerTick((elapsed: number) => {
       updateTimerBar(formatTimerText(elapsed, minMin, maxMin));
+      unlockQualtricsNext(elapsed);
     });
     state.startTimer(minMin, maxMin);
   }
