@@ -36,9 +36,8 @@ export interface ChatroomSetting {
    */
   topic_instruction: string
   /**
-   * Free-form text appended after the conversation history block in the
-   * per-tick system prompt. Use this for last-mile reminders the AI must
-   * see right before deciding what to say. Optional.
+   * Optional researcher-supplied instruction used to fine-tune this
+   * chatroom's AI behavior on top of the backend prompt scaffold.
    */
   additional_prompt: string
   /**

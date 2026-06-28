@@ -152,7 +152,7 @@ export default function WidgetPreview({ chatroomId, onSaveBeforeLaunch }: Props)
     iframe.contentWindow.postMessage({ type: 'stimulize-get-history', format }, '*')
   }
 
-  const launchLabel = onSaveBeforeLaunch ? 'Save & Launch Preview' : 'Launch Preview'
+  const launchLabel = onSaveBeforeLaunch ? 'Save, Activate, and Launch Preview' : 'Launch Preview'
 
   return (
     <div>
@@ -186,7 +186,7 @@ export default function WidgetPreview({ chatroomId, onSaveBeforeLaunch }: Props)
           justifyContent: 'center', color: '#86909c', fontSize: 14,
         }}>
           {onSaveBeforeLaunch
-            ? 'Click "Save & Launch Preview" to save the chatroom and test the widget'
+            ? 'Click "Save, Activate, and Launch Preview" to save the chatroom, activate it, and test the widget'
             : 'Click "Launch Preview" to test the widget'}
         </div>
       ) : (

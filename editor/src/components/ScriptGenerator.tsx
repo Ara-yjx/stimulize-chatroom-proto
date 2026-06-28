@@ -21,15 +21,16 @@ export default function ScriptGenerator({ chatroomId }: Props) {
 
   const generate = () => {
     const initBlock = `    StimulizeChatroom.init({
-      parentElement: questionContainer,
+      parentElement: qualtricsQuestion.questionContainer,
       elementStyle: { height: "500px" },
+      qualtricsQuestion: qualtricsQuestion,
       chatroomId: "${chatroomId}",
     });`
 
     const widgetScriptUrl = CHATROOM_WIDGET_URL
 
-  const script = `Qualtrics.SurveyEngine.addOnload(function() {
-  var questionContainer = this.questionContainer;
+    const script = `Qualtrics.SurveyEngine.addOnload(function() {
+  var qualtricsQuestion = this;
   var s = document.createElement("script");
   s.src = "${widgetScriptUrl}";
   s.onload = function() {
@@ -77,11 +78,11 @@ ${initBlock}
             style={{ fontFamily: 'monospace', fontSize: 12 }}
           />
           <Button onClick={copySnippet} style={{ marginTop: 8 }}><IconCopy /> Copy to Clipboard</Button>
-          <br/>
+          <br />
           <Text>
-            You also need to create two Embeded Data fields in Qualtrics: <br/>
+            You also need to create two Embeded Data fields in Qualtrics: <br />
             <code>QUALTRICS_CHATROOM_HISTORY</code>
-            and
+            <span> and </span>
             <code>QUALTRICS_CHATROOM_HISTORY_JSON</code>.
           </Text>
         </div>

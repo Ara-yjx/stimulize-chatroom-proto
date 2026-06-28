@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  Form, Input, InputNumber, Switch, Select, Button, Message, Spin, Space, Popover, Modal,
+  Form, Input, InputNumber, Switch, Select, Button, Message, Spin, Space, Popover, Modal, Card,
 } from '@arco-design/web-react'
 import { IconDelete, IconPlus, IconQuestionCircle } from '@arco-design/web-react/icon'
 import { isManagementAuthExpiredError, mgmtFetchJson } from '../api/management'
@@ -12,7 +12,6 @@ import {
   defaultChatroomSetting,
   defaultSettingForMode,
   denormalizeForSave,
-  deriveChatroomMode,
   deriveMaxDurationSeconds,
   normalizeAiPersonas,
   validateChatroomSetting,
@@ -27,6 +26,15 @@ const FormItem = Form.Item
 const Option = Select.Option
 const OptGroup = Select.OptGroup
 const SAME_MODEL_AS_DEFAULT = '__CHATROOM_DEFAULT__'
+const CACHE_SUPPORTED_MODEL_IDS = new Set([
+  'global.anthropic.claude-sonnet-4-6',
+])
+
+function formatModelOptionLabel(option: { label: string; value: string }): string {
+  return CACHE_SUPPORTED_MODEL_IDS.has(option.value)
+    ? `${option.label} (supports caching)`
+    : option.label
+}
 
 
 /** Section heading inside the form. Compact, uppercase tracking, separator above. */
@@ -36,7 +44,7 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
       margin: '24px 0 12px',
       paddingTop: 16,
       borderTop: '1px solid #f0f0f0',
-      fontSize: 13,
+      fontSize: 16,
       fontWeight: 600,
       color: '#4e5969',
       letterSpacing: 0.3,
@@ -50,6 +58,14 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 function Row({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+      {children}
+    </div>
+  )
+}
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 4, color: '#4e5969', fontSize: 13, fontWeight: 500 }}>
       {children}
     </div>
   )
@@ -72,75 +88,106 @@ function PersonaListEditor({
   return (
     <div>
       {personas.map((p, i) => (
-        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'flex-start' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <Row>
-              <Input
-                value={p.internal_name}
-                onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, internal_name: v } : x)))}
-                placeholder={`Internal name ${i + 1}`}
-                style={{ flex: 1, minWidth: 180 }}
-              />
-              <Input
-                value={p.nickname}
-                onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, nickname: v } : x)))}
-                placeholder="Display name"
-                style={{ flex: 1, minWidth: 180 }}
-              />
-            </Row>
-            <TextArea
-              value={p.persona}
-              onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, persona: v } : x)))}
-              autoSize={{ minRows: 2, maxRows: 6 }}
-              placeholder={`Instruction to persona ${i + 1}`}
-              style={{ flex: 1, marginBottom: 8 }}
-            />
-            <Select
-              value={p.model_id ?? SAME_MODEL_AS_DEFAULT}
-              onChange={(v) => update(
-                personas.map((x, j) => (
-                  j === i
-                    ? { ...x, model_id: v === SAME_MODEL_AS_DEFAULT ? null : String(v) }
-                    : x
-                )),
-              )}
-              placeholder="Select model"
-              style={{ width: '100%' }}
-            >
-              <Option value={SAME_MODEL_AS_DEFAULT}>(same model as chatroom default)</Option>
-              {MODEL_GROUPS.map((group) => (
-                <OptGroup key={group.label} label={group.label}>
-                  {group.options.map((opt) => (
-                    <Option key={opt.value} value={opt.value}>{opt.label}</Option>
-                  ))}
-                </OptGroup>
-              ))}
-            </Select>
-            <InputNumber
-              value={p.temperature ?? undefined}
-              min={VALIDATION_LIMITS.temperatureMin}
-              max={VALIDATION_LIMITS.temperatureMax}
-              step={0.1}
-              precision={2}
-              onChange={(v) => update(
-                personas.map((x, j) => (
-                  j === i
-                    ? { ...x, temperature: typeof v === 'number' ? v : null }
-                    : x
-                )),
-              )}
-              placeholder="Same temperature as chatroom default"
-              style={{ width: '100%', marginTop: 8 }}
+        <Card
+          key={i}
+          bordered
+          style={{
+            marginBottom: 16,
+            borderRadius: 8,
+          }}
+          bodyStyle={{ padding: 16 }}
+        >
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Row>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <FieldLabel>Internal name</FieldLabel>
+                  <Input
+                    value={p.internal_name}
+                    onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, internal_name: v } : x)))}
+                    placeholder={`condition_${i + 1}`}
+                  />
+                  <div style={{ marginTop: 4, color: '#86909c', fontSize: 12 }}>
+                    Invisible to participants. Used for logs and result analysis.
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <FieldLabel>Display name</FieldLabel>
+                  <Input
+                    value={p.nickname}
+                    onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, nickname: v } : x)))}
+                    placeholder="Participant display name"
+                  />
+                  <div style={{ marginTop: 4, color: '#86909c', fontSize: 12 }}>
+                    Shown to chat participants as this AI's name.
+                  </div>
+                </div>
+              </Row>
+              <Row>
+                <div style={{ flex: 2, minWidth: 260 }}>
+                  <FieldLabel>🤖 Model</FieldLabel>
+                  <Select
+                    value={p.model_id ?? SAME_MODEL_AS_DEFAULT}
+                    onChange={(v) => update(
+                      personas.map((x, j) => (
+                        j === i
+                          ? { ...x, model_id: v === SAME_MODEL_AS_DEFAULT ? null : String(v) }
+                          : x
+                      )),
+                    )}
+                    placeholder="Select model"
+                    style={{ width: '100%' }}
+                  >
+                    <Option value={SAME_MODEL_AS_DEFAULT}>(same model as chatroom default)</Option>
+                    {MODEL_GROUPS.map((group) => (
+                      <OptGroup key={group.label} label={group.label}>
+                        {group.options.map((opt) => (
+                          <Option key={opt.value} value={opt.value}>{formatModelOptionLabel(opt)}</Option>
+                        ))}
+                      </OptGroup>
+                    ))}
+                  </Select>
+                </div>
+                <div style={{ flex: 1, minWidth: 160 }}>
+                  <FieldLabel>🌡️ Temperature</FieldLabel>
+                  <InputNumber
+                    value={p.temperature ?? undefined}
+                    min={VALIDATION_LIMITS.temperatureMin}
+                    max={VALIDATION_LIMITS.temperatureMax}
+                    step={0.1}
+                    precision={2}
+                    onChange={(v) => update(
+                      personas.map((x, j) => (
+                        j === i
+                          ? { ...x, temperature: typeof v === 'number' ? v : null }
+                          : x
+                      )),
+                    )}
+                    placeholder="Same as default"
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              </Row>
+              <div style={{ marginTop: 8 }}>
+                <FieldLabel>Additional prompt</FieldLabel>
+                <TextArea
+                  value={p.persona}
+                  onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, persona: v } : x)))}
+                  autoSize={{ minRows: 2, maxRows: 6 }}
+                  placeholder={`Instruction to persona ${i + 1}`}
+                  style={{ flex: 1 }}
+                />
+              </div>
+            </div>
+            <Button
+              shape="circle"
+              type="text"
+              icon={<IconDelete />}
+              onClick={() => update(personas.filter((_, j) => j !== i))}
+              aria-label="Remove persona"
             />
           </div>
-          <Button
-            shape="circle"
-            type="text"
-            icon={<IconDelete />}
-            onClick={() => update(personas.filter((_, j) => j !== i))}
-            aria-label="Remove persona"
-          />
-        </div>
+        </Card>
       ))}
       <Space>
         <Button
@@ -225,6 +272,10 @@ interface FormValues extends ChatroomSetting {
   status: boolean
 }
 
+interface SaveOptions {
+  activate?: boolean
+}
+
 /**
  * Older v2 chatrooms may not have all group / max_duration fields. Fill in
  * sensible defaults so the form doesn't crash.
@@ -274,7 +325,6 @@ export default function ChatroomEditor() {
   const [form] = Form.useForm<FormValues>()
   const sessionExpiredModalShownRef = useRef(false)
   const watchedHumanCount = Form.useWatch('human_count', form) as number | undefined
-  const watchedAiCount = Form.useWatch('ai_count', form) as number | undefined
   const watchedMimicHuman = Form.useWatch('mimic_human', form) as boolean | undefined
   const watchedTimerMaxMinutes = Form.useWatch('timer_max_minutes', form) as number | null | undefined
 
@@ -342,12 +392,13 @@ export default function ChatroomEditor() {
 
   useEffect(() => { fetchChatroom() }, [fetchChatroom])
 
-  const handleSave = async () => {
+  const handleSave = async (options: SaveOptions = {}) => {
     if (!hasManagementToken()) {
       showSessionExpiredModal()
       return
     }
     const values = await form.validate()
+    const nextStatus = options.activate ? 'active' : values.status ? 'active' : 'inactive'
 
     // Layer custom validation on top of Form's built-in rules.
     const settingToValidate: ChatroomSetting = {
@@ -392,12 +443,15 @@ export default function ChatroomEditor() {
         method: 'POST',
         body: JSON.stringify({
           name: values.name,
-          status: values.status ? 'active' : 'inactive',
+          status: nextStatus,
           setting: finalSetting,
         }),
       })
       setChatroom(updated)
-      Message.success('Saved')
+      if (options.activate) {
+        form.setFieldValue('status', true)
+      }
+      Message.success(options.activate ? 'Saved and activated' : 'Saved')
     } finally {
       setSaving(false)
     }
@@ -418,6 +472,10 @@ export default function ChatroomEditor() {
     }
   }
 
+  const handleSaveAndActivate = async () => {
+    await handleSave({ activate: true })
+  }
+
   const handleOpenUsage = () => {
     const url = `${window.location.origin}${import.meta.env.BASE_URL}#${chatroomUsageRoute(id ?? '')}`
     window.open(url, '_blank', 'noopener,noreferrer')
@@ -426,11 +484,6 @@ export default function ChatroomEditor() {
   if (loading) return <Spin style={{ display: 'block', margin: '80px auto' }} />
   if (!chatroom) return <div style={{ padding: 24 }}>Chatroom not found</div>
 
-  const derivedMode = deriveChatroomMode({
-    human_count: watchedHumanCount ?? 1,
-    ai_count: watchedAiCount ?? 1,
-  })
-  const isGroup = derivedMode === 'group'
   const enableSimulatePairing = (watchedHumanCount ?? 1) === 1 && watchedMimicHuman === true
 
   return (
@@ -480,153 +533,6 @@ export default function ChatroomEditor() {
             </FormItem>
           </Row>
 
-          {/* ─── Prompt ─────────────────────────────────────────────── */}
-          <SectionHeader>💬 Prompt</SectionHeader>
-
-          <FormItem
-            label="📝 Chatroom Topic"
-            field="topic_instruction"
-            extra="Just describe the topic the AI should chat about. The human-mimicry rules, tool-use mechanics, and examples are managed by the backend."
-          >
-            <TextArea autoSize={{ minRows: 4, maxRows: 12 }} placeholder="Anything about your college life." />
-          </FormItem>
-
-          <FormItem
-            label="📝 Additional Prompt"
-            field="additional_prompt"
-            extra="Free-form text appended after the conversation history. Use for last-mile reminders the AI sees right before deciding what to say. Optional."
-          >
-            <TextArea autoSize={{ minRows: 3, maxRows: 10 }} placeholder="(optional)" />
-          </FormItem>
-
-          <FormItem
-            label="Mimic human"
-            field="mimic_human"
-            triggerPropName="checked"
-            extra="When off, the backend uses a generic AI-assistant prompt instead of human-mimic instructions and examples."
-          >
-            <Switch checkedText="On" uncheckedText="Off" />
-          </FormItem>
-
-          <FormItem
-            label={
-              <Space size={4}>
-                🎭 AI Personas
-                <Popover
-                  position="right"
-                  trigger="click"
-                  content={
-                    <div style={{ maxWidth: 360, fontSize: 13, lineHeight: 1.6 }}>
-                      <p style={{ marginTop: 0 }}>
-                        Pool of per-AI persona instructions. When the lobby closes,
-                        the backend assigns one entry per AI in round-robin-style
-                        batches, and each persona can optionally override the
-                        chatroom default model.
-                      </p>
-                      <p>
-                        Each entry is free-form — describe the persona AND any
-                        dos/don'ts, then optionally pick a model just for that
-                        persona. For example:
-                      </p>
-                      <pre style={{
-                        background: '#f2f3f5', padding: 8, borderRadius: 4,
-                        fontSize: 12, whiteSpace: 'pre-wrap', margin: '4px 0',
-                      }}>
-upenn sophomore, asian studies minor, casual tone.
-avoid talking about politics; keep messages under 12 words.
-                      </pre>
-                      <p>
-                        The chosen entry is injected into that AI's system prompt
-                        as{' '}
-                        <code style={{ background: '#f2f3f5', padding: '0 4px', borderRadius: 3 }}>
-                          {'<your-persona>...</your-persona>'}
-                        </code>{' '}
-                        right before the conversation history; the speech scaffold
-                        tells the AI to "stay strictly within those facts."
-                      </p>
-                      <p style={{ marginBottom: 0 }}>
-                        Leave empty to let the AI build its own identity from the topic.
-                      </p>
-                    </div>
-                  }
-                >
-                  <IconQuestionCircle
-                    style={{ color: '#86909c', cursor: 'pointer' }}
-                    aria-label="What are AI Personas?"
-                  />
-                </Popover>
-              </Space>
-            }
-            field="ai_personas"
-          >
-            <PersonaListEditor />
-          </FormItem>
-
-          {/* ─── Model & timing ────────────────────────────────────── */}
-          <SectionHeader>⚙️ Model &amp; timing</SectionHeader>
-
-          <FormItem label="🤖 Model" field="model_id">
-            <Select showSearch placeholder="Select a model">
-              {MODEL_GROUPS.map((group) => (
-                <OptGroup key={group.label} label={group.label}>
-                  {group.options.map((opt) => (
-                    <Option key={opt.value} value={opt.value}>{opt.label}</Option>
-                  ))}
-                </OptGroup>
-              ))}
-            </Select>
-          </FormItem>
-
-          <FormItem
-            label="Temperature"
-            field="temperature"
-            rules={[{
-              required: true,
-              type: 'number',
-              min: VALIDATION_LIMITS.temperatureMin,
-              max: VALIDATION_LIMITS.temperatureMax,
-            }]}
-            extra="Bedrock beta range is 0.0-1.0. OpenAI and Anthropic direct API limits may differ later."
-          >
-            <InputNumber
-              min={VALIDATION_LIMITS.temperatureMin}
-              max={VALIDATION_LIMITS.temperatureMax}
-              step={0.1}
-              precision={2}
-              style={{ width: '100%' }}
-            />
-          </FormItem>
-
-          <Row>
-            <FormItem
-              label="⏱️ Simulate Pairing (sec)"
-              field="simulate_pairing_seconds"
-              hidden={!enableSimulatePairing}
-              extra="Server-managed lobby duration before a one-human mimic-human chat starts."
-              style={{ flex: 1, minWidth: 180 }}
-            >
-              <InputNumber min={0} style={{ width: '100%' }} />
-            </FormItem>
-          </Row>
-
-          <Row>
-            <FormItem label="🕒 Timer Min (min)" field="timer_min_minutes" style={{ flex: 1, minWidth: 140 }}>
-              <InputNumber min={0} style={{ width: '100%' }} />
-            </FormItem>
-            <FormItem
-              label="🕒 Timer Max (min)"
-              field="timer_max_minutes"
-              style={{ flex: 1, minWidth: 140 }}
-              extra={
-                typeof watchedTimerMaxMinutes === 'number' && watchedTimerMaxMinutes > 15
-                  ? 'Too long conversation will cause extra cost.'
-                  : undefined
-              }
-            >
-              <InputNumber min={0} style={{ width: '100%' }} />
-            </FormItem>
-          </Row>
-
           {/* ─── Participants ─────────────────────────────────────── */}
           <SectionHeader>👥 Participants</SectionHeader>
 
@@ -656,26 +562,198 @@ avoid talking about politics; keep messages under 12 words.
                 style={{ width: '100%' }}
               />
             </FormItem>
+          </Row>
+
+          <Row>
             <FormItem
-              label="⏰ Max Wait (sec)"
+              label="Max wait time (sec)"
               field="max_wait_seconds"
-              hidden={!isGroup || (watchedHumanCount ?? 1) <= 1}
-              extra="Lobby cap before starting with as-many-humans-as-possible."
-              rules={[{ required: true, type: 'number', min: 0, max: VALIDATION_LIMITS.maxWaitSecondsMax }]}
-              style={{ flex: 1, minWidth: 200 }}
+              rules={[{
+                required: true,
+                type: 'number',
+                min: 0,
+                max: VALIDATION_LIMITS.maxWaitSecondsMax,
+              }]}
+              extra="How long the lobby waits for humans before starting or filling missing seats."
+              style={{ flex: 1, minWidth: 220 }}
             >
-              <InputNumber min={0} max={VALIDATION_LIMITS.maxWaitSecondsMax} style={{ width: '100%' }} />
+              <InputNumber
+                min={0}
+                max={VALIDATION_LIMITS.maxWaitSecondsMax}
+                disabled={(watchedHumanCount ?? 1) <= 1}
+                style={{ width: '100%' }}
+              />
+            </FormItem>
+            <FormItem
+              label="Replace missing humans with AI"
+              field="replace_human_with_ai"
+              triggerPropName="checked"
+              extra={
+                (watchedHumanCount ?? 1) <= 1
+                  ? 'Only applies when Human Count is greater than 1.'
+                  : 'When on, missing human seats are filled by additional AIs at the wait deadline.'
+              }
+              style={{ flex: 1, minWidth: 260 }}
+            >
+              <Switch
+                checkedText="On"
+                uncheckedText="Off"
+                disabled={(watchedHumanCount ?? 1) <= 1}
+              />
+            </FormItem>
+          </Row>
+
+          {/* ─── Model and Prompt ──────────────────────────────────── */}
+          <SectionHeader>⚙️ Model and Prompt</SectionHeader>
+
+          <Row>
+            <FormItem
+              label="🤖 Model"
+              field="model_id"
+              extra="Models marked 'supports caching' can save about 80% of repeated input prompt tokens after the first tick."
+              style={{ flex: 2, minWidth: 280 }}
+            >
+              <Select showSearch placeholder="Select a model">
+                {MODEL_GROUPS.map((group) => (
+                  <OptGroup key={group.label} label={group.label}>
+                    {group.options.map((opt) => (
+                      <Option key={opt.value} value={opt.value}>{formatModelOptionLabel(opt)}</Option>
+                    ))}
+                  </OptGroup>
+                ))}
+              </Select>
+            </FormItem>
+
+            <FormItem
+              label="🌡️ Temperature"
+              field="temperature"
+              rules={[{
+                required: true,
+                type: 'number',
+                min: VALIDATION_LIMITS.temperatureMin,
+                max: VALIDATION_LIMITS.temperatureMax,
+              }]}
+              extra="Bedrock beta range is 0.0-1.0. OpenAI and Anthropic direct API limits may differ later."
+              style={{ flex: 1, minWidth: 180 }}
+            >
+              <InputNumber
+                min={VALIDATION_LIMITS.temperatureMin}
+                max={VALIDATION_LIMITS.temperatureMax}
+                step={0.1}
+                precision={2}
+                style={{ width: '100%' }}
+              />
             </FormItem>
           </Row>
 
           <FormItem
-            label="Replace missing humans with AI"
-            field="replace_human_with_ai"
+            label="Mimic human"
+            field="mimic_human"
             triggerPropName="checked"
-            hidden={(watchedHumanCount ?? 1) <= 1}
-            extra="When on, missing human seats are filled by additional AIs at the wait deadline."
+            extra="When off, the backend uses a generic AI-assistant prompt instead of human-mimic instructions and examples."
           >
             <Switch checkedText="On" uncheckedText="Off" />
+          </FormItem>
+
+          <FormItem
+            label="📝 Chatroom Topic"
+            field="topic_instruction"
+            extra="Describe the topic the participants should chat about. (You also need to tell human participants about the topic in your Qualtrics survey.)"
+          >
+            <TextArea autoSize={{ minRows: 4, maxRows: 12 }} placeholder="Anything about your college life." />
+          </FormItem>
+
+          <FormItem
+            label="📝 Additional Prompt"
+            field="additional_prompt"
+            extra="The backend already provides general instructions for online conversation and, when enabled, human mimicry. Use this optional prompt to fine-tune this chatroom's AI behavior."
+          >
+            <TextArea autoSize={{ minRows: 3, maxRows: 10 }} placeholder="(optional)" />
+          </FormItem>
+
+          {/* ─── AI Personas ───────────────────────────────────────── */}
+          <SectionHeader>
+            <Space size={4}>
+              AI Personas
+              <Popover
+                position="right"
+                trigger="click"
+                content={
+                  <div style={{ maxWidth: 360, fontSize: 13, lineHeight: 1.6 }}>
+                    <p style={{ marginTop: 0 }}>
+                      Pool of per-AI persona instructions. When the lobby closes,
+                      the backend assigns one entry per AI in round-robin-style
+                      batches, and each persona can optionally override the
+                      chatroom default model.
+                    </p>
+                    <p>
+                      Each entry is free-form — describe the persona AND any
+                      dos/don'ts, then optionally pick a model just for that
+                      persona. For example:
+                    </p>
+                    <pre style={{
+                      background: '#f2f3f5', padding: 8, borderRadius: 4,
+                      fontSize: 12, whiteSpace: 'pre-wrap', margin: '4px 0',
+                    }}>
+upenn sophomore, asian studies minor, casual tone.
+avoid talking about politics; keep messages under 12 words.
+                    </pre>
+                    <p>
+                      The chosen entry is injected into that AI's system prompt
+                      as{' '}
+                      <code style={{ background: '#f2f3f5', padding: '0 4px', borderRadius: 3 }}>
+                        {'<your-persona>...</your-persona>'}
+                      </code>{' '}
+                      right before the conversation history; the speech scaffold
+                      tells the AI to "stay strictly within those facts."
+                    </p>
+                    <p style={{ marginBottom: 0 }}>
+                      Leave empty to let the AI build its own identity from the topic.
+                    </p>
+                  </div>
+                }
+              >
+                <IconQuestionCircle
+                  style={{ color: '#86909c', cursor: 'pointer' }}
+                  aria-label="What are AI Personas?"
+                />
+              </Popover>
+            </Space>
+          </SectionHeader>
+
+          <FormItem field="ai_personas">
+            <PersonaListEditor />
+          </FormItem>
+
+          {/* ─── Misc ──────────────────────────────────────────────── */}
+          <SectionHeader>Misc</SectionHeader>
+
+          <Row>
+            <FormItem
+              label="🕒 Timer Min"
+              field="timer_min_minutes"
+              extra="When set, Qualtrics 'Next' button will be hidden until this time has elapsed"
+              style={{ flex: 1, minWidth: 180 }}
+            >
+              <InputNumber min={0} suffix="minutes" style={{ width: '100%' }} />
+            </FormItem>
+            <FormItem
+              label="🕒 Timer Max"
+              field="timer_max_minutes"
+              style={{ flex: 1, minWidth: 180 }}
+              extra="Chatroom will force-close when this time has elapsed, even if participants are still chatting. Too long conversation (>15 minutes) will cause extra AI cost. "
+            >
+              <InputNumber min={0} suffix="minutes" style={{ width: '100%' }} />
+            </FormItem>
+          </Row>
+
+          <FormItem
+            label="⏱️ Simulate Pairing (sec)"
+            field="simulate_pairing_seconds"
+            hidden={!enableSimulatePairing}
+            extra="Server-managed lobby duration before a one-human mimic-human chat starts."
+          >
+            <InputNumber min={0} style={{ width: '100%' }} />
           </FormItem>
         </Form>
 
@@ -684,7 +762,7 @@ avoid talking about politics; keep messages under 12 words.
       </div>
 
       <div style={{ borderTop: '1px solid #e5e6eb', margin: '24px 0' }} />
-      <WidgetPreview chatroomId={chatroom.id} onSaveBeforeLaunch={handleSave} />
+      <WidgetPreview chatroomId={chatroom.id} onSaveBeforeLaunch={handleSaveAndActivate} />
     </div>
   )
 }
