@@ -115,7 +115,7 @@ def test_bedrock_resource_not_found_falls_back_to_default_model():
     now_seconds = (started_at_ms / 1000) + 60
     calls: list[str] = []
 
-    def _fake_invoke(model_id, system_prompt, bedrock_messages):
+    def _fake_invoke(model_id, system_prompt, bedrock_messages, **kwargs):
         calls.append(model_id)
         if model_id == "test-model":
             raise BedrockInferenceError(
@@ -157,7 +157,7 @@ def test_participant_model_id_overrides_chatroom_default():
 
     seen_models: list[str] = []
 
-    def _fake_invoke(model_id, system_prompt, bedrock_messages):
+    def _fake_invoke(model_id, system_prompt, bedrock_messages, **kwargs):
         seen_models.append(model_id)
         return {
             "messages": ["participant-specific model"],

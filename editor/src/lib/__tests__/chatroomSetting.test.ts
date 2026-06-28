@@ -10,9 +10,9 @@ import {
 const baseGroupSetting = (): ChatroomSetting => ({
   ...defaultSettingForMode('group'),
   // override with a known-good full set
-  target_human_count: 2,
-  ai_join_strategy: 'fixed_ai_count',
-  ai_strategy_value: 1,
+  human_count: 2,
+  ai_count: 1,
+  replace_human_with_ai: false,
   max_wait_seconds: 60,
   max_duration_seconds: 600,
 })
@@ -34,33 +34,34 @@ describe('validateChatroomSetting', () => {
     expect(result.ok).toBe(true)
   })
 
-  it('rejects target_human_count = 0 in group mode', () => {
-    const setting = { ...baseGroupSetting(), target_human_count: 0 }
+  it('rejects human_count = 0 in group mode', () => {
+    const setting = { ...baseGroupSetting(), human_count: 0 }
     const result = validateChatroomSetting(setting)
     expect(result.ok).toBe(false)
-    expect(result.errors.target_human_count).toBeDefined()
+    expect(result.errors.human_count).toBeDefined()
   })
 
-  it('rejects total_participant_count strategy with ai_strategy_value < target_human_count', () => {
+  it('accepts replace_human_with_ai because total participants are derived from human_count + ai_count', () => {
     const setting: ChatroomSetting = {
       ...baseGroupSetting(),
-      ai_join_strategy: 'total_participant_count',
-      target_human_count: 4,
-      ai_strategy_value: 2,
-    }
-    const result = validateChatroomSetting(setting)
-    expect(result.ok).toBe(false)
-    expect(result.errors.ai_strategy_value).toBeDefined()
-  })
-
-  it('accepts total_participant_count strategy with ai_strategy_value >= target_human_count', () => {
-    const setting: ChatroomSetting = {
-      ...baseGroupSetting(),
-      ai_join_strategy: 'total_participant_count',
-      target_human_count: 2,
-      ai_strategy_value: 5,
+      replace_human_with_ai: true,
+      human_count: 4,
+      ai_count: 2,
     }
     expect(validateChatroomSetting(setting).ok).toBe(true)
+  })
+
+  it('denormalizes replace_human_with_ai into total_participant_count', () => {
+    const setting: ChatroomSetting = {
+      ...baseGroupSetting(),
+      replace_human_with_ai: true,
+      human_count: 2,
+      ai_count: 3,
+    }
+    const out = denormalizeForSave(setting)
+    expect(out.ai_join_strategy).toBe('total_participant_count')
+    expect(out.ai_strategy_value).toBe(5)
+    expect(out.target_human_count).toBe(2)
   })
 
   it('rejects max_wait_seconds = 700 (cap is 600)', () => {
@@ -94,23 +95,23 @@ describe('validateChatroomSetting', () => {
     expect(result.errors.max_duration_seconds).toBeDefined()
   })
 
-  it('rejects ai_strategy_value = 8 (cap is 7)', () => {
-    const setting = { ...baseGroupSetting(), ai_strategy_value: 8 }
+  it('rejects ai_count = 8 (cap is 7)', () => {
+    const setting = { ...baseGroupSetting(), ai_count: 8 }
     const result = validateChatroomSetting(setting)
     expect(result.ok).toBe(false)
-    expect(result.errors.ai_strategy_value).toBeDefined()
+    expect(result.errors.ai_count).toBeDefined()
   })
 
-  it('rejects ai_strategy_value = -1', () => {
-    const setting = { ...baseGroupSetting(), ai_strategy_value: -1 }
+  it('rejects ai_count = -1', () => {
+    const setting = { ...baseGroupSetting(), ai_count: -1 }
     const result = validateChatroomSetting(setting)
     expect(result.ok).toBe(false)
-    expect(result.errors.ai_strategy_value).toBeDefined()
+    expect(result.errors.ai_count).toBeDefined()
   })
 
-  it('accepts ai_strategy_value = 0 and = 7 (boundaries)', () => {
-    const a = { ...baseGroupSetting(), ai_strategy_value: 0 }
-    const b = { ...baseGroupSetting(), ai_strategy_value: 7 }
+  it('accepts ai_count = 0 and = 7 (boundaries)', () => {
+    const a = { ...baseGroupSetting(), ai_count: 0 }
+    const b = { ...baseGroupSetting(), ai_count: 7 }
     expect(validateChatroomSetting(a).ok).toBe(true)
     expect(validateChatroomSetting(b).ok).toBe(true)
   })
@@ -136,17 +137,22 @@ describe('denormalizeForSave', () => {
     expect(out.max_duration_seconds).toBe(1200)
   })
 
-  it('preserves all group fields when mode = group', () => {
+  it('derives runtime group fields when mode = group', () => {
     const input: ChatroomSetting = {
       ...defaultSettingForMode('group'),
-      target_human_count: 4,
-      ai_join_strategy: 'total_participant_count',
-      ai_strategy_value: 6,
+      human_count: 4,
+      ai_count: 2,
+      replace_human_with_ai: true,
       max_wait_seconds: 120,
       max_duration_seconds: 1800,
     }
     const out = denormalizeForSave(input)
-    expect(out).toEqual(input)
+    expect(out.human_count).toBe(4)
+    expect(out.ai_count).toBe(2)
+    expect(out.replace_human_with_ai).toBe(true)
+    expect(out.target_human_count).toBe(4)
+    expect(out.ai_join_strategy).toBe('total_participant_count')
+    expect(out.ai_strategy_value).toBe(6)
   })
 
   it('does not mutate the input', () => {
@@ -175,11 +181,14 @@ describe('defaultSettingForMode', () => {
   it('group returns sensible defaults that pass validation', () => {
     const setting = defaultSettingForMode('group')
     expect(setting.mode).toBe('group')
+    expect(setting.human_count).toBe(2)
+    expect(setting.ai_count).toBe(1)
+    expect(setting.replace_human_with_ai).toBe(false)
     expect(setting.target_human_count).toBe(2)
     expect(setting.ai_join_strategy).toBe('fixed_ai_count')
     expect(setting.ai_strategy_value).toBe(1)
     expect(setting.max_wait_seconds).toBe(60)
-    expect(setting.max_duration_seconds).toBe(600)
+    expect(setting.max_duration_seconds).toBe(360)
     expect(validateChatroomSetting(setting).ok).toBe(true)
   })
 })

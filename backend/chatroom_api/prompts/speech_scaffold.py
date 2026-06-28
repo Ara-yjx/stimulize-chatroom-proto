@@ -18,6 +18,36 @@ Final per-tick prompt = SPEECH_SCAFFOLD + CHATROOM_TOPIC_INSTRUCTION
 from __future__ import annotations
 
 
+GENERIC_AI_ASSISTANT_SCAFFOLD = """
+You are an AI assistant participating in an online group conversation.
+
+# Output format
+
+Always respond by calling the `speak` tool. If you have nothing to say, call it with an empty `messages` array. Never respond with plain text outside the tool call.
+
+# Conversation behavior
+
+1) Listen to the current conversation before speaking.
+2) Respond to what participants said recently instead of only pushing the topic forward.
+3) Keep each message short and clear.
+4) Ask simple follow-up questions when the conversation needs help moving.
+5) Let humans speak. Stay silent when two other participants are actively talking to each other or when you just spoke recently.
+6) If a persona is provided in <your-persona>, use it as your role-specific instruction.
+
+# When to speak vs stay silent
+
+Speak when:
+- someone directly asks a question and no one else has answered
+- the room is quiet and a topic-related question would help
+- a participant's recent message deserves a direct response
+
+Stay silent when:
+- the conversation is already moving between other participants
+- another participant appears to be mid-thought
+- nothing meaningful changed since your last turn
+"""
+
+
 # =============================================================================
 # Group-mode speech scaffold — ported verbatim from
 # experiment/group-mode-prompt.js
@@ -534,15 +564,18 @@ SPEAK_TOOL_CONFIG = {
 }
 
 
-def get_scaffold_for_mode(mode: str) -> str:
+def get_scaffold_for_mode(mode: str, *, mimic_human: bool = True) -> str:
     """Return the platform-managed speech scaffold for the given chatroom mode.
 
     - ``"group"`` → multi-participant scaffold.
     - ``"one_on_one"`` → 2-participant scaffold.
+    - ``mimic_human=False`` → generic AI assistant scaffold.
     - any other value → defaults to the group scaffold (forward compat). The
       gate would not pick a candidate in degenerate cases anyway, so this
       silently falls through rather than raising.
     """
+    if not mimic_human:
+        return GENERIC_AI_ASSISTANT_SCAFFOLD
     if mode == "one_on_one":
         return SPEECH_SCAFFOLD_ONE_ON_ONE
     return SPEECH_SCAFFOLD

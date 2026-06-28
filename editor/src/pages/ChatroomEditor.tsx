@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  Form, Input, InputNumber, Switch, Select, Button, Message, Spin, Radio, Space, Popover, Modal,
+  Form, Input, InputNumber, Switch, Select, Button, Message, Spin, Space, Popover, Modal,
 } from '@arco-design/web-react'
 import { IconDelete, IconPlus, IconQuestionCircle } from '@arco-design/web-react/icon'
 import { isManagementAuthExpiredError, mgmtFetchJson } from '../api/management'
@@ -23,7 +23,6 @@ import { CHATROOM_LIST_ROUTE, chatroomUsageRoute } from '../routes'
 
 const TextArea = Input.TextArea
 const FormItem = Form.Item
-const RadioGroup = Radio.Group
 const Option = Select.Option
 const OptGroup = Select.OptGroup
 const SAME_MODEL_AS_DEFAULT = '__CHATROOM_DEFAULT__'
@@ -56,57 +55,6 @@ function Row({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * One row of the AI Join Strategy widget: Radio + paired number input.
- * The number input only edits the form's ``ai_strategy_value`` when its
- * row's radio is the selected one. Both rows display the current value
- * when active so switching strategies preserves the picked count.
- */
-function StrategyRow({
-  value,
-  label,
-  hint,
-  isActive,
-}: {
-  value: 'fixed_ai_count' | 'total_participant_count'
-  label: string
-  hint: string
-  isActive: boolean
-}) {
-  return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: 12,
-      padding: '8px 0',
-      opacity: isActive ? 1 : 0.55,
-    }}>
-      <Radio value={value} style={{ minWidth: 170 }}>
-        <span style={{ fontWeight: 500 }}>{label}</span>
-      </Radio>
-      <FormItem
-        field="ai_strategy_value"
-        rules={isActive ? [{
-          required: true,
-          type: 'number',
-          min: VALIDATION_LIMITS.aiStrategyValueMin,
-          max: VALIDATION_LIMITS.aiStrategyValueMax,
-        }] : undefined}
-        noStyle
-      >
-        <InputNumber
-          min={VALIDATION_LIMITS.aiStrategyValueMin}
-          max={VALIDATION_LIMITS.aiStrategyValueMax}
-          disabled={!isActive}
-          style={{ width: 100 }}
-        />
-      </FormItem>
-      <span style={{ color: '#86909c', fontSize: 12, flex: 1 }}>{hint}</span>
-    </div>
-  )
-}
-
-
-/**
  * List-of-textareas editor used by the form's "AI Personas" field. Plays
  * the FormItem custom-component contract: receives ``value`` + ``onChange``
  * from Arco's Form. Each entry is a free-form persona string.
@@ -125,6 +73,20 @@ function PersonaListEditor({
       {personas.map((p, i) => (
         <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'flex-start' }}>
           <div style={{ flex: 1, minWidth: 0 }}>
+            <Row>
+              <Input
+                value={p.internal_name}
+                onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, internal_name: v } : x)))}
+                placeholder={`Internal name ${i + 1}`}
+                style={{ flex: 1, minWidth: 180 }}
+              />
+              <Input
+                value={p.nickname}
+                onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, nickname: v } : x)))}
+                placeholder="Display name"
+                style={{ flex: 1, minWidth: 180 }}
+              />
+            </Row>
             <TextArea
               value={p.persona}
               onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, persona: v } : x)))}
@@ -153,6 +115,22 @@ function PersonaListEditor({
                 </OptGroup>
               ))}
             </Select>
+            <InputNumber
+              value={p.temperature ?? undefined}
+              min={VALIDATION_LIMITS.temperatureMin}
+              max={VALIDATION_LIMITS.temperatureMax}
+              step={0.1}
+              precision={2}
+              onChange={(v) => update(
+                personas.map((x, j) => (
+                  j === i
+                    ? { ...x, temperature: typeof v === 'number' ? v : null }
+                    : x
+                )),
+              )}
+              placeholder="Same temperature as chatroom default"
+              style={{ width: '100%', marginTop: 8 }}
+            />
           </div>
           <Button
             shape="circle"
@@ -167,7 +145,13 @@ function PersonaListEditor({
         <Button
           size="small"
           icon={<IconPlus />}
-          onClick={() => update([...personas, { persona: '', model_id: null }])}
+          onClick={() => update([...personas, {
+            internal_name: '',
+            nickname: '',
+            persona: '',
+            model_id: null,
+            temperature: null,
+          }])}
         >
           Add persona
         </Button>
@@ -249,11 +233,34 @@ function normalizeLoadedSetting(setting: Partial<ChatroomSetting> | undefined): 
   const defaults = defaultSettingForMode(mode)
   const timerMaxMinutes =
     typeof setting?.timer_max_minutes === 'number' ? setting.timer_max_minutes : defaults.timer_max_minutes
+  const humanCount =
+    typeof setting?.human_count === 'number'
+      ? setting.human_count
+      : typeof setting?.target_human_count === 'number'
+        ? setting.target_human_count
+        : defaults.human_count
+  const replaceHumanWithAi =
+    typeof setting?.replace_human_with_ai === 'boolean'
+      ? setting.replace_human_with_ai
+      : setting?.ai_join_strategy === 'total_participant_count'
+  const aiCount =
+    typeof setting?.ai_count === 'number'
+      ? setting.ai_count
+      : replaceHumanWithAi && typeof setting?.ai_strategy_value === 'number'
+        ? Math.max(0, setting.ai_strategy_value - humanCount)
+        : typeof setting?.ai_strategy_value === 'number'
+          ? setting.ai_strategy_value
+          : defaults.ai_count
   return {
     ...defaults,
     ...setting,
     mode,
     ai_personas: normalizeAiPersonas(setting?.ai_personas),
+    mimic_human: typeof setting?.mimic_human === 'boolean' ? setting.mimic_human : defaults.mimic_human,
+    temperature: typeof setting?.temperature === 'number' ? setting.temperature : defaults.temperature,
+    human_count: humanCount,
+    ai_count: aiCount,
+    replace_human_with_ai: replaceHumanWithAi,
     max_duration_seconds: deriveMaxDurationSeconds(timerMaxMinutes ?? null),
   }
 }
@@ -266,15 +273,38 @@ export default function ChatroomEditor() {
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm<FormValues>()
   const sessionExpiredModalShownRef = useRef(false)
+  const previousModeRef = useRef<ChatroomMode | undefined>(undefined)
   const watchedMode = Form.useWatch('mode', form) as ChatroomMode | undefined
-  const watchedTargetHumanCount = Form.useWatch('target_human_count', form) as number | undefined
-  const watchedAiStrategy = Form.useWatch('ai_join_strategy', form) as string | undefined
+  const watchedHumanCount = Form.useWatch('human_count', form) as number | undefined
   const watchedTimerMaxMinutes = Form.useWatch('timer_max_minutes', form) as number | null | undefined
 
   useEffect(() => {
     if (typeof watchedTimerMaxMinutes === 'undefined') return
     form.setFieldValue('max_duration_seconds', deriveMaxDurationSeconds(watchedTimerMaxMinutes ?? null))
   }, [form, watchedTimerMaxMinutes])
+
+  useEffect(() => {
+    const previousMode = previousModeRef.current
+    previousModeRef.current = watchedMode
+    if (previousMode === 'one_on_one' && watchedMode === 'group') {
+      const groupDefaults = defaultSettingForMode('group')
+      form.setFieldsValue({
+        human_count: groupDefaults.human_count,
+        ai_count: groupDefaults.ai_count,
+        replace_human_with_ai: groupDefaults.replace_human_with_ai,
+        target_human_count: groupDefaults.target_human_count,
+        ai_join_strategy: groupDefaults.ai_join_strategy,
+        ai_strategy_value: groupDefaults.ai_strategy_value,
+        max_wait_seconds: groupDefaults.max_wait_seconds,
+      })
+    }
+  }, [form, watchedMode])
+
+  useEffect(() => {
+    if (typeof watchedHumanCount === 'number' && watchedHumanCount <= 1) {
+      form.setFieldValue('replace_human_with_ai', false)
+    }
+  }, [form, watchedHumanCount])
 
   const showSessionExpiredModal = useCallback(() => {
     if (sessionExpiredModalShownRef.current) return
@@ -338,10 +368,15 @@ export default function ChatroomEditor() {
       additional_prompt: values.additional_prompt,
       ai_personas: normalizeAiPersonas(values.ai_personas),
       model_id: values.model_id,
+      mimic_human: values.mimic_human,
+      temperature: values.temperature,
       simulate_pairing_seconds: values.simulate_pairing_seconds,
       timer_min_minutes: values.timer_min_minutes ?? null,
       timer_max_minutes: values.timer_max_minutes ?? null,
       max_duration_seconds: deriveMaxDurationSeconds(values.timer_max_minutes ?? null),
+      human_count: values.human_count,
+      ai_count: values.ai_count,
+      replace_human_with_ai: values.replace_human_with_ai,
       target_human_count: values.target_human_count,
       ai_join_strategy: values.ai_join_strategy,
       ai_strategy_value: values.ai_strategy_value,
@@ -408,7 +443,7 @@ export default function ChatroomEditor() {
   // Hide simulated pairing wait when there are real other humans to wait for.
   // 1-on-1 mode and group-with-target-1 still show the field — both are
   // single-human flows where the wait is purely cosmetic.
-  const hideSimulatePairing = isGroup && (watchedTargetHumanCount ?? 0) > 1
+  const hideSimulatePairing = isGroup && (watchedHumanCount ?? 0) > 1
 
   return (
     <div style={{ padding: 24 }}>
@@ -486,6 +521,15 @@ export default function ChatroomEditor() {
           </FormItem>
 
           <FormItem
+            label="Mimic human"
+            field="mimic_human"
+            triggerPropName="checked"
+            extra="When off, the backend uses a generic AI-assistant prompt instead of human-mimic instructions and examples."
+          >
+            <Switch checkedText="On" uncheckedText="Off" />
+          </FormItem>
+
+          <FormItem
             label={
               <Space size={4}>
                 🎭 AI Personas
@@ -554,6 +598,26 @@ avoid talking about politics; keep messages under 12 words.
             </Select>
           </FormItem>
 
+          <FormItem
+            label="Temperature"
+            field="temperature"
+            rules={[{
+              required: true,
+              type: 'number',
+              min: VALIDATION_LIMITS.temperatureMin,
+              max: VALIDATION_LIMITS.temperatureMax,
+            }]}
+            extra="Bedrock beta range is 0.0-1.0. OpenAI and Anthropic direct API limits may differ later."
+          >
+            <InputNumber
+              min={VALIDATION_LIMITS.temperatureMin}
+              max={VALIDATION_LIMITS.temperatureMax}
+              step={0.1}
+              precision={2}
+              style={{ width: '100%' }}
+            />
+          </FormItem>
+
           <Row>
             <FormItem label="⏱️ Simulate Pairing (sec)" field="simulate_pairing_seconds" hidden={hideSimulatePairing} style={{ flex: 1, minWidth: 180 }}>
               <InputNumber min={0} style={{ width: '100%' }} />
@@ -585,12 +649,29 @@ avoid talking about politics; keep messages under 12 words.
 
               <Row>
                 <FormItem
-                  label="💀 Target Human Count"
-                  field="target_human_count"
+                  label="Human Count"
+                  field="human_count"
                   rules={[{ required: true, type: 'number', min: VALIDATION_LIMITS.targetHumanCountMin }]}
                   style={{ flex: 1, minWidth: 200 }}
                 >
                   <InputNumber min={VALIDATION_LIMITS.targetHumanCountMin} style={{ width: '100%' }} />
+                </FormItem>
+                <FormItem
+                  label="AI Count"
+                  field="ai_count"
+                  rules={[{
+                    required: true,
+                    type: 'number',
+                    min: VALIDATION_LIMITS.aiStrategyValueMin,
+                    max: VALIDATION_LIMITS.aiStrategyValueMax,
+                  }]}
+                  style={{ flex: 1, minWidth: 200 }}
+                >
+                  <InputNumber
+                    min={VALIDATION_LIMITS.aiStrategyValueMin}
+                    max={VALIDATION_LIMITS.aiStrategyValueMax}
+                    style={{ width: '100%' }}
+                  />
                 </FormItem>
                 <FormItem
                   label="⏰ Max Wait (sec)"
@@ -603,31 +684,13 @@ avoid talking about politics; keep messages under 12 words.
                 </FormItem>
               </Row>
 
-              {/* AI Join Strategy: radio + paired number input on the same row.
-                  Two rows total; only the picked strategy's number input is
-                  active. Both numbers are kept on the form so switching back
-                  doesn't lose the previous value. */}
-              <FormItem label="🤖 AI Join Strategy" required>
-                <FormItem
-                  field="ai_join_strategy"
-                  rules={[{ required: true }]}
-                  noStyle
-                >
-                  <RadioGroup direction="vertical" style={{ width: '100%' }}>
-                    <StrategyRow
-                      value="fixed_ai_count"
-                      label="Fixed AIs"
-                      hint="exactly this many AIs join, regardless of human count"
-                      isActive={watchedAiStrategy === 'fixed_ai_count'}
-                    />
-                    <StrategyRow
-                      value="total_participant_count"
-                      label="Total Participants"
-                      hint="fill up to this many participants total (humans + AIs); must be ≥ Target Human Count"
-                      isActive={watchedAiStrategy === 'total_participant_count'}
-                    />
-                  </RadioGroup>
-                </FormItem>
+              <FormItem
+                label="Replace missing humans with AI"
+                field="replace_human_with_ai"
+                triggerPropName="checked"
+                extra="When on, missing human seats are filled by additional AIs at the wait deadline."
+              >
+                <Switch checkedText="On" uncheckedText="Off" disabled={(watchedHumanCount ?? 1) <= 1} />
               </FormItem>
             </>
           )}

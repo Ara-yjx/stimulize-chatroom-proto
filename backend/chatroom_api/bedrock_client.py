@@ -100,7 +100,13 @@ def _normalize_system_blocks(system_prompt: str | list[dict]) -> list[dict]:
     return system_prompt
 
 
-def invoke(model_id: str, system_prompt: str | list[dict], messages: list[dict]) -> dict:
+def invoke(
+    model_id: str,
+    system_prompt: str | list[dict],
+    messages: list[dict],
+    *,
+    temperature: float = 0.7,
+) -> dict:
     """Call Bedrock Converse API with retry for transient errors.
 
     Returns: {"text": str, "input_tokens": int, "output_tokens": int}
@@ -113,7 +119,7 @@ def invoke(model_id: str, system_prompt: str | list[dict], messages: list[dict])
             modelId=model_id,
             messages=messages,
             system=_normalize_system_blocks(system_prompt),
-            inferenceConfig={"maxTokens": 512, "temperature": 0.7},
+            inferenceConfig={"maxTokens": 512, "temperature": temperature},
         )
         return {
             "text": response["output"]["message"]["content"][0]["text"],
@@ -130,6 +136,8 @@ def invoke_speak_tool(
     model_id: str,
     system_prompt: str | list[dict],
     messages: list[dict],
+    *,
+    temperature: float = 0.7,
 ) -> dict:
     """Call Bedrock Converse API forcing the `speak` tool.
 
@@ -155,7 +163,7 @@ def invoke_speak_tool(
             messages=messages,
             system=_normalize_system_blocks(system_prompt),
             toolConfig=SPEAK_TOOL_CONFIG,
-            inferenceConfig={"maxTokens": 512, "temperature": 0.7},
+            inferenceConfig={"maxTokens": 512, "temperature": temperature},
         )
         return {
             "messages": parse_speak_tool_call(response),

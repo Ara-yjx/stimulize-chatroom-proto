@@ -37,6 +37,7 @@ from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.delays import compute_visible_at, pick_delays_ms
 from chatroom_api.gate import run_gate
 from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
+from chatroom_api.settings import normalize_temperature
 from chatroom_api.prompts.speech_scaffold import (
     SPEAK_TOOL_CONFIG,  # re-exported for callers that want to inspect it
     format_topic_block,
@@ -54,6 +55,8 @@ def _invoke_with_model_fallback(
     model_id: str,
     system_prompt: str | list[dict],
     bedrock_messages: list[dict],
+    *,
+    temperature: float,
 ) -> dict:
     """Invoke Bedrock, falling back to the default model for stale saved ids.
 
@@ -63,7 +66,12 @@ def _invoke_with_model_fallback(
     the chat loop keeps working while the saved config catches up.
     """
     try:
-        result = invoke_speak_tool(model_id, system_prompt, bedrock_messages)
+        result = invoke_speak_tool(
+            model_id,
+            system_prompt,
+            bedrock_messages,
+            temperature=temperature,
+        )
         result["resolved_model_id"] = model_id
         return result
     except BedrockInferenceError as err:
@@ -75,7 +83,12 @@ def _invoke_with_model_fallback(
             model_id,
             _DEFAULT_MODEL_ID,
         )
-        result = invoke_speak_tool(_DEFAULT_MODEL_ID, system_prompt, bedrock_messages)
+        result = invoke_speak_tool(
+            _DEFAULT_MODEL_ID,
+            system_prompt,
+            bedrock_messages,
+            temperature=temperature,
+        )
         result["resolved_model_id"] = _DEFAULT_MODEL_ID
         return result
 
@@ -194,9 +207,9 @@ def _render_history_block(conv: dict, now_ms: int) -> str:
     return "\n".join(lines) if lines else "(empty)"
 
 
-def _build_static_prefix_block(mode: str) -> str:
+def _build_static_prefix_block(mode: str, *, mimic_human: bool = True) -> str:
     """Return the large static scaffold/examples block for this mode."""
-    return get_scaffold_for_mode(mode)
+    return get_scaffold_for_mode(mode, mimic_human=mimic_human)
 
 
 def _build_semi_static_setup_blocks(
@@ -256,7 +269,10 @@ def _build_prompt_blocks(
     structure explicit without changing prompt content yet.
     """
     return {
-        "static_prefix": _build_static_prefix_block(mode),
+        "static_prefix": _build_static_prefix_block(
+            mode,
+            mimic_human=bool(chatroom_setting.get("mimic_human", True)),
+        ),
         "semi_static_setup": _build_semi_static_setup_blocks(
             chatroom_setting,
             persona,
@@ -352,7 +368,12 @@ def _build_bedrock_system_blocks(
             )
         }]
 
-    return [{"text": _build_static_prefix_block(mode)}]
+    return [{
+        "text": _build_static_prefix_block(
+            mode,
+            mimic_human=bool(chatroom_setting.get("mimic_human", True)),
+        )
+    }]
 
 
 def _build_bedrock_cache_prefix_message(
@@ -536,6 +557,10 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         or chatroom_setting.get("model_id")
         or _DEFAULT_MODEL_ID
     )
+    temperature = normalize_temperature(
+        (candidate_participant or {}).get("temperature"),
+        default=normalize_temperature(chatroom_setting.get("temperature"), default=0.7),
+    ) or 0.7
     system_prompt = _build_bedrock_system_blocks(
         mode,
         chatroom_setting,
@@ -568,7 +593,12 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         bedrock_messages = (bedrock_messages or []) + [_build_tick_trigger_message()]
 
     try:
-        result = _invoke_with_model_fallback(model_id, system_prompt, bedrock_messages)
+        result = _invoke_with_model_fallback(
+            model_id,
+            system_prompt,
+            bedrock_messages,
+            temperature=temperature,
+        )
     except BedrockInferenceError as err:
         # Fatal Bedrock error: append one tick + one system event (so the
         # widget surfaces "Chatroom server error: ..."). Conversation
@@ -646,9 +676,10 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
                     "bedrock_invoked": True,
                     "messages_count": len(messages),
                     "cache_read_input_tokens": cache_read_input_tokens,
-                    "cache_write_input_tokens": cache_write_input_tokens,
-                    "pricing_estimated": pricing_estimated,
-                },
+                "cache_write_input_tokens": cache_write_input_tokens,
+                "temperature": temperature,
+                "pricing_estimated": pricing_estimated,
+            },
             )
     except Exception as usage_exc:
         logger.warning("tick: usage write failed for conversation %s: %s", conversation_id, usage_exc)
@@ -670,6 +701,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         delays = pick_delays_ms(len(messages))
         visible_ats = compute_visible_at(now_ms, delays)
         avatar = (candidate_participant or {}).get("avatar")
+        internal_name = (candidate_participant or {}).get("internal_name")
         for text, visible_at in zip(messages, visible_ats):
             new_events.append({
                 "type": "message",
@@ -677,6 +709,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
                 "sender": candidate_nickname,
                 "role": "ai",
                 "ai_participant_id": candidate_session_id,
+                "internal_name": internal_name,
                 "content": text,
                 "timestamp": now_ms,
                 "visible_at": visible_at,

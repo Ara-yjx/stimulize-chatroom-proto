@@ -22,6 +22,7 @@ from chatroom_api import config, jwt_utils
 from chatroom_api.close_lobby import close_lobby
 from chatroom_api.constants import EMOJI_POOL
 from chatroom_api.errors import ChatroomNotFoundException, InactiveChatroomException
+from chatroom_api.settings import normalize_persona_entries, resolve_runtime_setting
 
 # Hard cap on the group-mode join retry loop. Each iteration either advances
 # (joins or creates+joins) or moves a stale lobby toward closing/closed via
@@ -103,7 +104,7 @@ def handle_auth_token(body: dict) -> tuple[int, dict]:
     if chatroom.get("status") != "active":
         return (401, {"error": "chatroom is inactive"})
 
-    chatroom_setting = chatroom["setting"]
+    chatroom_setting = resolve_runtime_setting(chatroom["setting"])
 
     # 3. Dispatch on mode. Default to one_on_one to stay back-compat with v2
     # chatrooms whose setting did not carry a ``mode`` field.
@@ -123,9 +124,21 @@ def handle_auth_token(body: dict) -> tuple[int, dict]:
 
     # 5. Auto-generate AI nickname + avatar (no collision with human)
     ai_id = f"ai_{uuid4().hex[:8]}"
-    ai_nickname = _generate_nickname(exclude={human_nickname})
     ai_avatar = _pick_avatar(exclude={human_avatar["emojiText"]})
     default_model_id = chatroom_setting.get("model_id") or ""
+    default_temperature = chatroom_setting.get("temperature")
+    persona_entries = normalize_persona_entries(
+        chatroom_setting.get("ai_personas") or [],
+        default_model_id=default_model_id,
+        default_temperature=default_temperature,
+    )
+    selected_persona = persona_entries[0] if persona_entries else {}
+    preferred_ai_nickname = str(selected_persona.get("nickname") or "").strip()
+    ai_nickname = (
+        preferred_ai_nickname
+        if preferred_ai_nickname and preferred_ai_nickname != human_nickname
+        else _generate_nickname(exclude={human_nickname})
+    )
 
     # 6. Build participants list
     participants = [
@@ -140,7 +153,10 @@ def handle_auth_token(body: dict) -> tuple[int, dict]:
             "nickname": ai_nickname,
             "avatar": ai_avatar,
             "role": "ai",
-            "model_id": default_model_id,
+            "persona": selected_persona.get("persona", ""),
+            "model_id": selected_persona.get("model_id", default_model_id),
+            "temperature": selected_persona.get("temperature", default_temperature),
+            "internal_name": selected_persona.get("internal_name") or "ai_1",
         },
     ]
 
@@ -230,6 +246,8 @@ def _validate_group_setting(chatroom_setting: dict) -> tuple[bool, str]:
     The required fields must all be present and coercible to ints (except for
     ``ai_join_strategy``, which is a string discriminator).
     """
+    chatroom_setting = resolve_runtime_setting(chatroom_setting)
+
     for field in _REQUIRED_GROUP_SETTING_FIELDS:
         if field not in chatroom_setting:
             return False, f"chatroom setting missing required group field: {field}"
@@ -288,6 +306,7 @@ def _handle_group_auth(
     On capacity-reached we synchronously call ``close_lobby`` and report the
     resulting closed state in the response.
     """
+    chatroom_setting = resolve_runtime_setting(chatroom_setting)
     ok, err = _validate_group_setting(chatroom_setting)
     if not ok:
         return (400, {"error": err})

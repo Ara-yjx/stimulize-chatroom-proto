@@ -12,11 +12,19 @@ export type ChatroomMode = 'one_on_one' | 'group'
 export type AiJoinStrategy = 'fixed_ai_count' | 'total_participant_count'
 
 export interface AiPersonaSetting {
+  /** Analysis-only label written to exported history, not participant-visible. */
+  internal_name: string
+  /** Participant-visible display name. Empty means backend picks one. */
+  nickname: string
   persona: string
   /**
    * Null means "same model as chatroom default".
    */
   model_id: string | null
+  /**
+   * Null means "same temperature as chatroom default".
+   */
+  temperature: number | null
 }
 
 export interface ChatroomSetting {
@@ -46,12 +54,18 @@ export interface ChatroomSetting {
    */
   ai_personas: AiPersonaSetting[]
   model_id: string
+  mimic_human: boolean
+  temperature: number
   simulate_pairing_seconds: number
   timer_min_minutes: number | null
   timer_max_minutes: number | null
   /** Cap on total conversation duration (seconds). Applies to both modes. */
   max_duration_seconds: number
-  /** Group fields. For one_on_one, these are stored denormalized. */
+  /** Editor-facing group fields. */
+  human_count: number
+  ai_count: number
+  replace_human_with_ai: boolean
+  /** Runtime compatibility fields. For one_on_one, these are stored denormalized. */
   target_human_count: number
   ai_join_strategy: AiJoinStrategy
   ai_strategy_value: number
@@ -73,6 +87,8 @@ export const VALIDATION_LIMITS = {
   aiStrategyValueMin: 0,
   aiStrategyValueMax: 7,
   targetHumanCountMin: 1,
+  temperatureMin: 0,
+  temperatureMax: 1,
 }
 
 export interface ValidationResult {
@@ -85,7 +101,7 @@ export function normalizeAiPersonas(value: unknown): AiPersonaSetting[] {
 
   return value.flatMap((entry): AiPersonaSetting[] => {
     if (typeof entry === 'string') {
-      return [{ persona: entry, model_id: null }]
+      return [{ internal_name: '', nickname: '', persona: entry, model_id: null, temperature: null }]
     }
     if (!entry || typeof entry !== 'object') return []
     const persona =
@@ -93,9 +109,24 @@ export function normalizeAiPersonas(value: unknown): AiPersonaSetting[] {
         ? (entry as { persona: string }).persona
         : ''
     const modelIdRaw = (entry as { model_id?: unknown }).model_id
+    const internalName =
+      typeof (entry as { internal_name?: unknown }).internal_name === 'string'
+        ? (entry as { internal_name: string }).internal_name
+        : ''
+    const nickname =
+      typeof (entry as { nickname?: unknown }).nickname === 'string'
+        ? (entry as { nickname: string }).nickname
+        : ''
+    const temperatureRaw = (entry as { temperature?: unknown }).temperature
     return [{
+      internal_name: internalName,
+      nickname,
       persona,
       model_id: typeof modelIdRaw === 'string' && modelIdRaw.trim() ? modelIdRaw : null,
+      temperature:
+        typeof temperatureRaw === 'number' && Number.isFinite(temperatureRaw)
+          ? temperatureRaw
+          : null,
     }]
   })
 }
@@ -132,30 +163,48 @@ export function validateChatroomSetting(setting: ChatroomSetting): ValidationRes
     errors.max_duration_seconds = `max_duration_seconds must be between 0 and ${VALIDATION_LIMITS.maxDurationSecondsMax}`
   }
 
+  if (
+    !Number.isFinite(setting.temperature) ||
+    setting.temperature < VALIDATION_LIMITS.temperatureMin ||
+    setting.temperature > VALIDATION_LIMITS.temperatureMax
+  ) {
+    errors.temperature = `temperature must be between ${VALIDATION_LIMITS.temperatureMin} and ${VALIDATION_LIMITS.temperatureMax}`
+  }
+
+  const internalNames = new Set<string>()
+  for (const [index, persona] of setting.ai_personas.entries()) {
+    const path = `ai_personas[${index}]`
+    if (
+      persona.temperature !== null &&
+      (!Number.isFinite(persona.temperature) ||
+        persona.temperature < VALIDATION_LIMITS.temperatureMin ||
+        persona.temperature > VALIDATION_LIMITS.temperatureMax)
+    ) {
+      errors[path] = `persona temperature must be between ${VALIDATION_LIMITS.temperatureMin} and ${VALIDATION_LIMITS.temperatureMax}`
+    }
+    const internalName = persona.internal_name.trim()
+    if (internalName) {
+      if (internalNames.has(internalName)) {
+        errors[path] = 'internal_name must be unique within a chatroom'
+      }
+      internalNames.add(internalName)
+    }
+  }
+
   if (setting.mode === 'group') {
     if (
-      !Number.isFinite(setting.target_human_count) ||
-      setting.target_human_count < VALIDATION_LIMITS.targetHumanCountMin
+      !Number.isFinite(setting.human_count) ||
+      setting.human_count < VALIDATION_LIMITS.targetHumanCountMin
     ) {
-      errors.target_human_count = `target_human_count must be >= ${VALIDATION_LIMITS.targetHumanCountMin}`
+      errors.human_count = `human_count must be >= ${VALIDATION_LIMITS.targetHumanCountMin}`
     }
 
     if (
-      !Number.isFinite(setting.ai_strategy_value) ||
-      setting.ai_strategy_value < VALIDATION_LIMITS.aiStrategyValueMin ||
-      setting.ai_strategy_value > VALIDATION_LIMITS.aiStrategyValueMax
+      !Number.isFinite(setting.ai_count) ||
+      setting.ai_count < VALIDATION_LIMITS.aiStrategyValueMin ||
+      setting.ai_count > VALIDATION_LIMITS.aiStrategyValueMax
     ) {
-      errors.ai_strategy_value = `ai_strategy_value must be between ${VALIDATION_LIMITS.aiStrategyValueMin} and ${VALIDATION_LIMITS.aiStrategyValueMax}`
-    }
-
-    if (
-      setting.ai_join_strategy === 'total_participant_count' &&
-      Number.isFinite(setting.ai_strategy_value) &&
-      Number.isFinite(setting.target_human_count) &&
-      setting.ai_strategy_value < setting.target_human_count
-    ) {
-      errors.ai_strategy_value =
-        'ai_strategy_value must be >= target_human_count when strategy is total_participant_count'
+      errors.ai_count = `ai_count must be between ${VALIDATION_LIMITS.aiStrategyValueMin} and ${VALIDATION_LIMITS.aiStrategyValueMax}`
     }
 
     if (
@@ -180,10 +229,22 @@ export function denormalizeForSave(values: ChatroomSetting): ChatroomSetting {
   if (values.mode === 'one_on_one') {
     return {
       ...values,
+      human_count: 1,
+      ai_count: 1,
+      replace_human_with_ai: false,
       ...ONE_ON_ONE_FIXED,
     }
   }
-  return { ...values }
+  const targetHumanCount = values.human_count
+  const aiStrategyValue = values.replace_human_with_ai
+    ? values.human_count + values.ai_count
+    : values.ai_count
+  return {
+    ...values,
+    target_human_count: targetHumanCount,
+    ai_join_strategy: values.replace_human_with_ai ? 'total_participant_count' : 'fixed_ai_count',
+    ai_strategy_value: aiStrategyValue,
+  }
 }
 
 /**
@@ -193,6 +254,7 @@ export function denormalizeForSave(values: ChatroomSetting): ChatroomSetting {
 export function defaultSettingForMode(mode: ChatroomMode): ChatroomSetting {
   const base: Omit<
     ChatroomSetting,
+    'human_count' | 'ai_count' | 'replace_human_with_ai' |
     'target_human_count' | 'ai_join_strategy' | 'ai_strategy_value' | 'max_wait_seconds'
   > = {
     mode,
@@ -200,6 +262,8 @@ export function defaultSettingForMode(mode: ChatroomMode): ChatroomSetting {
     additional_prompt: '',
     ai_personas: [],
     model_id: 'global.anthropic.claude-sonnet-4-6',
+    mimic_human: true,
+    temperature: 0.7,
     simulate_pairing_seconds: 15,
     timer_min_minutes: 1,
     timer_max_minutes: 5,
@@ -207,10 +271,19 @@ export function defaultSettingForMode(mode: ChatroomMode): ChatroomSetting {
   }
 
   if (mode === 'one_on_one') {
-    return { ...base, ...ONE_ON_ONE_FIXED }
+    return {
+      ...base,
+      human_count: 1,
+      ai_count: 1,
+      replace_human_with_ai: false,
+      ...ONE_ON_ONE_FIXED,
+    }
   }
   return {
     ...base,
+    human_count: 2,
+    ai_count: 1,
+    replace_human_with_ai: false,
     target_human_count: 2,
     ai_join_strategy: 'fixed_ai_count',
     ai_strategy_value: 1,

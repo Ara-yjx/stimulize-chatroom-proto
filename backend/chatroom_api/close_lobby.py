@@ -30,6 +30,7 @@ from typing import Optional
 from chatroom_api import config
 from chatroom_api.constants import EMOJI_POOL
 from chatroom_api.lobby import compute_ai_count
+from chatroom_api.settings import normalize_persona_entries, resolve_runtime_setting
 
 # ---------------------------------------------------------------------------
 # Backend selection (mirrors the auth.py pattern).
@@ -128,30 +129,6 @@ def _pick_personas(persona_pool: list, ai_count: int) -> list:
     return result
 
 
-def _normalize_persona_entries(persona_pool: list, default_model_id: str) -> list[dict[str, str]]:
-    """Normalize stored ``ai_personas`` to a clean list of persona/model pairs.
-
-    Supports both legacy string entries and the newer object form:
-    ``{"persona": "...", "model_id": "..." | null}``.
-    """
-    normalized: list[dict[str, str]] = []
-    for entry in persona_pool or []:
-        if isinstance(entry, str):
-            persona = entry.strip()
-            if not persona:
-                continue
-            normalized.append({"persona": persona, "model_id": default_model_id})
-            continue
-        if not isinstance(entry, dict):
-            continue
-        persona = str(entry.get("persona", "")).strip()
-        if not persona:
-            continue
-        model_id = str(entry.get("model_id", "") or "").strip() or default_model_id
-        normalized.append({"persona": persona, "model_id": model_id})
-    return normalized
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -230,24 +207,37 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
     # chatroom disappeared (e.g. researcher deleted it mid-cohort).
     chatroom = rds_mod.get_chatroom(chatroom_id)
     if chatroom is not None and chatroom.get("setting") is not None:
-        chatroom_setting = chatroom["setting"]
+        chatroom_setting = resolve_runtime_setting(chatroom["setting"])
     else:
-        chatroom_setting = {
+        chatroom_setting = resolve_runtime_setting({
             "target_human_count": lobby.get("target_human_count"),
             "ai_join_strategy": lobby.get("ai_join_strategy"),
             "ai_strategy_value": lobby.get("ai_strategy_value"),
             "max_wait_seconds": lobby.get("max_wait_seconds"),
-        }
+        })
 
     default_model_id = str(chatroom_setting.get("model_id") or "").strip()
-    persona_entries = _normalize_persona_entries(
+    default_temperature = chatroom_setting.get("temperature")
+    persona_entries = normalize_persona_entries(
         chatroom_setting.get("ai_personas") or [],
-        default_model_id,
+        default_model_id=default_model_id,
+        default_temperature=default_temperature,
     )
     selected_persona_entries = _pick_personas(persona_entries, ai_count) if persona_entries else []
 
     used_nicknames = {p.get("nickname") for p in participants_after_prune}
     used_emojis = {(p.get("avatar") or {}).get("emojiText") for p in participants_after_prune}
+    used_internal_names: set[str] = set()
+
+    def resolve_internal_name(raw_name: str | None, index: int) -> str:
+        base = (raw_name or f"ai_{index + 1}").strip() or f"ai_{index + 1}"
+        candidate = base
+        suffix = 2
+        while candidate in used_internal_names:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        used_internal_names.add(candidate)
+        return candidate
 
     ai_participants: list[dict] = []
     for i in range(ai_count):
@@ -256,7 +246,12 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
             if i < len(selected_persona_entries)
             else {"persona": "", "model_id": default_model_id}
         )
-        nickname = _generate_nickname(exclude=used_nicknames)
+        preferred_nickname = str(selected_entry.get("nickname") or "").strip()
+        nickname = (
+            preferred_nickname
+            if preferred_nickname and preferred_nickname not in used_nicknames
+            else _generate_nickname(exclude=used_nicknames)
+        )
         avatar = _pick_avatar(exclude=used_emojis)
         used_nicknames.add(nickname)
         used_emojis.add(avatar["emojiText"])
@@ -267,6 +262,11 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
             "role": "ai",
             "persona": selected_entry.get("persona", ""),
             "model_id": selected_entry.get("model_id", default_model_id),
+            "temperature": selected_entry.get("temperature", default_temperature),
+            "internal_name": resolve_internal_name(
+                selected_entry.get("internal_name"),
+                i,
+            ),
         })
 
     # --- Step 4: build conversation row + events; idempotent put.
