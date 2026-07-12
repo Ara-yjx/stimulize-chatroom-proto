@@ -44,8 +44,8 @@ This file records decisions that came from implementation/debug discussions afte
 
 - Prompt is split into explicit blocks.
 - Static scaffold/examples were shortened.
-- Bedrock prompt cache is implemented for Claude Sonnet 4.6 model IDs.
-- For Sonnet 4.6 tool-use calls, the cache checkpoint is in `messages[*].content`; live probes did not produce hits when the checkpoint was only in `system` or `tools`.
+- Bedrock prompt cache is implemented for supported Claude and Nova model IDs.
+- For Converse tool-use calls, the cache checkpoint is in `messages[*].content`; live probes did not produce hits when the checkpoint was only in `system` or `tools`.
 - Each AI participant gets a resolved `model_id`.
 - A per-persona model override can replace the chatroom-level default model.
 - If a persona model is null, runtime uses the chatroom default model.

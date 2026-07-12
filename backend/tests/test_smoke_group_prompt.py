@@ -7,6 +7,8 @@ that mirrors the ``experiment/group-poc.js`` flow. No real Bedrock call.
 
 from __future__ import annotations
 
+import pytest
+
 from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.tick_handler import (
     _build_bedrock_cache_prefix_message,
@@ -16,6 +18,7 @@ from chatroom_api.tick_handler import (
     _build_system_prompt,
     _build_tick_trigger_message,
     _render_history_block,
+    _supports_bedrock_prompt_cache,
 )
 
 
@@ -193,7 +196,31 @@ def test_tick_trigger_message_matches_expected_shape() -> None:
     assert "speak" in text
 
 
-def test_bedrock_system_blocks_add_cachepoint_for_sonnet_4_6() -> None:
+@pytest.mark.parametrize("model_id", [
+    "global.anthropic.claude-sonnet-4-6",
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "global.anthropic.claude-sonnet-4-20250514-v1:0",
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "global.anthropic.claude-opus-4-7",
+    "global.anthropic.claude-opus-4-6-v1",
+    "us.amazon.nova-pro-v1:0",
+    "us.amazon.nova-lite-v1:0",
+    "us.amazon.nova-micro-v1:0",
+    "us.amazon.nova-premier-v1:0",
+    "global.amazon.nova-2-lite-v1:0",
+])
+def test_editor_models_support_bedrock_prompt_cache(model_id: str) -> None:
+    assert _supports_bedrock_prompt_cache(model_id)
+
+
+def test_cache_support_accepts_apac_profile_and_rejects_other_models() -> None:
+    assert _supports_bedrock_prompt_cache(
+        "apac.anthropic.claude-sonnet-4-20250514-v1:0"
+    )
+    assert not _supports_bedrock_prompt_cache("us.meta.llama4-scout-17b-instruct-v1:0")
+
+
+def test_bedrock_system_blocks_use_cache_layout_for_sonnet_4_6() -> None:
     conv = _conv()
     history = _render_history_block(conv, now_ms=20_000)
     blocks = _build_bedrock_system_blocks(

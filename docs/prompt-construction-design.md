@@ -28,9 +28,11 @@ one `mimic_human` mode do not apply to the other mode.
 
 ## Bedrock Prompt Caching
 
-Some Bedrock models support prompt caching through the Converse API
-`cachePoint` content block. We use this only for models explicitly listed in
-the backend.
+Supported Anthropic Claude and Amazon Nova models use Bedrock Converse API
+`cachePoint` content blocks. The backend allowlist follows AWS's prompt-caching
+guide and model cards, and accepts both base model IDs and cross-region
+inference-profile IDs. Models have different minimum cacheable prefix sizes, so
+support does not guarantee a cache hit for a short prompt.
 
 Current implementation:
 

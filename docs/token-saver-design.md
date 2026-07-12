@@ -6,7 +6,7 @@ Implemented:
 
 - prompt blocks are explicit
 - static scaffold/examples were shortened
-- Bedrock prompt cache is enabled for Claude Sonnet 4.6 model IDs
+- Bedrock prompt cache is enabled for supported Claude and Nova model IDs
 - cache checkpoint is placed in `messages[*].content` for the current Bedrock tool-use path
 
 Pending:
@@ -277,8 +277,8 @@ Do not put these into the cacheable prefix:
 [tick trigger]
 ```
 
-For the current Sonnet 4.6 Converse tool-use path, the cache checkpoint should
-live in `messages`, not in `system` or `tools`.
+For the current Converse tool-use path, the cache checkpoint lives in
+`messages`, not in `system` or `tools`.
 
 Working layout:
 
@@ -410,9 +410,10 @@ measurement is pending.
 - enable provider-side caching for the static prefix
 - keep the cached block deterministic
 
-Status: Bedrock cache is implemented for Claude Sonnet 4.6 model IDs. In live
-probes, the cache checkpoint had to live in `messages[*].content` for the
-current Converse tool-use path.
+Status: Bedrock cache is implemented for the supported Claude and Nova model
+IDs exposed by the editor, plus older Claude IDs in AWS's current support
+table. In live probes, the cache checkpoint had to live in
+`messages[*].content` for the current Converse tool-use path.
 
 ### Phase 3
 

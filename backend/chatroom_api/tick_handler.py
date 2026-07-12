@@ -284,17 +284,45 @@ def _build_prompt_blocks(
     }
 
 
+_BEDROCK_PROMPT_CACHE_MODEL_IDS = frozenset({
+    # Anthropic models listed by the Bedrock prompt-caching guide or their
+    # current Bedrock model cards.
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "anthropic.claude-3-7-sonnet-20250219-v1:0",
+    "anthropic.claude-opus-4-20250514-v1:0",
+    "anthropic.claude-opus-4-5-20251101-v1:0",
+    "anthropic.claude-opus-4-6-v1",
+    "anthropic.claude-opus-4-7",
+    "anthropic.claude-sonnet-4-20250514-v1:0",
+    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "anthropic.claude-sonnet-4-6",
+    "anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Nova text models currently offered by the editor. Bedrock documents
+    # prompt caching for Nova text prompts, including explicit cache points.
+    "amazon.nova-pro-v1:0",
+    "amazon.nova-lite-v1:0",
+    "amazon.nova-micro-v1:0",
+    "amazon.nova-premier-v1:0",
+    "amazon.nova-2-lite-v1:0",
+})
+
+_BEDROCK_INFERENCE_PROFILE_PREFIXES = frozenset({
+    "global", "us", "eu", "apac", "jp", "au",
+})
+
+
+def _base_bedrock_model_id(model_id: str) -> str:
+    """Remove a Bedrock cross-region inference-profile prefix, if present."""
+    normalized = (model_id or "").strip()
+    prefix, separator, remainder = normalized.partition(".")
+    if separator and prefix in _BEDROCK_INFERENCE_PROFILE_PREFIXES:
+        return remainder
+    return normalized
+
+
 def _supports_bedrock_prompt_cache(model_id: str) -> bool:
     """Return whether Bedrock prompt caching should be enabled for this model."""
-    normalized = (model_id or "").strip()
-    return normalized in {
-        "global.anthropic.claude-sonnet-4-6",
-        "anthropic.claude-sonnet-4-6",
-        "us.anthropic.claude-sonnet-4-6",
-        "eu.anthropic.claude-sonnet-4-6",
-        "jp.anthropic.claude-sonnet-4-6",
-        "au.anthropic.claude-sonnet-4-6",
-    }
+    return _base_bedrock_model_id(model_id) in _BEDROCK_PROMPT_CACHE_MODEL_IDS
 
 
 def _build_system_prompt(

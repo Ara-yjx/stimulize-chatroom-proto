@@ -26,12 +26,15 @@ const FormItem = Form.Item
 const Option = Select.Option
 const OptGroup = Select.OptGroup
 const SAME_MODEL_AS_DEFAULT = '__CHATROOM_DEFAULT__'
-const CACHE_SUPPORTED_MODEL_IDS = new Set([
-  'global.anthropic.claude-sonnet-4-6',
-])
 
-function formatModelOptionLabel(option: { label: string; value: string }): string {
-  return CACHE_SUPPORTED_MODEL_IDS.has(option.value)
+type ModelOption = {
+  label: string
+  value: string
+  supportsPromptCaching?: boolean
+}
+
+function formatModelOptionLabel(option: ModelOption): string {
+  return option.supportsPromptCaching
     ? `${option.label} (supports caching)`
     : option.label
 }
@@ -213,21 +216,21 @@ function PersonaListEditor({
   )
 }
 
-const MODEL_GROUPS: { label: string; options: { label: string; value: string }[] }[] = [
+const MODEL_GROUPS: { label: string; options: ModelOption[] }[] = [
   { label: 'Anthropic', options: [
-    { label: 'Claude Sonnet 4.6', value: 'global.anthropic.claude-sonnet-4-6' },
-    { label: 'Claude Sonnet 4.5', value: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0' },
-    { label: 'Claude Sonnet 4', value: 'global.anthropic.claude-sonnet-4-20250514-v1:0' },
-    { label: 'Claude Haiku 4.5', value: 'global.anthropic.claude-haiku-4-5-20251001-v1:0' },
-    { label: 'Claude Opus 4.7', value: 'global.anthropic.claude-opus-4-7' },
-    { label: 'Claude Opus 4.6', value: 'global.anthropic.claude-opus-4-6-v1' },
+    { label: 'Claude Sonnet 4.6', value: 'global.anthropic.claude-sonnet-4-6', supportsPromptCaching: true },
+    { label: 'Claude Sonnet 4.5', value: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0', supportsPromptCaching: true },
+    { label: 'Claude Sonnet 4', value: 'global.anthropic.claude-sonnet-4-20250514-v1:0', supportsPromptCaching: true },
+    { label: 'Claude Haiku 4.5', value: 'global.anthropic.claude-haiku-4-5-20251001-v1:0', supportsPromptCaching: true },
+    { label: 'Claude Opus 4.7', value: 'global.anthropic.claude-opus-4-7', supportsPromptCaching: true },
+    { label: 'Claude Opus 4.6', value: 'global.anthropic.claude-opus-4-6-v1', supportsPromptCaching: true },
   ]},
   { label: 'Amazon Nova', options: [
-    { label: 'Nova Pro', value: 'us.amazon.nova-pro-v1:0' },
-    { label: 'Nova Lite', value: 'us.amazon.nova-lite-v1:0' },
-    { label: 'Nova Micro', value: 'us.amazon.nova-micro-v1:0' },
-    { label: 'Nova Premier', value: 'us.amazon.nova-premier-v1:0' },
-    { label: 'Nova 2 Lite', value: 'global.amazon.nova-2-lite-v1:0' },
+    { label: 'Nova Pro', value: 'us.amazon.nova-pro-v1:0', supportsPromptCaching: true },
+    { label: 'Nova Lite', value: 'us.amazon.nova-lite-v1:0', supportsPromptCaching: true },
+    { label: 'Nova Micro', value: 'us.amazon.nova-micro-v1:0', supportsPromptCaching: true },
+    { label: 'Nova Premier', value: 'us.amazon.nova-premier-v1:0', supportsPromptCaching: true },
+    { label: 'Nova 2 Lite', value: 'global.amazon.nova-2-lite-v1:0', supportsPromptCaching: true },
   ]},
   { label: 'Meta Llama', options: [
     { label: 'Llama 4 Maverick 17B', value: 'us.meta.llama4-maverick-17b-instruct-v1:0' },

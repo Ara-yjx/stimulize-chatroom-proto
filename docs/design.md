@@ -80,7 +80,7 @@ Current beta implementation:
 - Management API: real `Stimulize-backend` beta API using POST/action routes and shared RDS.
 - Tick loop: EventBridge-scheduled heartbeat Lambda loops over active conversations and async-invokes `chatroom-tick-handler`.
 - Usage: runtime writes one RDS row per billable model invocation; management API aggregates reads.
-- Prompt cache: Bedrock cache is implemented for Claude Sonnet 4.6 model IDs.
+- Prompt cache: Bedrock cache is implemented for supported Claude and Nova model IDs.
 
 ## Core Design
 
