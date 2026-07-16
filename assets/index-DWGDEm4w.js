@@ -81,7 +81,6 @@ Please change the parent <Route path="${E}"> to <Route path="${E==="/"?"*":`${E}
       parentElement: qualtricsQuestion.questionContainer,
       elementStyle: { height: "500px" },
       qualtricsQuestion: qualtricsQuestion,
-      qualtricsSurveyEngine: Qualtrics.SurveyEngine,
       chatroomId: "${e}",
     });`,s=`Qualtrics.SurveyEngine.addOnload(function() {
   var qualtricsQuestion = this;
