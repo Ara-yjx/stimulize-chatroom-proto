@@ -2,10 +2,10 @@
 
 Beta delta vs v2 (tasks 3.3, 3.4, 3.5):
 
-- ``/chat/send`` no longer invokes Bedrock. It just appends the human's
-  message event and returns the same payload shape as ``/chat/messages``
-  (events visible to this caller right now). AI replies arrive on a later
-  ``/chat/messages`` poll, driven by the tick handler.
+- ``/chat/send`` never invokes Bedrock directly. It appends the human's
+  message event and returns the same payload shape as ``/chat/messages``.
+  For a single-human, single-AI, non-mimic room only, it also async-invokes
+  the tick handler so the required reply does not wait for the heartbeat.
 - ``/chat/messages`` filters events by ``visible_at <= now`` AND
   ``type != tick``. When the conversation row hasn't been written yet,
   the response carries a ``lobby`` block describing the open lobby;
@@ -17,16 +17,21 @@ Beta delta vs v2 (tasks 3.3, 3.4, 3.5):
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
 
+import boto3
+
 from chatroom_api import close_lobby as close_lobby_mod
 from chatroom_api import config
 from chatroom_api.errors import LobbyAbortedException
+from chatroom_api.settings import is_single_human_single_ai_assistant_room
 
 logger = logging.getLogger(__name__)
+_lambda_client = None
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +55,41 @@ def _get_lobby():
         return mock_lobby
     from chatroom_api import lobby
     return lobby
+
+
+def _get_lambda_client():
+    global _lambda_client
+    if _lambda_client is None:
+        _lambda_client = boto3.client("lambda")
+    return _lambda_client
+
+
+def _trigger_immediate_assistant_tick(
+    conv: dict,
+    conversation_id: str,
+) -> bool:
+    """Best-effort wake-up for the required single-assistant reply only."""
+    if not is_single_human_single_ai_assistant_room(
+        conv.get("chatroom_setting") or {}
+    ):
+        return False
+    if not config.TICK_HANDLER_LAMBDA:
+        return False
+
+    try:
+        _get_lambda_client().invoke(
+            FunctionName=config.TICK_HANDLER_LAMBDA,
+            InvocationType="Event",
+            Payload=json.dumps({"conversation_id": conversation_id}).encode(),
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - heartbeat remains the fallback
+        logger.warning(
+            "failed to trigger immediate assistant tick for %s: %s",
+            conversation_id,
+            exc,
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +183,7 @@ def _admin_token_from_headers(headers: Optional[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# /chat/send — append human message; no Bedrock.
+# /chat/send — append human message; no direct Bedrock call.
 # ---------------------------------------------------------------------------
 
 
@@ -152,7 +192,10 @@ def handle_chat_send(body: dict, claims: dict) -> tuple[int, dict]:
 
     Per requirements 5.1 / 5.2 / 5.3:
 
-    - No Bedrock call. The tick handler is the only Bedrock caller.
+    - No direct Bedrock call. The tick handler is the only Bedrock caller.
+    - Only a 1-human + 1-AI + non-mimic room async-invokes the tick handler
+      immediately after the human message is persisted. Other rooms continue
+      to rely exclusively on the heartbeat.
     - Response shape mirrors ``/chat/messages``: ``{events: [...]}`` with
       events visible to this caller right now (``visible_at <= now``,
       ``type != tick``, ``visible_at > after``).
@@ -203,6 +246,7 @@ def handle_chat_send(body: dict, claims: dict) -> tuple[int, dict]:
         "created_at": now_iso,
     }
     db.append_events(conversation_id, chatroom_id, [user_event])
+    _trigger_immediate_assistant_tick(conv, conversation_id)
 
     # Re-read so the response reflects the just-appended event without race
     # against another writer (e.g. a tick handler).

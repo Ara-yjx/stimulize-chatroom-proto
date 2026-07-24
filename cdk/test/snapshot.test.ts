@@ -296,12 +296,20 @@ describe("ChatroomApiStack", () => {
     const conv = new ConversationTableStack(app, "ConvTable", { env: TEST_ENV });
     const lobby = new LobbyTableStack(app, "LobbyTable", { env: TEST_ENV });
     const secrets = new SecretsStack(app, "Secrets", { env: TEST_ENV });
+    const tickHandler = new TickHandlerStack(app, "TickHandler", {
+      env: TEST_ENV,
+      conversationTable: conv.table,
+      lobbyTable: lobby.table,
+      jwtSecret: secrets.jwtSecret,
+      adminToken: secrets.adminToken,
+    });
     const stack = new ChatroomApiStack(app, "ChatroomApi", {
       env: TEST_ENV,
       table: conv.table,
       lobbyTable: lobby.table,
       jwtSecret: secrets.jwtSecret,
       adminToken: secrets.adminToken,
+      tickHandler: tickHandler.lambdaFunction,
     });
     const t = Template.fromStack(stack);
 
@@ -314,6 +322,7 @@ describe("ChatroomApiStack", () => {
           LOBBY_TABLE: Match.anyValue(),
           JWT_SECRET_ARN: Match.anyValue(),
           ADMIN_TOKEN_SECRET_ARN: Match.anyValue(),
+          TICK_HANDLER_LAMBDA: Match.anyValue(),
           RDS_HOST: "stimulusdb-instance-1.example.rds.amazonaws.com",
           RDS_PORT: "5432",
           RDS_DATABASE: "stimulize",
@@ -327,5 +336,15 @@ describe("ChatroomApiStack", () => {
 
     t.resourceCountIs("AWS::ApiGateway::DomainName", 0);
     t.resourceCountIs("AWS::RDS::DBProxy", 0);
+    t.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "lambda:InvokeFunction",
+            Effect: "Allow",
+          }),
+        ]),
+      },
+    });
   });
 });

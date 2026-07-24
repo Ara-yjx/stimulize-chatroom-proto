@@ -48,6 +48,22 @@ Stay silent when:
 """
 
 
+GENERIC_AI_ASSISTANT_REQUIRED_RESPONSE_SCAFFOLD = """
+You are the only AI assistant participating in an online conversation.
+
+# Output format
+
+Always respond by calling the `speak` tool with one or more non-empty messages. Never stay silent and never respond with plain text outside the tool call.
+
+# Conversation behavior
+
+1) Respond directly to the human message that was just sent.
+2) Keep each message short, clear, and relevant to the current conversation.
+3) Ask a simple follow-up question when it naturally helps the conversation continue.
+4) If a persona is provided in <your-persona>, use it as your role-specific instruction.
+"""
+
+
 # =============================================================================
 # Group-mode speech scaffold — ported verbatim from
 # experiment/group-mode-prompt.js
@@ -563,17 +579,57 @@ SPEAK_TOOL_CONFIG = {
     "toolChoice": {"tool": {"name": "speak"}},
 }
 
+REQUIRED_SPEAK_TOOL_CONFIG = {
+    "tools": [
+        {
+            "toolSpec": {
+                "name": "speak",
+                "description": (
+                    "Send one or more messages now. Silence is not allowed."
+                ),
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "messages": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "string", "minLength": 1},
+                                "description": (
+                                    "One or more non-empty message texts. "
+                                    "Multiple items become multiple bubbles."
+                                ),
+                            },
+                        },
+                        "required": ["messages"],
+                    },
+                },
+            },
+        },
+    ],
+    "toolChoice": {"tool": {"name": "speak"}},
+}
 
-def get_scaffold_for_mode(mode: str, *, mimic_human: bool = True) -> str:
+
+def get_scaffold_for_mode(
+    mode: str,
+    *,
+    mimic_human: bool = True,
+    require_response: bool = False,
+) -> str:
     """Return the platform-managed speech scaffold for the given chatroom mode.
 
     - ``"group"`` → multi-participant scaffold.
     - ``"one_on_one"`` → 2-participant scaffold.
     - ``mimic_human=False`` → generic AI assistant scaffold.
+    - ``require_response=True`` with mimic-human off → generic scaffold that
+      requires a response to the latest human message.
     - any other value → defaults to the group scaffold (forward compat). The
       gate would not pick a candidate in degenerate cases anyway, so this
       silently falls through rather than raising.
     """
+    if not mimic_human and require_response:
+        return GENERIC_AI_ASSISTANT_REQUIRED_RESPONSE_SCAFFOLD
     if not mimic_human:
         return GENERIC_AI_ASSISTANT_SCAFFOLD
     if mode == "one_on_one":

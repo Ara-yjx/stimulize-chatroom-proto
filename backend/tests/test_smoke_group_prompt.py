@@ -11,6 +11,7 @@ import pytest
 
 from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.tick_handler import (
+    REQUIRED_SPEAK_TOOL_CONFIG,
     _build_bedrock_cache_prefix_message,
     _build_bedrock_system_blocks,
     _build_prompt_blocks,
@@ -117,6 +118,13 @@ def test_system_prompt_includes_scaffold_topic_persona_and_history() -> None:
     assert "Mars: hi yo" in prompt
 
 
+def test_history_includes_current_utc_and_each_visible_message_time() -> None:
+    history = _render_history_block(_conv(), now_ms=20_000)
+    assert history.startswith("Current time (UTC): 1970-01-01T00:00:20Z")
+    assert "[1970-01-01T00:00:00Z; 20 sec ago] System" in history
+    assert "[1970-01-01T00:00:12Z; 8 sec ago] Earth: what's up" in history
+
+
 def test_system_prompt_omits_participants_when_not_passed() -> None:
     conv = _conv()
     history = _render_history_block(conv, now_ms=20_000)
@@ -194,6 +202,21 @@ def test_tick_trigger_message_matches_expected_shape() -> None:
     text = trigger["content"][0]["text"]
     assert "decide whether to speak" in text
     assert "speak" in text
+
+
+def test_idle_follow_up_trigger_requires_one_natural_check_in() -> None:
+    trigger = _build_tick_trigger_message(idle_follow_up=True)
+    text = trigger["content"][0]["text"]
+    assert "about a minute" in text
+    assert "one brief" in text
+    assert "at least one non-empty message" in text
+
+
+def test_required_speak_tool_disallows_silence() -> None:
+    schema = REQUIRED_SPEAK_TOOL_CONFIG["tools"][0]["toolSpec"]["inputSchema"]["json"]
+    messages = schema["properties"]["messages"]
+    assert messages["minItems"] == 1
+    assert messages["items"]["minLength"] == 1
 
 
 @pytest.mark.parametrize("model_id", [

@@ -1,8 +1,9 @@
 """Tests for chatroom_api.chat — beta /chat/send and /chat/messages.
 
 Per beta tasks 3.3, 3.4, 3.5:
-- ``/chat/send`` no longer invokes Bedrock; it appends the human's message
-  event and returns the same shape as ``/chat/messages``.
+- ``/chat/send`` never invokes Bedrock directly; it appends the human's
+  message event and returns the same shape as ``/chat/messages``. Only the
+  single-human, single-AI, non-mimic preset wakes the tick handler directly.
 - ``/chat/messages`` filters by ``visible_at <= now`` and ``type != tick``;
   surfaces a ``lobby`` block while the conversation row is missing; the
   admin-token gate controls ``?include_ticks=true``.
@@ -12,7 +13,8 @@ Per beta tasks 3.3, 3.4, 3.5:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import json
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -58,13 +60,17 @@ def _setup_mocks() -> None:
     mock_lobby.reset()
 
 
-def _seed_active_conversation(events=None, status="active") -> None:
+def _seed_active_conversation(
+    events=None,
+    status="active",
+    chatroom_setting=None,
+) -> None:
     """Seed an active 1-on-1-like conversation with Alice + Sam."""
     mock_dynamo.append_events(
         CONVERSATION_ID,
         CHATROOM_ID,
         events or [],
-        chatroom_setting={"mode": "one_on_one"},
+        chatroom_setting=chatroom_setting or {"mode": "one_on_one"},
         participants=[HUMAN, AI],
         status=status,
         started_at="2025-01-01T00:00:00+00:00",
@@ -104,8 +110,8 @@ class TestHandleChatSend:
         assert len(stored) == 1
         assert stored[0]["content"] == "hello"
 
-    def test_send_does_not_invoke_bedrock(self) -> None:
-        """Beta delta — ``/chat/send`` is no longer a Bedrock call site."""
+    def test_send_does_not_invoke_bedrock_directly(self) -> None:
+        """The API handler may wake a tick but never imports Bedrock."""
         _seed_active_conversation()
 
         # If anything tries to import bedrock_client from chat.py, the test
@@ -114,6 +120,63 @@ class TestHandleChatSend:
 
         status, body = chat_mod.handle_chat_send({"message": "hi"}, CLAIMS)
         assert status == 200, body
+
+    def test_send_triggers_tick_only_for_single_non_mimic_assistant(self) -> None:
+        _seed_active_conversation(chatroom_setting={
+            "human_count": 1,
+            "ai_count": 1,
+            "mimic_human": False,
+        })
+        lambda_client = Mock()
+
+        with patch.object(
+            config,
+            "TICK_HANDLER_LAMBDA",
+            "chatroom-tick-handler",
+        ), patch.object(
+            chat_mod,
+            "_get_lambda_client",
+            return_value=lambda_client,
+        ):
+            status, body = chat_mod.handle_chat_send({"message": "hi"}, CLAIMS)
+
+        assert status == 200, body
+        lambda_client.invoke.assert_called_once()
+        invoke = lambda_client.invoke.call_args.kwargs
+        assert invoke["FunctionName"] == "chatroom-tick-handler"
+        assert invoke["InvocationType"] == "Event"
+        assert json.loads(invoke["Payload"]) == {
+            "conversation_id": CONVERSATION_ID,
+        }
+
+    @pytest.mark.parametrize(
+        "chatroom_setting",
+        [
+            {"human_count": 1, "ai_count": 1, "mimic_human": True},
+            {"human_count": 1, "ai_count": 2, "mimic_human": False},
+            {"human_count": 2, "ai_count": 1, "mimic_human": False},
+        ],
+    )
+    def test_send_does_not_trigger_tick_for_other_rooms(
+        self,
+        chatroom_setting,
+    ) -> None:
+        _seed_active_conversation(chatroom_setting=chatroom_setting)
+        lambda_client = Mock()
+
+        with patch.object(
+            config,
+            "TICK_HANDLER_LAMBDA",
+            "chatroom-tick-handler",
+        ), patch.object(
+            chat_mod,
+            "_get_lambda_client",
+            return_value=lambda_client,
+        ):
+            status, body = chat_mod.handle_chat_send({"message": "hi"}, CLAIMS)
+
+        assert status == 200, body
+        lambda_client.invoke.assert_not_called()
 
     def test_send_filters_by_after_param(self) -> None:
         # Existing event at timestamp 500 should be excluded by after=500.

@@ -32,13 +32,22 @@ from chatroom_api.bedrock_client import (
     BedrockInferenceError,
     invoke_speak_tool,
 )
-from chatroom_api.constants import TICK_DEDUPE_WINDOW_MS
+from chatroom_api.constants import (
+    IDLE_FOLLOW_UP_AFTER_MS,
+    MIN_SILENCE_MS,
+    TICK_DEDUPE_WINDOW_MS,
+)
 from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.delays import compute_visible_at, pick_delays_ms
 from chatroom_api.gate import run_gate
 from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
-from chatroom_api.settings import derive_runtime_mode, normalize_temperature
+from chatroom_api.settings import (
+    derive_runtime_mode,
+    is_single_human_single_ai_assistant_room,
+    normalize_temperature,
+)
 from chatroom_api.prompts.speech_scaffold import (
+    REQUIRED_SPEAK_TOOL_CONFIG,
     SPEAK_TOOL_CONFIG,  # re-exported for callers that want to inspect it
     format_topic_block,
     get_scaffold_for_mode,
@@ -57,6 +66,7 @@ def _invoke_with_model_fallback(
     bedrock_messages: list[dict],
     *,
     temperature: float,
+    require_message: bool = False,
 ) -> dict:
     """Invoke Bedrock, falling back to the default model for stale saved ids.
 
@@ -71,6 +81,7 @@ def _invoke_with_model_fallback(
             system_prompt,
             bedrock_messages,
             temperature=temperature,
+            require_message=require_message,
         )
         result["resolved_model_id"] = model_id
         return result
@@ -88,6 +99,7 @@ def _invoke_with_model_fallback(
             system_prompt,
             bedrock_messages,
             temperature=temperature,
+            require_message=require_message,
         )
         result["resolved_model_id"] = _DEFAULT_MODEL_ID
         return result
@@ -183,33 +195,112 @@ def _make_tick_event(
     }
 
 
+def _utc_iso_from_ms(value_ms: int) -> str:
+    """Render an epoch-millisecond value as second-precision UTC."""
+    return (
+        datetime.fromtimestamp(value_ms / 1000, timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _visible_message_events(conv: dict, now_ms: int) -> list[dict]:
+    return [
+        event
+        for event in (conv.get("events", []) or [])
+        if event.get("type") == "message"
+        and int(event.get("visible_at", event.get("timestamp", 0)) or 0) <= now_ms
+    ]
+
+
+def _idle_follow_up_state(
+    conv: dict,
+    chatroom_setting: dict,
+    now_ms: int,
+) -> dict:
+    """Describe the current unanswered single-AI turn."""
+    if not is_single_human_single_ai_assistant_room(chatroom_setting):
+        return {"eligible": False}
+
+    messages = _visible_message_events(conv, now_ms)
+    if not messages or messages[-1].get("role") not in {"ai", "assistant"}:
+        return {"eligible": False}
+
+    latest_human_index = -1
+    for index, message in enumerate(messages):
+        if message.get("role") in {"human", "user"}:
+            latest_human_index = index
+    unanswered_messages = messages[latest_human_index + 1:]
+    follow_up_sent = any(
+        message.get("message_kind") == "idle_follow_up"
+        for message in unanswered_messages
+    )
+    latest = messages[-1]
+    visible_at = int(
+        latest.get("visible_at", latest.get("timestamp", 0)) or 0
+    )
+    return {
+        "eligible": True,
+        "idle_ms": max(0, now_ms - visible_at),
+        "follow_up_sent": follow_up_sent,
+    }
+
+
 def _render_history_block(conv: dict, now_ms: int) -> str:
     """Render a textual ``<conversation-history>`` block for the system prompt.
 
     Mirrors ``experiment/group-poc.js renderHistoryBlock``: drops tick events,
     drops events with ``visible_at > now`` (so the AI sees what users see),
-    formats relative timestamps. Returns ``"(empty)"`` if no events qualify.
+    formats absolute UTC and relative timestamps. Current time is included so
+    the model does not need to infer the reference clock.
     """
-    lines: list[str] = []
+    lines = [f"Current time (UTC): {_utc_iso_from_ms(now_ms)}"]
+    chatroom_setting = conv.get("chatroom_setting") or {}
+    idle_state = _idle_follow_up_state(conv, chatroom_setting, now_ms)
+    if idle_state.get("eligible"):
+        lines.extend([
+            (
+                "Single-AI unanswered time: "
+                f"{round(int(idle_state['idle_ms']) / 1000)} seconds"
+            ),
+            (
+                "Single-AI idle follow-up already sent since the latest human "
+                f"message: {'yes' if idle_state['follow_up_sent'] else 'no'}"
+            ),
+        ])
     audit_types = {"tick", "lobby_created"}
+    rendered_event = False
     for event in conv.get("events", []) or []:
         if event.get("type") in audit_types:
             continue
         visible_at = int(event.get("visible_at", event.get("timestamp", 0)) or 0)
         if visible_at > now_ms:
             continue
+        rendered_event = True
         ago_sec = max(0, round((now_ms - visible_at) / 1000))
+        timing = f"{_utc_iso_from_ms(visible_at)}; {ago_sec} sec ago"
         if event.get("type") == "system":
-            lines.append(f"> [{ago_sec} sec ago] System: {event.get('content', '')}")
+            lines.append(f"> [{timing}] System: {event.get('content', '')}")
         else:
             sender = event.get("sender") or "Participant"
-            lines.append(f"> [{ago_sec} sec ago] {sender}: {event.get('content', '')}")
-    return "\n".join(lines) if lines else "(empty)"
+            lines.append(f"> [{timing}] {sender}: {event.get('content', '')}")
+    if not rendered_event:
+        lines.append("(empty)")
+    return "\n".join(lines)
 
 
-def _build_static_prefix_block(mode: str, *, mimic_human: bool = True) -> str:
+def _build_static_prefix_block(
+    mode: str,
+    *,
+    mimic_human: bool = True,
+    require_response: bool = False,
+) -> str:
     """Return the large static scaffold/examples block for this mode."""
-    return get_scaffold_for_mode(mode, mimic_human=mimic_human)
+    return get_scaffold_for_mode(
+        mode,
+        mimic_human=mimic_human,
+        require_response=require_response,
+    )
 
 
 def _build_semi_static_setup_blocks(
@@ -237,6 +328,16 @@ def _build_semi_static_setup_blocks(
             for n in listed
         )
         parts.append(f"<participants>\n{rendered}\n</participants>")
+    if is_single_human_single_ai_assistant_room(chatroom_setting):
+        parts.append(
+            "<single-ai-idle-policy>\n"
+            "The backend may ask you to decide whether to speak every few seconds. "
+            "If your latest message has no human reply, normally stay silent for "
+            "roughly 60 seconds. After that wait, send at most one brief, natural "
+            "check-in that helps continue the conversation. If the check-in also "
+            "gets no human reply, stay silent until the human speaks again.\n"
+            "</single-ai-idle-policy>"
+        )
     parts.append(f"<your-name>\n{my_nickname}\n</your-name>")
     return parts
 
@@ -262,6 +363,7 @@ def _build_prompt_blocks(
     my_nickname: str,
     history_block: str,
     participant_nicknames: list[str] | None = None,
+    require_response: bool = False,
 ) -> dict[str, str | list[str]]:
     """Return explicit prompt segments for the current tick.
 
@@ -272,6 +374,7 @@ def _build_prompt_blocks(
         "static_prefix": _build_static_prefix_block(
             mode,
             mimic_human=bool(chatroom_setting.get("mimic_human", True)),
+            require_response=require_response,
         ),
         "semi_static_setup": _build_semi_static_setup_blocks(
             chatroom_setting,
@@ -332,6 +435,7 @@ def _build_system_prompt(
     my_nickname: str,
     history_block: str,
     participant_nicknames: list[str] | None = None,
+    require_response: bool = False,
 ) -> str:
     """Assemble SCAFFOLD + TOPIC + PERSONA + PARTICIPANTS + CONVERSATION_CONTEXT + ADDITIONAL_PROMPT.
 
@@ -357,6 +461,7 @@ def _build_system_prompt(
         my_nickname,
         history_block,
         participant_nicknames=participant_nicknames,
+        require_response=require_response,
     )
     parts: list[str] = [str(blocks["static_prefix"])]
     parts.extend(blocks["semi_static_setup"])
@@ -376,6 +481,7 @@ def _build_bedrock_system_blocks(
     *,
     model_id: str,
     participant_nicknames: list[str] | None = None,
+    require_response: bool = False,
 ) -> list[dict]:
     """Return Bedrock system blocks.
 
@@ -393,6 +499,7 @@ def _build_bedrock_system_blocks(
                 my_nickname,
                 history_block,
                 participant_nicknames=participant_nicknames,
+                require_response=require_response,
             )
         }]
 
@@ -400,6 +507,7 @@ def _build_bedrock_system_blocks(
         "text": _build_static_prefix_block(
             mode,
             mimic_human=bool(chatroom_setting.get("mimic_human", True)),
+            require_response=require_response,
         )
     }]
 
@@ -412,6 +520,7 @@ def _build_bedrock_cache_prefix_message(
     history_block: str,
     *,
     participant_nicknames: list[str] | None = None,
+    require_response: bool = False,
 ) -> dict:
     """Return the leading user message that carries the Bedrock cache point.
 
@@ -432,6 +541,7 @@ def _build_bedrock_cache_prefix_message(
         my_nickname=my_nickname,
         history_block=history_block,
         participant_nicknames=participant_nicknames,
+        require_response=require_response,
     )
     content: list[dict] = []
     for block in blocks["semi_static_setup"]:
@@ -463,22 +573,73 @@ def _prepend_cache_prefix_message(
     return [prefix_message, *merged]
 
 
-def _build_tick_trigger_message() -> dict:
+def _build_tick_trigger_message(
+    *,
+    require_response: bool = False,
+    idle_follow_up: bool = False,
+) -> dict:
     """Return the thin user-side trigger appended when history ends on assistant.
 
     The trigger stays separate from the system prompt so the provider request
     remains well-formed even when visible history is empty.
     """
+    if idle_follow_up:
+        instruction = (
+            "The human has not replied for about a minute. Send one brief, "
+            "natural check-in now, such as asking whether they are still there "
+            "or gently continuing the topic. Always call the `speak` tool with "
+            "at least one non-empty message."
+        )
+    elif require_response:
+        instruction = (
+            "Respond to the latest human message now. Always call the `speak` "
+            "tool with at least one non-empty message."
+        )
+    else:
+        instruction = (
+            "Based on the conversation above, decide whether to speak. "
+            "Always call the `speak` tool. If you choose silence, call "
+            "it with an empty messages array."
+        )
     return {
         "role": "user",
-        "content": [{
-            "text": (
-                "Based on the conversation above, decide whether to speak. "
-                "Always call the `speak` tool. If you choose silence, call "
-                "it with an empty messages array."
-            )
-        }],
+        "content": [{"text": instruction}],
     }
+
+
+def _requires_response_after_human(
+    conv: dict,
+    chatroom_setting: dict,
+    now_ms: int,
+) -> bool:
+    """Return whether the single non-mimic AI must answer the latest human."""
+    if not is_single_human_single_ai_assistant_room(chatroom_setting):
+        return False
+
+    for message in reversed(conv.get("events", []) or []):
+        if message.get("type") != "message":
+            continue
+        visible_at = int(
+            message.get("visible_at", message.get("timestamp", 0)) or 0
+        )
+        if visible_at > now_ms:
+            continue
+        return message.get("role") in {"human", "user"}
+    return False
+
+
+def _requires_idle_follow_up(
+    conv: dict,
+    chatroom_setting: dict,
+    now_ms: int,
+) -> bool:
+    """Return whether this unanswered turn is due its one idle follow-up."""
+    state = _idle_follow_up_state(conv, chatroom_setting, now_ms)
+    return bool(
+        state.get("eligible")
+        and not state.get("follow_up_sent")
+        and int(state.get("idle_ms", 0)) >= IDLE_FOLLOW_UP_AFTER_MS
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +707,19 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
             return {"status": "ended"}
 
     # --- Step 3: gate. -----------------------------------------------------
-    decision = run_gate(conv, now_ms)
+    # The exact single-assistant preset promises a reply after each human
+    # message. Skip only the generic silence window for that case; every other
+    # room keeps the normal gate unchanged.
+    require_response = _requires_response_after_human(
+        conv,
+        chatroom_setting,
+        now_ms,
+    )
+    decision = run_gate(
+        conv,
+        now_ms,
+        min_silence_ms=0 if require_response else MIN_SILENCE_MS,
+    )
     if decision.skip:
         db.append_events(
             conversation_id,
@@ -578,6 +751,11 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         p.get("nickname") for p in conv.get("participants", []) or []
         if p.get("nickname")
     ]
+    idle_follow_up = _requires_idle_follow_up(
+        conv,
+        chatroom_setting,
+        now_ms,
+    )
 
     bedrock_messages = build_bedrock_messages(conv, candidate_session_id, now_ms)
     model_id = (
@@ -597,6 +775,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         history_block,
         model_id=model_id,
         participant_nicknames=participant_nicknames,
+        require_response=require_response,
     )
     if _supports_bedrock_prompt_cache(model_id):
         prefix_message = _build_bedrock_cache_prefix_message(
@@ -606,6 +785,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
             candidate_nickname,
             history_block,
             participant_nicknames=participant_nicknames,
+            require_response=require_response,
         )
         bedrock_messages = _prepend_cache_prefix_message(
             bedrock_messages,
@@ -618,7 +798,12 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     # "trigger" so the call is well-formed and the model has a clear cue to
     # call the speak tool. Mirrors ``experiment/group-poc.js``.
     if not bedrock_messages or bedrock_messages[-1]["role"] == "assistant":
-        bedrock_messages = (bedrock_messages or []) + [_build_tick_trigger_message()]
+        bedrock_messages = (bedrock_messages or []) + [
+            _build_tick_trigger_message(
+                require_response=require_response,
+                idle_follow_up=idle_follow_up,
+            )
+        ]
 
     try:
         result = _invoke_with_model_fallback(
@@ -626,6 +811,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
             system_prompt,
             bedrock_messages,
             temperature=temperature,
+            require_message=require_response or idle_follow_up,
         )
     except BedrockInferenceError as err:
         # Fatal Bedrock error: append one tick + one system event (so the
@@ -726,8 +912,11 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     )]
 
     if messages:
-        delays = pick_delays_ms(len(messages))
-        visible_ats = compute_visible_at(now_ms, delays)
+        if require_response or idle_follow_up:
+            visible_ats = [now_ms] * len(messages)
+        else:
+            delays = pick_delays_ms(len(messages))
+            visible_ats = compute_visible_at(now_ms, delays)
         avatar = (candidate_participant or {}).get("avatar")
         internal_name = (candidate_participant or {}).get("internal_name")
         for text, visible_at in zip(messages, visible_ats):
@@ -742,6 +931,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
                 "timestamp": now_ms,
                 "visible_at": visible_at,
                 "created_at": _now_iso(),
+                **({"message_kind": "idle_follow_up"} if idle_follow_up else {}),
                 **({"avatar": avatar} if avatar else {}),
             })
 
@@ -763,5 +953,6 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
 
 __all__ = [
     "handle_tick",
+    "REQUIRED_SPEAK_TOOL_CONFIG",
     "SPEAK_TOOL_CONFIG",  # re-export for tests/inspection
 ]

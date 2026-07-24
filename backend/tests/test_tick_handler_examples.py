@@ -12,7 +12,7 @@ from chatroom_api.bedrock_client import BedrockInferenceError
 CHATROOM_ID = "scid_pbt-tick-examples"
 
 
-def _seed(*, max_duration_seconds=None, started_at_ms=None):
+def _seed(*, max_duration_seconds=None, started_at_ms=None, setting_overrides=None):
     """Reset mocks; seed an active conversation. Returns (conversation_id, started_at_ms_used)."""
     config.USE_MOCK_DYNAMO = True
     config.USE_MOCK_RDS = True
@@ -36,6 +36,7 @@ def _seed(*, max_duration_seconds=None, started_at_ms=None):
     }
     if max_duration_seconds is not None:
         setting["max_duration_seconds"] = max_duration_seconds
+    setting.update(setting_overrides or {})
 
     participants = [
         {"session_id": "h1", "nickname": "Earth", "role": "human"},
@@ -146,6 +147,153 @@ def test_bedrock_resource_not_found_falls_back_to_default_model():
     assert usage["input_tokens"] == 1
     assert usage["output_tokens"] == 1
     assert usage["estimated_cost_usd"] > 0
+
+
+def test_single_non_mimic_ai_must_reply_to_human_without_typing_delay():
+    cid, started_at_ms = _seed(setting_overrides={
+        "mimic_human": False,
+        "ai_count": 1,
+    })
+    now_ms = started_at_ms + 60_000
+    mock_dynamo.append_events(cid, CHATROOM_ID, [{
+        "type": "message",
+        "session_id": "h1",
+        "sender": "Earth",
+        "role": "human",
+        "content": "Can you help me think through this?",
+        # A generic room would still be inside the 5-second silence gate.
+        "timestamp": now_ms - 1_000,
+        "visible_at": now_ms - 1_000,
+    }])
+
+    def _fake_invoke(_model_id, _system_prompt, _messages, **kwargs):
+        assert kwargs["require_message"] is True
+        assert "Never stay silent" in _system_prompt[0]["text"]
+        return {
+            "messages": ["Sure.", "What part should we start with?"],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    with patch.object(tick_handler.time, "time", return_value=now_ms / 1000), \
+         patch.object(tick_handler, "invoke_speak_tool", side_effect=_fake_invoke), \
+         patch.object(tick_handler, "pick_delays_ms") as mock_delays:
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "spoke"
+    mock_delays.assert_not_called()
+    ai_messages = [
+        event for event in mock_dynamo.get_events(cid)
+        if event.get("type") == "message" and event.get("role") == "ai"
+    ]
+    assert [event["content"] for event in ai_messages] == [
+        "Sure.",
+        "What part should we start with?",
+    ]
+    assert {event["visible_at"] for event in ai_messages} == {now_ms}
+
+
+def test_required_response_only_applies_when_latest_visible_message_is_human():
+    setting = {"mimic_human": False, "ai_count": 1}
+    conv = {"events": [{
+        "type": "message",
+        "role": "ai",
+        "timestamp": 100,
+        "visible_at": 100,
+    }]}
+    assert not tick_handler._requires_response_after_human(conv, setting, 200)
+    assert not tick_handler._requires_response_after_human(
+        {"events": [{"type": "message", "role": "human", "visible_at": 100}]},
+        {"mimic_human": False, "ai_count": 2},
+        200,
+    )
+    assert not tick_handler._requires_response_after_human(
+        {"events": [{"type": "message", "role": "human", "visible_at": 100}]},
+        {"mimic_human": True, "ai_count": 1},
+        200,
+    )
+    assert not tick_handler._requires_response_after_human(
+        {"events": [{"type": "message", "role": "human", "visible_at": 100}]},
+        {"mimic_human": False, "human_count": 2, "ai_count": 1},
+        200,
+    )
+
+
+def test_single_non_mimic_ai_still_runs_inference_before_idle_follow_up():
+    cid, started_at_ms = _seed(setting_overrides={
+        "mimic_human": False,
+        "ai_count": 1,
+    })
+    now_ms = started_at_ms + 30_000
+    mock_dynamo.append_events(cid, CHATROOM_ID, [{
+        "type": "message",
+        "session_id": "ai_001",
+        "sender": "Mars",
+        "role": "ai",
+        "content": "What do you think?",
+        "timestamp": now_ms - 10_000,
+        "visible_at": now_ms - 10_000,
+    }])
+
+    def _fake_invoke(_model_id, system_prompt, _messages, **kwargs):
+        assert kwargs["require_message"] is False
+        rendered_prompt = system_prompt[0]["text"]
+        assert "Single-AI unanswered time: 10 seconds" in rendered_prompt
+        assert "idle follow-up already sent" in rendered_prompt
+        return {"messages": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch.object(tick_handler.time, "time", return_value=now_ms / 1000), \
+         patch.object(tick_handler, "invoke_speak_tool", side_effect=_fake_invoke) as invoke:
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "silent"
+    invoke.assert_called_once()
+
+
+def test_idle_follow_up_is_forced_once_without_typing_delay():
+    cid, started_at_ms = _seed(setting_overrides={
+        "mimic_human": False,
+        "ai_count": 1,
+    })
+    now_ms = started_at_ms + 70_000
+    mock_dynamo.append_events(cid, CHATROOM_ID, [{
+        "type": "message",
+        "session_id": "ai_001",
+        "sender": "Mars",
+        "role": "ai",
+        "content": "What do you think?",
+        "timestamp": now_ms - 61_000,
+        "visible_at": now_ms - 61_000,
+    }])
+
+    def _fake_invoke(_model_id, _system_prompt, messages, **kwargs):
+        assert kwargs["require_message"] is True
+        assert "human has not replied" in messages[-1]["content"][0]["text"]
+        return {
+            "messages": ["Still with me?"],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    with patch.object(tick_handler.time, "time", return_value=now_ms / 1000), \
+         patch.object(tick_handler, "invoke_speak_tool", side_effect=_fake_invoke), \
+         patch.object(tick_handler, "pick_delays_ms") as mock_delays:
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "spoke"
+    mock_delays.assert_not_called()
+    conv = mock_dynamo.get_conversation(cid)
+    follow_ups = [
+        event for event in conv["events"]
+        if event.get("message_kind") == "idle_follow_up"
+    ]
+    assert len(follow_ups) == 1
+    assert follow_ups[0]["visible_at"] == follow_ups[0]["timestamp"] == now_ms
+    assert not tick_handler._requires_idle_follow_up(
+        conv,
+        conv["chatroom_setting"],
+        now_ms + 61_000,
+    )
 
 
 def test_participant_model_id_overrides_chatroom_default():

@@ -19,20 +19,21 @@ const conversationStack = new ConversationTableStack(app, "ConversationTableStac
 const lobbyStack = new LobbyTableStack(app, "LobbyTableStack", { env });
 const secretsStack = new SecretsStack(app, "SecretsStack", { env });
 
-new ChatroomApiStack(app, "ChatroomApiStack", {
-  env,
-  table: conversationStack.table,
-  lobbyTable: lobbyStack.table,
-  jwtSecret: secretsStack.jwtSecret,
-  adminToken: secretsStack.adminToken,
-});
-
 const tickHandlerStack = new TickHandlerStack(app, "TickHandlerStack", {
   env,
   conversationTable: conversationStack.table,
   lobbyTable: lobbyStack.table,
   jwtSecret: secretsStack.jwtSecret,
   adminToken: secretsStack.adminToken,
+});
+
+new ChatroomApiStack(app, "ChatroomApiStack", {
+  env,
+  table: conversationStack.table,
+  lobbyTable: lobbyStack.table,
+  jwtSecret: secretsStack.jwtSecret,
+  adminToken: secretsStack.adminToken,
+  tickHandler: tickHandlerStack.lambdaFunction,
 });
 
 new TickHeartbeatStack(app, "TickHeartbeatStack", {

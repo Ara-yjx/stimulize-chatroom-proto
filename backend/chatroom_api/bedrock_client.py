@@ -10,7 +10,11 @@ import boto3
 from botocore.exceptions import ClientError
 
 from chatroom_api import config
-from chatroom_api.prompts.speech_scaffold import SPEAK_TOOL_CONFIG, parse_speak_tool_call
+from chatroom_api.prompts.speech_scaffold import (
+    REQUIRED_SPEAK_TOOL_CONFIG,
+    SPEAK_TOOL_CONFIG,
+    parse_speak_tool_call,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +142,7 @@ def invoke_speak_tool(
     messages: list[dict],
     *,
     temperature: float = 0.7,
+    require_message: bool = False,
 ) -> dict:
     """Call Bedrock Converse API forcing the `speak` tool.
 
@@ -162,7 +167,9 @@ def invoke_speak_tool(
             modelId=model_id,
             messages=messages,
             system=_normalize_system_blocks(system_prompt),
-            toolConfig=SPEAK_TOOL_CONFIG,
+            toolConfig=(
+                REQUIRED_SPEAK_TOOL_CONFIG if require_message else SPEAK_TOOL_CONFIG
+            ),
             inferenceConfig={"maxTokens": 512, "temperature": temperature},
         )
         return {

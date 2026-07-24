@@ -18,6 +18,7 @@ export interface ChatroomApiStackProps extends StackProps {
   lobbyTable: dynamodb.ITable;
   jwtSecret: secretsmanager.ISecret;
   adminToken: secretsmanager.ISecret;
+  tickHandler: lambda.IFunction;
 }
 
 export class ChatroomApiStack extends Stack {
@@ -27,7 +28,7 @@ export class ChatroomApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ChatroomApiStackProps) {
     super(scope, id, props);
 
-    const { table, lobbyTable, jwtSecret, adminToken } = props;
+    const { table, lobbyTable, jwtSecret, adminToken, tickHandler } = props;
 
     // --------------- Context params ---------------
     const rdsHost = this.node.tryGetContext("rdsHost") as string;
@@ -55,6 +56,7 @@ export class ChatroomApiStack extends Stack {
         LOBBY_TABLE: lobbyTable.tableName,
         JWT_SECRET_ARN: jwtSecret.secretArn,
         ADMIN_TOKEN_SECRET_ARN: adminToken.secretArn,
+        TICK_HANDLER_LAMBDA: tickHandler.functionName,
         RDS_HOST: rdsHost,
         RDS_PORT: rdsPort,
         RDS_DATABASE: rdsDatabase,
@@ -96,6 +98,10 @@ export class ChatroomApiStack extends Stack {
 
     // Secrets Manager read (RDS credentials)
     rdsSecret.grantRead(this.lambdaFunction);
+
+    // Only /chat/send for the single-human, single-AI, non-mimic preset uses
+    // this direct async wake-up. The heartbeat remains the fallback scheduler.
+    tickHandler.grantInvoke(this.lambdaFunction);
 
     // --------------- API Gateway ---------------
 
