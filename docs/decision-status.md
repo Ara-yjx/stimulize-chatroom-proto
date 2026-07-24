@@ -60,9 +60,9 @@ This file records decisions that came from implementation/debug discussions afte
 - Widget default runtime API is the beta API Gateway URL until DNS is ready:
   - `https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod`
 - `chatroom.stimulize.org` remains the future custom domain.
-- Widget auto-writes Qualtrics Embedded Data when `Qualtrics?.SurveyEngine.setEmbeddedData` exists:
-  - `QUALTRICS_CHATROOM_HISTORY`
-  - `QUALTRICS_CHATROOM_HISTORY_JSON`
+- Widget auto-writes Qualtrics Embedded Data through `Qualtrics?.SurveyEngine.setJSEmbeddedData`:
+  - JavaScript key `QUALTRICS_CHATROOM_HISTORY`; Survey Flow field `__js_QUALTRICS_CHATROOM_HISTORY`
+  - JavaScript key `QUALTRICS_CHATROOM_HISTORY_JSON`; Survey Flow field `__js_QUALTRICS_CHATROOM_HISTORY_JSON`
 - Widget skips ED writes in local/GitHub Pages preview environments.
 - Widget dedupes rare duplicate remote messages by `sender + content + timestamp + role`.
 

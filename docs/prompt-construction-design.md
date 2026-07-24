@@ -17,14 +17,31 @@ Prompt blocks:
 5. Conversation history
 6. Additional prompt
 
+The dynamic conversation-history block includes the current UTC time. Every
+visible event includes both its UTC display time and its relative age (for
+example, `2026-07-15T10:00:00Z; 42 sec ago`). This gives the model an explicit
+clock reference on every tick.
+
 The static scaffold is selected by `mimic_human`:
 
 - `mimic_human=true`: use the human-mimic scaffold and examples.
 - `mimic_human=false`: remove human-mimic instructions/examples and use a
   short generic AI-assistant scaffold.
+- When `mimic_human=false`, `ai_count=1`, and the latest visible message is
+  human-authored, use the required-response assistant scaffold and a `speak`
+  schema that requires at least one message. This variant cannot choose silence.
 
 For Bedrock prompt caching, these are separate static prefixes. Cache hits for
 one `mimic_human` mode do not apply to the other mode.
+The required-response assistant scaffold also has distinct static content, so
+its prompt-cache entry is separate from the silence-capable assistant scaffold.
+
+For one-human/one-AI rooms with `mimic_human=false`, a cached setup rule tells
+the AI to wait roughly 60 seconds after its unanswered message, then send at
+most one brief check-in. The backend still runs inference on every eligible
+heartbeat. When the approximate wait is reached, it requires a non-empty
+check-in and marks the resulting event as `message_kind=idle_follow_up`; another
+follow-up is not required until the human speaks again.
 
 ## Bedrock Prompt Caching
 
@@ -39,8 +56,8 @@ Current implementation:
 - Static scaffold stays in the Bedrock `system` block.
 - A leading `user` message carries setup blocks and the cache point.
 - That leading message currently contains: chatroom topic, persona,
-  participant list, AI name, additional prompt, `cachePoint`, then
-  conversation history.
+  participant list, AI name, optional single-AI idle policy, additional prompt,
+  `cachePoint`, then conversation history and its dynamic timing data.
 - The normal conversation messages are prepended after that leading message.
 
 Effect:

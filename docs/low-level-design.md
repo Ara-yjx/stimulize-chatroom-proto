@@ -273,7 +273,7 @@ Detailed write-path decision, current gap, future table shape, provider mappings
 
 ## Bedrock Integration
 
-Bedrock Converse API is invoked exclusively from the **tick handler**. `/chat/send` no longer triggers Bedrock — it only appends the human message and returns. AI replies arrive on subsequent `/chat/messages` polls, driven by ticks.
+Bedrock Converse API is invoked exclusively from the **tick handler**. `/chat/send` never calls Bedrock itself. Normally it only appends the human message and waits for the heartbeat. For `human_count=1`, `ai_count=1`, and `mimic_human=false` only, it also async-invokes the tick handler after persisting the message. In that required-response path, the tick handler bypasses the generic 5-second minimum-silence gate. The normal gate and heartbeat-only behavior remain unchanged for every other room shape.
 
 The tick handler call site (illustrative):
 
@@ -422,6 +422,8 @@ Implements the design in [design.md](./design.md#async-ai-conversation-flow-tick
 
 - **`chatroom-tick-heartbeat`** — EventBridge-scheduled Lambda loop, reserved concurrency 1, fires ticks during a bounded window.
 - **`chatroom-tick-handler`** — Lambda, runs the gate + Bedrock call for one conversation.
+
+The heartbeat is the default and fallback trigger. As a narrow latency optimization, `/chat/send` also invokes `chatroom-tick-handler` asynchronously only for the single-human, single-AI, non-mimic required-response preset. The API Lambda has `lambda:InvokeFunction` permission only for this handler; the handler's dedupe guard suppresses near-simultaneous duplicate triggers from the heartbeat.
 
 ### Heartbeat Lambda loop
 
@@ -609,15 +611,32 @@ Runtime summary:
 - Bedrock Converse is stateless; the backend rebuilds the prompt every tick.
 - `mimic_human=true` uses the human-mimic scaffold and examples.
 - `mimic_human=false` uses a short generic AI-assistant scaffold.
+- If `mimic_human=false`, `ai_count=1`, and the latest visible message is from
+  a human, the server uses a required-response scaffold plus a non-empty
+  `speak` schema. The AI cannot choose silence for that tick.
+- The same room continues inference on each eligible heartbeat when the latest
+  message is from the AI. Prompt timing includes current UTC plus each event's
+  UTC time and relative age. At roughly 60 seconds without a human reply, the
+  server requires one brief check-in and records `message_kind=idle_follow_up`.
+  That unanswered turn cannot produce a second required idle follow-up.
 - Bedrock prompt cache uses separate static prefixes for those two modes.
 - Each resolved AI participant stores `internal_name`, `nickname`, `persona`,
   `model_id`, and `temperature`.
+- In the 1-human/1-AI `mimic_human=false` preset, the human's canonical stored
+  nickname is `PARTICIPANT`. The AI nickname resolves as selected persona
+  `nickname` > chatroom `ai_nickname` > `AI`. The widget alone renders the
+  current human as `You`; DDB, prompts, JSON history, and formatted Qualtrics
+  Embedded Data keep `PARTICIPANT`.
 - The full visible conversation history is still included for v1. Summary/window
   optimization is deferred.
 
 ### Simulated typing delay
 
 To mimic human typing tempo, AI messages get a `visible_at` timestamp later than their `timestamp` (authoring time). Random delay 2-8s per message. For a multi-message turn, delays **stack** so the messages reveal one after another, not simultaneously:
+
+Exception: the required-response non-mimic single-AI case sets
+`visible_at=timestamp` for every returned bubble, so no simulated typing delay
+is applied.
 
 ```
 turn returned at t=10s with 3 messages and delays [3, 5, 2]:
@@ -743,12 +762,12 @@ The editor preview has dev-only hostname override controls; production/beta gene
 
 ### Qualtrics Embedded Data
 
-When running inside real Qualtrics, the widget writes on every history update:
+When running inside real Qualtrics, the widget writes on every history update using `setJSEmbeddedData`:
 
-- `QUALTRICS_CHATROOM_HISTORY` — formatted text
-- `QUALTRICS_CHATROOM_HISTORY_JSON` — JSON string
+- `QUALTRICS_CHATROOM_HISTORY` — formatted text; Survey Flow field: `__js_QUALTRICS_CHATROOM_HISTORY`
+- `QUALTRICS_CHATROOM_HISTORY_JSON` — JSON string; Survey Flow field: `__js_QUALTRICS_CHATROOM_HISTORY_JSON`
 
-The integration checks for `Qualtrics?.SurveyEngine.setEmbeddedData` and skips known preview environments such as localhost and GitHub Pages.
+The integration discovers global `Qualtrics.SurveyEngine`, prefers `setJSEmbeddedData`, uses the deprecated method only as a legacy-layout fallback, and skips known preview environments such as localhost and GitHub Pages. The `__js_` prefix is omitted from method arguments.
 
 ### Reconnection UX
 
@@ -802,6 +821,7 @@ https://ara-yjx.github.io/stimulize-chatroom-proto/#/chatroom
 - `human_count`, `ai_count`, `replace_human_with_ai`, `max_wait_seconds`
 - Chatroom-level `temperature` default (`0.0..1.0` for Bedrock beta)
 - Per-AI persona list; each entry may set `internal_name`, display `nickname`, persona text, model override, and temperature override.
+- Optional chatroom `AI nickname`, shown only for 1-human/1-AI with `mimic_human=false`; selected persona display name takes priority.
 - Generate Script button → Qualtrics-compatible JS snippet
 - Widget Preview (iframe with blob URL; "Launch another preview" button mounts side-by-side iframes for multi-participant testing)
 - Token Usage button → opens usage stats route in a new tab
@@ -816,6 +836,7 @@ Editor enforces these client-side; the management API re-validates server-side a
 - Backend source-of-truth: `max_duration_seconds <= 900` for beta (15-minute hard cap; revisit in prod after event-history storage is split out)
 - Pending alignment: editor-side validation currently allows a wider hidden draft range, while save requests are still rejected by the backend above 900.
 - `mode` is not stored; 1-on-1 is derived from `human_count=1 && ai_count=1`.
+- AI nickname fields reject the reserved names `You` and `Participant`, after trim and case-insensitive comparison.
 
 ### Management API hostname configuration
 

@@ -234,6 +234,18 @@ components:
         mimic_human:
           type: boolean
           default: true
+        ai_nickname:
+          type: string
+          nullable: true
+          description: |
+            Optional AI display-name fallback for human_count=1, ai_count=1,
+            mimic_human=false. A selected persona nickname takes priority;
+            blank defaults to AI. You and Participant are reserved names,
+            case-insensitively.
+        show_avatars:
+          type: boolean
+          default: true
+          description: Show participant avatar emoji in the widget. Names remain visible when false.
         temperature:
           type: number
           minimum: 0
@@ -498,7 +510,7 @@ components:
         nickname:
           type: string
           nullable: true
-          description: Participant-visible AI display name.
+          description: Participant-visible AI display name. You and Participant are reserved, case-insensitively.
         persona:
           type: string
         model_id:

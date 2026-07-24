@@ -120,9 +120,9 @@ Future settings (out of scope for beta)
 - API
   - Host page can access conversation history (structured + plain text) for data collection.
     - Exposes `getHistory()` and `getHistoryText()` for host page integration.
-    - Auto-writes Qualtrics Embedded Data when `Qualtrics?.SurveyEngine.setEmbeddedData` exists:
-      - `QUALTRICS_CHATROOM_HISTORY`
-      - `QUALTRICS_CHATROOM_HISTORY_JSON`
+    - Auto-writes Qualtrics Embedded Data through `Qualtrics?.SurveyEngine.setJSEmbeddedData`:
+      - JavaScript key `QUALTRICS_CHATROOM_HISTORY`; Survey Flow field `__js_QUALTRICS_CHATROOM_HISTORY`
+      - JavaScript key `QUALTRICS_CHATROOM_HISTORY_JSON`; Survey Flow field `__js_QUALTRICS_CHATROOM_HISTORY_JSON`
     - Skips ED writes in local/GitHub Pages preview environments.
 - Distributed as a CDN package. Host page loads and mounts it inside a target HTML element.
 - Script loading in Qualtrics: since Qualtrics has jQuery, consider using `jQuery.getScript()`
@@ -247,7 +247,7 @@ If a lobby reaches `aborted` (no humans remained at deadline, or pruning left 0 
 The naive "user sends message → all AIs reply" pattern doesn't fit group mode (multiple AIs talking over each other) or human-like timing (silent pauses, follow-up messages). Replace it with a **tick** model: a periodic event per active conversation that decides whether some AI should speak now. Same model serves group and 1-on-1.
 
 **Hybrid gate + tool-use:**
-- Gate (server logic): enforces minimum silence (default 5s), prevents same-AI-spamming, picks the AI that has been silent longest. Loose values; no max-silence rule for v1.
+- Gate (server logic): enforces minimum silence (default 5s), prevents same-AI-spamming, picks the AI that has been silent longest. The one narrow exception is `human_count=1`, `ai_count=1`, `mimic_human=false`: after a human message, the required-response path bypasses minimum silence.
 - AI decision (Bedrock tool use): when the gate passes, ask the chosen AI via Converse `toolConfig` with one tool `speak(messages: string[])`. Empty array = stay silent. Non-empty array = the AI sends those messages (multi-message replies are natural).
 - Why hybrid over pure-prompt: cost-bounded; small models love to talk regardless of instructions.
 - Why tool use over control tokens (`<EOM>`/`<br>`): structured output, model-agnostic, no parsing brittleness across Claude/Nova/Llama.
@@ -255,6 +255,8 @@ The naive "user sends message → all AIs reply" pattern doesn't fit group mode 
 **Tick mechanism: EventBridge-scheduled heartbeat Lambda + tick handler Lambda**
 
 EventBridge starts `chatroom-tick-heartbeat` on a schedule. Each heartbeat invocation loops for a bounded window, queries `status="active"` conversations from a sparse GSI, and async-invokes `chatroom-tick-handler` for each. The handler runs the gate + Bedrock + DDB writes. Reserved concurrency is 1 for the heartbeat Lambda so overlapping schedules cannot create duplicate heartbeat loops.
+
+For `human_count=1`, `ai_count=1`, `mimic_human=false` only, `/chat/send` also async-invokes the same tick handler immediately after storing the human message. This avoids waiting for the next heartbeat while preserving one inference path and the existing dedupe guard. All other room configurations remain heartbeat-only.
 
 Options considered:
 1. EventBridge cron + fan-out Lambda. EventBridge minimum is 1 minute — too coarse for 5-15s ticks.
@@ -290,6 +292,10 @@ Each AI sees other participants only by nickname — there is no role marker (`h
 **Simulated typing delay**
 
 AI messages don't appear instantly. Each message gets a `visible_at` timestamp = authoring time + 2-8s random delay (delays stack across a multi-message turn). UI rendering, the gate, and the history sent to the next AI all filter events by `visible_at <= now`. This mimics real typing tempo and keeps AIs reasoning about the conversation as users perceive it. Human and system events become visible immediately. See LLD for details.
+
+Exception: when human mimicry is off and the room has one AI, that AI must
+answer the latest human message and its response is visible immediately without
+the simulated typing delay.
 
 **No typing indicator in v1**
 

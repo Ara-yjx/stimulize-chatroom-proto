@@ -77,7 +77,9 @@ Usage endpoints are implemented for aggregate reads. Future cache-bucket columns
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
 The create request is the first persisted save, so any editor-provided default `setting` values are stored immediately at creation time.
 
-Request: `{ name, setting: { topic_instruction, additional_prompt?, mimic_human?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count, ai_count, replace_human_with_ai?, max_wait_seconds? } }`
+Request: `{ name, setting: { topic_instruction, additional_prompt?, mimic_human?, ai_nickname?, show_avatars?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count, ai_count, replace_human_with_ai?, max_wait_seconds? } }`
+
+For `human_count=1`, `ai_count=1`, and `mimic_human=false`, the canonical human nickname is `PARTICIPANT`. AI naming resolves as selected persona `nickname` > chatroom `ai_nickname` > `AI`. The widget displays the current human as `You` without changing exported history. `You` and `Participant` are reserved AI nicknames, case-insensitively.
 
 The backend also stores derived runtime compatibility fields: `target_human_count`, `ai_join_strategy`, and `ai_strategy_value`.
 Response: `{ id, name, status, setting, created_at, updated_at }`
@@ -167,10 +169,12 @@ Mount the widget and start a chat session. Must only be called once per page (si
 
 ```typescript
 interface InitOptions {
-  element: string | HTMLElement;  // CSS selector or DOM element to mount into
-  chatroomId: string;             // chatroom ID (e.g. "scid_550e8400-...")
-  apiBaseUrl?: string;            // override backend URL
-  beta?: boolean;                 // beta mode flag
+  element?: string | HTMLElement;       // existing mount element
+  parentElement?: string | HTMLElement; // parent where the widget creates its mount
+  qualtricsQuestion?: object;           // question instance from the addOnload callback
+  chatroomId: string;                   // chatroom ID (e.g. "scid_550e8400-...")
+  apiBaseUrl?: string;                  // override backend URL
+  beta?: boolean;                       // beta mode flag
 }
 ```
 
@@ -225,18 +229,18 @@ Returns the conversation history as plain text, one line per message. Format:
 
 ### Qualtrics Embedded Data
 
-When running inside Qualtrics, the widget automatically writes history on every message event:
+When running inside Qualtrics, the widget automatically writes history on every message event using `setJSEmbeddedData`:
 
-- `QUALTRICS_CHATROOM_HISTORY`: formatted text
-- `QUALTRICS_CHATROOM_HISTORY_JSON`: plain JSON
+- `QUALTRICS_CHATROOM_HISTORY`: formatted text; Survey Flow field: `__js_QUALTRICS_CHATROOM_HISTORY`
+- `QUALTRICS_CHATROOM_HISTORY_JSON`: plain JSON; Survey Flow field: `__js_QUALTRICS_CHATROOM_HISTORY_JSON`
 
-The widget checks `Qualtrics?.SurveyEngine.setEmbeddedData` before writing and skips local/GitHub Pages preview environments.
+The widget discovers global `Qualtrics.SurveyEngine`, prefers `setJSEmbeddedData`, and uses the deprecated method only for legacy layouts. The `__js_` prefix belongs only in the Survey Flow field name, not in the JavaScript method argument.
 
 ### Lifecycle
 
 1. **Token exchange** — calls `/auth/token` with `chatroomId`
 2. **Pairing screen** — animated "Finding chat partner(s)..." while the server reports an open lobby. For one-human + `mimic_human=true`, `simulate_pairing_seconds` is the server lobby duration; for multi-human rooms, `max_wait_seconds` is the lobby duration.
-3. **Active chat** — message input, polling every 3s, AI messages appear with simulated typing delay
+3. **Active chat** — message input, polling every 3s, AI messages normally appear with simulated typing delay. A single AI with `mimic_human=false` must answer the latest human message and appears immediately. Avatar emoji are hidden when `show_avatars=false`.
 4. **Conversation ended** — input disabled, "This conversation has ended." system message
 5. **Lobby aborted** (multi-human wait, 410) — "No one else joined this chatroom." + "Reconnect" button
 
