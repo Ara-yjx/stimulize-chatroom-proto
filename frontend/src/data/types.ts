@@ -33,6 +33,8 @@ export interface ChatroomSetting {
   ai_personas?: string[];
   model_id: string;
   mimic_human?: boolean;
+  ai_nickname?: string;
+  show_avatars?: boolean;
   temperature?: number;
   simulate_pairing_seconds: number;
   timer_min_minutes?: number;

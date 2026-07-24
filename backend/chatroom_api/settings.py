@@ -11,6 +11,7 @@ from copy import deepcopy
 
 MAX_BEDROCK_TEMPERATURE = 1.0
 MIN_BEDROCK_TEMPERATURE = 0.0
+RESERVED_PARTICIPANT_NICKNAMES = {"you", "participant"}
 
 
 def _coerce_int(value, default: int) -> int:
@@ -32,6 +33,32 @@ def derive_runtime_mode(setting: dict | None) -> str:
         1,
     )
     return "one_on_one" if human_count == 1 and ai_count == 1 else "group"
+
+
+def is_single_human_single_ai_assistant_room(setting: dict | None) -> bool:
+    """Return whether the fixed PARTICIPANT/AI naming preset applies."""
+    normalized = setting or {}
+    if bool(normalized.get("mimic_human", True)):
+        return False
+    human_count = _coerce_int(
+        normalized.get("human_count", normalized.get("target_human_count", 1)),
+        1,
+    )
+    ai_count = _coerce_int(
+        normalized.get("ai_count", normalized.get("ai_strategy_value", 1)),
+        1,
+    )
+    return human_count == 1 and ai_count == 1
+
+
+def normalize_ai_nickname(value) -> str:
+    """Return a usable AI nickname, or empty for blank/reserved values."""
+    if not isinstance(value, str):
+        return ""
+    nickname = value.strip()
+    if nickname.casefold() in RESERVED_PARTICIPANT_NICKNAMES:
+        return ""
+    return nickname
 
 
 def resolve_runtime_setting(setting: dict | None) -> dict:
@@ -102,6 +129,13 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
     normalized["ai_count"] = ai_count
     normalized["replace_human_with_ai"] = replace_human_with_ai
     normalized["mimic_human"] = mimic_human
+    normalized["ai_nickname"] = normalize_ai_nickname(
+        normalized.get("ai_nickname")
+    )
+    show_avatars = normalized.get("show_avatars", True)
+    normalized["show_avatars"] = (
+        show_avatars if isinstance(show_avatars, bool) else True
+    )
     normalized["simulate_pairing_seconds"] = (
         simulate_pairing_seconds if human_count == 1 and mimic_human else 0
     )

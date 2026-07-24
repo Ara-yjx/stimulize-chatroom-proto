@@ -31,6 +31,31 @@ def _mocks():
 
 class TestHandleAuthTokenV2:
 
+    @staticmethod
+    def _assistant_chatroom(*, ai_nickname="", personas=None):
+        return {
+            **SAMPLE_CHATROOM,
+            "setting": {
+                **SAMPLE_CHATROOM["setting"],
+                "mimic_human": False,
+                "ai_nickname": ai_nickname,
+                "ai_personas": personas or [],
+            },
+        }
+
+    @staticmethod
+    def _run_assistant_auth(chatroom):
+        mock_lobby.reset()
+        mock_dynamo.reset()
+        rds = MagicMock()
+        rds.get_chatroom.return_value = chatroom
+        with patch("chatroom_api.auth._get_rds", return_value=rds), \
+             patch("chatroom_api.close_lobby._get_rds", return_value=rds), \
+             patch("chatroom_api.auth.jwt_utils") as jwt_mock:
+            jwt_mock.create_token.return_value = "t"
+            status, body = handle_auth_token({"chatroom_id": chatroom["id"]})
+        return status, body, mock_dynamo.get_conversation(body["conversation_id"])
+
     def test_valid_chatroom_returns_session_info(self):
         mock_lobby.reset()
         mock_dynamo.reset()
@@ -115,3 +140,54 @@ class TestHandleAuthTokenV2:
             _status, body = handle_auth_token({"chatroom_id": "scid_test-chatroom-001"})
         parts = mock_dynamo.get_conversation(body["conversation_id"])["participants"]
         assert parts[0]["nickname"] != parts[1]["nickname"]
+
+    def test_assistant_room_uses_canonical_human_and_default_ai_names(self):
+        status, body, conversation = self._run_assistant_auth(
+            self._assistant_chatroom()
+        )
+
+        assert status == 200
+        assert body["nickname"] == "PARTICIPANT"
+        names_by_role = {
+            participant["role"]: participant["nickname"]
+            for participant in conversation["participants"]
+        }
+        assert names_by_role == {"human": "PARTICIPANT", "ai": "AI"}
+
+    def test_assistant_room_uses_room_ai_nickname_when_persona_name_is_empty(self):
+        _status, _body, conversation = self._run_assistant_auth(
+            self._assistant_chatroom(ai_nickname="Helper")
+        )
+
+        ai = next(p for p in conversation["participants"] if p["role"] == "ai")
+        assert ai["nickname"] == "Helper"
+
+    def test_assistant_room_persona_name_has_priority(self):
+        _status, _body, conversation = self._run_assistant_auth(
+            self._assistant_chatroom(
+                ai_nickname="Helper",
+                personas=[{
+                    "internal_name": "condition_1",
+                    "nickname": "Alex",
+                    "persona": "Be concise.",
+                }],
+            )
+        )
+
+        ai = next(p for p in conversation["participants"] if p["role"] == "ai")
+        assert ai["nickname"] == "Alex"
+
+    def test_assistant_room_reserved_persona_name_falls_back_safely(self):
+        _status, _body, conversation = self._run_assistant_auth(
+            self._assistant_chatroom(
+                ai_nickname="Assistant",
+                personas=[{
+                    "internal_name": "condition_1",
+                    "nickname": " you ",
+                    "persona": "Be concise.",
+                }],
+            )
+        )
+
+        ai = next(p for p in conversation["participants"] if p["role"] == "ai")
+        assert ai["nickname"] == "Assistant"

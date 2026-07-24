@@ -53,6 +53,9 @@ export interface ChatroomSetting {
   ai_personas: AiPersonaSetting[]
   model_id: string
   mimic_human: boolean
+  /** Optional room-level AI display-name fallback for the non-mimic 1H1AI preset. */
+  ai_nickname: string
+  show_avatars: boolean
   temperature: number
   simulate_pairing_seconds: number
   timer_min_minutes: number | null
@@ -92,6 +95,12 @@ export const VALIDATION_LIMITS = {
 export interface ValidationResult {
   ok: boolean
   errors: Record<string, string>
+}
+
+const RESERVED_PARTICIPANT_NICKNAMES = new Set(['you', 'participant'])
+
+export function isReservedParticipantNickname(value: unknown): boolean {
+  return typeof value === 'string' && RESERVED_PARTICIPANT_NICKNAMES.has(value.trim().toLowerCase())
 }
 
 export function normalizeAiPersonas(value: unknown): AiPersonaSetting[] {
@@ -152,6 +161,10 @@ export function deriveMaxDurationSeconds(timerMaxMinutes: number | null): number
 export function validateChatroomSetting(setting: ChatroomSetting): ValidationResult {
   const errors: Record<string, string> = {}
 
+  if (isReservedParticipantNickname(setting.ai_nickname)) {
+    errors.ai_nickname = 'AI nickname cannot be You or Participant'
+  }
+
   // Always validate max_duration_seconds (applies to both modes).
   if (
     !Number.isFinite(setting.max_duration_seconds) ||
@@ -181,6 +194,9 @@ export function validateChatroomSetting(setting: ChatroomSetting): ValidationRes
       errors[path] = `persona temperature must be between ${VALIDATION_LIMITS.temperatureMin} and ${VALIDATION_LIMITS.temperatureMax}`
     }
     const internalName = persona.internal_name.trim()
+    if (isReservedParticipantNickname(persona.nickname)) {
+      errors.ai_personas = 'AI persona display names cannot be You or Participant'
+    }
     if (internalName) {
       if (internalNames.has(internalName)) {
         errors[path] = 'internal_name must be unique within a chatroom'
@@ -269,6 +285,8 @@ export function defaultChatroomSetting(): ChatroomSetting {
     ai_personas: [],
     model_id: 'global.anthropic.claude-sonnet-4-6',
     mimic_human: true,
+    ai_nickname: '',
+    show_avatars: true,
     temperature: 0.7,
     simulate_pairing_seconds: 15,
     timer_min_minutes: 1,

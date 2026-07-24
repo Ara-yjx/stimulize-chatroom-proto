@@ -119,7 +119,10 @@ export async function init(options: InitOptions): Promise<void> {
 
   // Wire UI callbacks before init so they're ready
   state.onMessage((msg: ChatMessage, isSelf: boolean) => {
-    appendBubble(msg.sender, msg.content, isSelf, msg.avatar?.emojiText);
+    const emojiText = state!.chatroomSetting?.show_avatars === false
+      ? undefined
+      : msg.avatar?.emojiText;
+    appendBubble(state!.getDisplaySender(msg.sender, isSelf), msg.content, isSelf, emojiText);
     writeToED(state!.getHistory(), state!.getHistoryText());
   });
 

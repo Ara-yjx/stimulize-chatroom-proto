@@ -73,6 +73,20 @@ export class ChatroomState {
 
   getInitOptions(): InitOptions | null { return this._initOptions; }
 
+  private _usesParticipantDisplayOverride(): boolean {
+    const setting = this.chatroomSetting;
+    if (!setting || setting.mimic_human !== false) return false;
+    const humanCount = setting.human_count ?? setting.target_human_count ?? 1;
+    const aiCount = setting.ai_count ?? setting.ai_strategy_value ?? 1;
+    return humanCount === 1 && aiCount === 1 && this.nickname === "PARTICIPANT";
+  }
+
+  getDisplaySender(sender: string, isSelf: boolean): string {
+    return isSelf && sender === this.nickname && this._usesParticipantDisplayOverride()
+      ? "You"
+      : sender;
+  }
+
   /**
    * True iff prefetch has seen a ``lobby`` block in its response and the
    * lobby has not yet closed/aborted. Used by the widget to decide whether
@@ -326,9 +340,12 @@ export class ChatroomState {
       const systemKey = this._dedupeKey(evt.sender, evt.content, evt.timestamp, "system");
       if (this._seenRemoteMessageKeys.has(systemKey)) return;
       this._seenRemoteMessageKeys.add(systemKey);
-      let content = evt.content;
+      const content = evt.content;
+      let displayContent = content;
       if (evt.session_id === this.sessionId) {
-        content = content.replace(this.nickname, `${this.nickname} (you)`);
+        displayContent = this._usesParticipantDisplayOverride()
+          ? content.replace(this.nickname, "You")
+          : content.replace(this.nickname, `${this.nickname} (you)`);
       }
       this.chatHistory.push({
         sender: evt.sender,
@@ -336,7 +353,7 @@ export class ChatroomState {
         role: "system",
         timestamp: evt.timestamp,
       });
-      this._onSystemEvent.forEach((cb) => cb(content));
+      this._onSystemEvent.forEach((cb) => cb(displayContent));
     } else if (evt.type === "error") {
       const errorKey = this._dedupeKey("System", evt.content, evt.timestamp, "system");
       if (this._seenRemoteMessageKeys.has(errorKey)) return;

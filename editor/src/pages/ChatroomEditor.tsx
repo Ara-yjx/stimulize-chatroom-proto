@@ -13,6 +13,7 @@ import {
   defaultSettingForMode,
   denormalizeForSave,
   deriveMaxDurationSeconds,
+  isReservedParticipantNickname,
   normalizeAiPersonas,
   validateChatroomSetting,
   VALIDATION_LIMITS,
@@ -120,9 +121,16 @@ function PersonaListEditor({
                     value={p.nickname}
                     onChange={(v) => update(personas.map((x, j) => (j === i ? { ...x, nickname: v } : x)))}
                     placeholder="Participant display name"
+                    status={isReservedParticipantNickname(p.nickname) ? 'error' : undefined}
                   />
-                  <div style={{ marginTop: 4, color: '#86909c', fontSize: 12 }}>
-                    Shown to chat participants as this AI's name.
+                  <div style={{
+                    marginTop: 4,
+                    color: isReservedParticipantNickname(p.nickname) ? '#f53f3f' : '#86909c',
+                    fontSize: 12,
+                  }}>
+                    {isReservedParticipantNickname(p.nickname)
+                      ? 'You and Participant are reserved names.'
+                      : "Shown to chat participants as this AI's name."}
                   </div>
                 </div>
               </Row>
@@ -311,6 +319,8 @@ function normalizeLoadedSetting(setting: Partial<ChatroomSetting> | undefined): 
     ...setting,
     ai_personas: normalizeAiPersonas(setting?.ai_personas),
     mimic_human: typeof setting?.mimic_human === 'boolean' ? setting.mimic_human : defaults.mimic_human,
+    ai_nickname: typeof setting?.ai_nickname === 'string' ? setting.ai_nickname : defaults.ai_nickname,
+    show_avatars: typeof setting?.show_avatars === 'boolean' ? setting.show_avatars : defaults.show_avatars,
     temperature: typeof setting?.temperature === 'number' ? setting.temperature : defaults.temperature,
     human_count: humanCount,
     ai_count: aiCount,
@@ -328,7 +338,9 @@ export default function ChatroomEditor() {
   const [form] = Form.useForm<FormValues>()
   const sessionExpiredModalShownRef = useRef(false)
   const watchedHumanCount = Form.useWatch('human_count', form) as number | undefined
+  const watchedAiCount = Form.useWatch('ai_count', form) as number | undefined
   const watchedMimicHuman = Form.useWatch('mimic_human', form) as boolean | undefined
+  const watchedAiNickname = Form.useWatch('ai_nickname', form) as string | undefined
   const watchedTimerMaxMinutes = Form.useWatch('timer_max_minutes', form) as number | null | undefined
 
   useEffect(() => {
@@ -410,6 +422,8 @@ export default function ChatroomEditor() {
       ai_personas: normalizeAiPersonas(values.ai_personas),
       model_id: values.model_id,
       mimic_human: values.mimic_human,
+      ai_nickname: values.ai_nickname,
+      show_avatars: values.show_avatars,
       temperature: values.temperature,
       simulate_pairing_seconds: values.simulate_pairing_seconds,
       timer_min_minutes: values.timer_min_minutes ?? null,
@@ -488,6 +502,10 @@ export default function ChatroomEditor() {
   if (!chatroom) return <div style={{ padding: 24 }}>Chatroom not found</div>
 
   const enableSimulatePairing = (watchedHumanCount ?? 1) === 1 && watchedMimicHuman === true
+  const showAiNickname =
+    (watchedHumanCount ?? 1) === 1 &&
+    (watchedAiCount ?? 1) === 1 &&
+    watchedMimicHuman === false
 
   return (
     <div style={{ padding: 24 }}>
@@ -606,6 +624,15 @@ export default function ChatroomEditor() {
             </FormItem>
           </Row>
 
+          <FormItem
+            label="Show avatars"
+            field="show_avatars"
+            triggerPropName="checked"
+            extra="When off, participant names remain visible but avatar emoji are hidden."
+          >
+            <Switch checkedText="On" uncheckedText="Off" />
+          </FormItem>
+
           {/* ─── Model and Prompt ──────────────────────────────────── */}
           <SectionHeader>⚙️ Model and Prompt</SectionHeader>
 
@@ -656,6 +683,20 @@ export default function ChatroomEditor() {
             extra="When off, the backend uses a generic AI-assistant prompt instead of human-mimic instructions and examples."
           >
             <Switch checkedText="On" uncheckedText="Off" />
+          </FormItem>
+
+          <FormItem
+            label="AI nickname"
+            field="ai_nickname"
+            hidden={!showAiNickname}
+            extra={isReservedParticipantNickname(watchedAiNickname)
+              ? <span style={{ color: '#f53f3f' }}>You and Participant are reserved names.</span>
+              : 'Optional fallback name for the AI. A selected persona display name still takes priority; empty defaults to AI.'}
+          >
+            <Input
+              placeholder="AI"
+              status={isReservedParticipantNickname(watchedAiNickname) ? 'error' : undefined}
+            />
           </FormItem>
 
           <FormItem

@@ -30,7 +30,12 @@ from typing import Optional
 from chatroom_api import config
 from chatroom_api.constants import EMOJI_POOL
 from chatroom_api.lobby import compute_ai_count
-from chatroom_api.settings import normalize_persona_entries, resolve_runtime_setting
+from chatroom_api.settings import (
+    is_single_human_single_ai_assistant_room,
+    normalize_ai_nickname,
+    normalize_persona_entries,
+    resolve_runtime_setting,
+)
 
 # ---------------------------------------------------------------------------
 # Backend selection (mirrors the auth.py pattern).
@@ -224,6 +229,12 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
         default_temperature=default_temperature,
     )
     selected_persona_entries = _pick_personas(persona_entries, ai_count) if persona_entries else []
+    use_assistant_names = is_single_human_single_ai_assistant_room(
+        chatroom_setting
+    )
+    room_ai_nickname = normalize_ai_nickname(
+        chatroom_setting.get("ai_nickname")
+    )
 
     used_nicknames = {p.get("nickname") for p in participants_after_prune}
     used_emojis = {(p.get("avatar") or {}).get("emojiText") for p in participants_after_prune}
@@ -246,12 +257,19 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
             if i < len(selected_persona_entries)
             else {"persona": "", "model_id": default_model_id}
         )
-        preferred_nickname = str(selected_entry.get("nickname") or "").strip()
-        nickname = (
-            preferred_nickname
-            if preferred_nickname and preferred_nickname not in used_nicknames
-            else _generate_nickname(exclude=used_nicknames)
+        preferred_nickname = normalize_ai_nickname(
+            selected_entry.get("nickname")
         )
+        if preferred_nickname and preferred_nickname not in used_nicknames:
+            nickname = preferred_nickname
+        elif use_assistant_names:
+            nickname = (
+                room_ai_nickname
+                if room_ai_nickname and room_ai_nickname not in used_nicknames
+                else "AI"
+            )
+        else:
+            nickname = _generate_nickname(exclude=used_nicknames)
         avatar = _pick_avatar(exclude=used_emojis)
         used_nicknames.add(nickname)
         used_emojis.add(avatar["emojiText"])

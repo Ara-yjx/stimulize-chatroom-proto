@@ -113,6 +113,49 @@ describe('validateChatroomSetting', () => {
     expect(validateChatroomSetting(a).ok).toBe(true)
     expect(validateChatroomSetting(b).ok).toBe(true)
   })
+
+  it.each(['you', 'YOU', ' Participant '])('rejects reserved AI nickname %j', (aiNickname) => {
+    const setting = {
+      ...defaultChatroomSetting(),
+      mimic_human: false,
+      ai_nickname: aiNickname,
+    }
+    const result = validateChatroomSetting(setting)
+    expect(result.errors.ai_nickname).toBeDefined()
+  })
+
+  it.each(['You', 'participant', ' PARTICIPANT '])(
+    'rejects reserved persona display name %j',
+    (nickname) => {
+      const setting = {
+        ...defaultChatroomSetting(),
+        ai_personas: [{
+          internal_name: 'condition_1',
+          nickname,
+          persona: '',
+          model_id: null,
+          temperature: null,
+        }],
+      }
+      const result = validateChatroomSetting(setting)
+      expect(result.errors.ai_personas).toBeDefined()
+    },
+  )
+
+  it('accepts ordinary room and persona AI nicknames', () => {
+    const setting = {
+      ...defaultChatroomSetting(),
+      ai_nickname: 'Assistant',
+      ai_personas: [{
+        internal_name: 'condition_1',
+        nickname: 'Alex',
+        persona: '',
+        model_id: null,
+        temperature: null,
+      }],
+    }
+    expect(validateChatroomSetting(setting).ok).toBe(true)
+  })
 })
 
 describe('denormalizeForSave', () => {
@@ -178,6 +221,8 @@ describe('denormalizeForSave', () => {
 describe('defaultSettingForMode', () => {
   it('defaultChatroomSetting returns one-human one-ai values', () => {
     const setting = defaultChatroomSetting()
+    expect(setting.show_avatars).toBe(true)
+    expect(setting.ai_nickname).toBe('')
     expect(deriveChatroomMode(setting)).toBe('one_on_one')
     expect(setting.target_human_count).toBe(ONE_ON_ONE_FIXED.target_human_count)
     expect(setting.ai_join_strategy).toBe(ONE_ON_ONE_FIXED.ai_join_strategy)
@@ -185,6 +230,11 @@ describe('defaultSettingForMode', () => {
     expect(setting.max_wait_seconds).toBe(ONE_ON_ONE_FIXED.max_wait_seconds)
     // round-trip through validate
     expect(validateChatroomSetting(setting).ok).toBe(true)
+  })
+
+  it('preserves a disabled avatar setting when saving', () => {
+    const setting = { ...defaultChatroomSetting(), show_avatars: false }
+    expect(denormalizeForSave(setting).show_avatars).toBe(false)
   })
 
   it('group returns sensible defaults that pass validation', () => {

@@ -14,7 +14,10 @@ from uuid import uuid4
 from chatroom_api import config, jwt_utils
 from chatroom_api.close_lobby import close_lobby
 from chatroom_api.constants import EMOJI_POOL
-from chatroom_api.settings import resolve_runtime_setting
+from chatroom_api.settings import (
+    is_single_human_single_ai_assistant_room,
+    resolve_runtime_setting,
+)
 
 # Hard cap on the lobby join retry loop. Each iteration either advances
 # (joins or creates+joins) or moves a stale lobby toward closing/closed via
@@ -127,13 +130,18 @@ def _validate_lobby_setting(chatroom_setting: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def _build_human_participant(session_id: str, now_ms: int) -> tuple[dict, str, dict]:
+def _build_human_participant(
+    session_id: str,
+    now_ms: int,
+    *,
+    fixed_nickname: str | None = None,
+) -> tuple[dict, str, dict]:
     """Build a human participant dict for the lobby.
 
     Returns ``(participant, nickname, avatar)`` so the caller can echo
     ``nickname``/``avatar`` in the auth response without re-deriving them.
     """
-    nickname = _generate_nickname()
+    nickname = fixed_nickname or _generate_nickname()
     avatar = _pick_avatar()
     participant = {
         "session_id": session_id,
@@ -182,7 +190,13 @@ def _handle_lobby_auth(
 
     session_id = str(uuid4())
     participant, nickname, avatar = _build_human_participant(
-        session_id, int(time.time() * 1000)
+        session_id,
+        int(time.time() * 1000),
+        fixed_nickname=(
+            "PARTICIPANT"
+            if is_single_human_single_ai_assistant_room(chatroom_setting)
+            else None
+        ),
     )
 
     updated_lobby: dict | None = None
