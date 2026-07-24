@@ -4,13 +4,35 @@ const QUALTRICS_CHATROOM_HISTORY = "QUALTRICS_CHATROOM_HISTORY";
 const QUALTRICS_CHATROOM_HISTORY_JSON = "QUALTRICS_CHATROOM_HISTORY_JSON";
 
 type SurveyEngineLike = {
+  setJSEmbeddedData?: (key: string, value: string) => void;
   setEmbeddedData?: (key: string, value: string) => void;
 };
+
+function canWriteEmbeddedData(surveyEngine: SurveyEngineLike): boolean {
+  return (
+    typeof surveyEngine.setJSEmbeddedData === "function" ||
+    typeof surveyEngine.setEmbeddedData === "function"
+  );
+}
+
+function setQualtricsEmbeddedData(
+  surveyEngine: SurveyEngineLike,
+  key: string,
+  value: string
+): void {
+  if (typeof surveyEngine.setJSEmbeddedData === "function") {
+    surveyEngine.setJSEmbeddedData(key, value);
+    return;
+  }
+
+  // Legacy Qualtrics layouts may not expose setJSEmbeddedData yet.
+  surveyEngine.setEmbeddedData?.(key, value);
+}
 
 function getSurveyEngine(): SurveyEngineLike | null {
   try {
     const direct = typeof Qualtrics !== "undefined" ? Qualtrics?.SurveyEngine : null;
-    if (direct && typeof direct.setEmbeddedData === "function") {
+    if (direct && canWriteEmbeddedData(direct)) {
       return direct;
     }
   } catch {
@@ -41,7 +63,7 @@ function isPreviewEnvironment(): boolean {
 export function writeToED(history: ChatMessage[], historyText: string): void {
   try {
     const surveyEngine = getSurveyEngine();
-    if (!surveyEngine || typeof surveyEngine.setEmbeddedData !== "function") {
+    if (!surveyEngine) {
       return;
     }
 
@@ -49,8 +71,13 @@ export function writeToED(history: ChatMessage[], historyText: string): void {
       return;
     }
 
-    surveyEngine.setEmbeddedData(QUALTRICS_CHATROOM_HISTORY, historyText);
-    surveyEngine.setEmbeddedData(
+    setQualtricsEmbeddedData(
+      surveyEngine,
+      QUALTRICS_CHATROOM_HISTORY,
+      historyText
+    );
+    setQualtricsEmbeddedData(
+      surveyEngine,
       QUALTRICS_CHATROOM_HISTORY_JSON,
       JSON.stringify(history)
     );

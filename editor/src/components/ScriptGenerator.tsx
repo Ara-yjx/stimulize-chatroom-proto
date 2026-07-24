@@ -80,10 +80,10 @@ ${initBlock}
           <Button onClick={copySnippet} style={{ marginTop: 8 }}><IconCopy /> Copy to Clipboard</Button>
           <br />
           <Text>
-            You also need to create two Embeded Data fields in Qualtrics: <br />
-            <code>QUALTRICS_CHATROOM_HISTORY</code>
+            You also need to create two Embedded Data fields in the Qualtrics Survey Flow: <br />
+            <code>__js_QUALTRICS_CHATROOM_HISTORY</code>
             <span> and </span>
-            <code>QUALTRICS_CHATROOM_HISTORY_JSON</code>.
+            <code>__js_QUALTRICS_CHATROOM_HISTORY_JSON</code>.
           </Text>
         </div>
       )}
