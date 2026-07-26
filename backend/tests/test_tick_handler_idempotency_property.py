@@ -164,8 +164,8 @@ def test_tick_handler_idempotent_within_dedupe_window(now_ms_offset: int) -> Non
     )
 
 
-def test_tick_handler_first_call_records_one_tick_and_one_message() -> None:
-    """Example: a single fresh tick produces one tick event and one message.
+def test_tick_handler_first_call_records_projection_and_one_message() -> None:
+    """Example: a fresh tick produces one message and compact projection.
 
     Sanity-check the test scaffold so the property test above isn't
     asserting on a degenerate (e.g. always-empty) event list.
@@ -184,13 +184,10 @@ def test_tick_handler_first_call_records_one_tick_and_one_message() -> None:
     assert result.get("status") == "spoke", f"unexpected status: {result!r}"
 
     events = _events_after(conversation_id, after_ts=0)
-    tick_events = [e for e in events if e.get("type") == "tick"]
     message_events = [e for e in events if e.get("type") == "message"]
-    assert len(tick_events) == 1, (
-        f"expected exactly 1 tick event, got {len(tick_events)} "
-        f"(events={events!r})"
-    )
     assert len(message_events) == 1, (
         f"expected exactly 1 message event (from fake Bedrock response), "
         f"got {len(message_events)}"
     )
+    conv = mock_dynamo.get_conversation(conversation_id)
+    assert conv["ai_tick_state_by_participant_id"]["ai_001"]["last_result"] == "spoke"

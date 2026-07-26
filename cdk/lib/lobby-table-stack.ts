@@ -1,6 +1,11 @@
 import { RemovalPolicy, Stack, StackProps, aws_dynamodb as dynamodb } from "aws-cdk-lib";
 import { Construct } from "constructs";
 
+export interface LobbyTableStackProps extends StackProps {
+  tableName?: string;
+  removalPolicy?: RemovalPolicy;
+}
+
 /**
  * `chatroom-lobbies` DynamoDB table — group-mode pairing state.
  *
@@ -24,18 +29,18 @@ import { Construct } from "constructs";
 export class LobbyTableStack extends Stack {
   public readonly table: dynamodb.Table;
 
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  constructor(scope: Construct, id: string, props?: LobbyTableStackProps) {
     super(scope, id, props);
 
     this.table = new dynamodb.Table(this, "LobbyTable", {
-      tableName: "chatroom-lobbies",
+      tableName: props?.tableName ?? "chatroom-lobbies",
       partitionKey: {
         name: "lobby_id",
         type: dynamodb.AttributeType.STRING,
       },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "ttl",
-      removalPolicy: RemovalPolicy.DESTROY,
+      removalPolicy: props?.removalPolicy ?? RemovalPolicy.DESTROY,
     });
 
     // PK=chatroom_id, SK=status. ALL projection because /auth/token reads the

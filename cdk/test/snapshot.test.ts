@@ -27,6 +27,7 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { ConversationTableStack } from "../lib/conversation-table-stack";
+import { ConversationEventStack } from "../lib/conversation-event-stack";
 import { LobbyTableStack } from "../lib/lobby-table-stack";
 import { SecretsStack } from "../lib/secrets-stack";
 import { ChatroomApiStack } from "../lib/chatroom-api-stack";
@@ -113,6 +114,42 @@ describe("ConversationTableStack", () => {
         }),
       ]),
     });
+  });
+});
+
+describe("ConversationEventStack", () => {
+  it("creates retained ordered history and TTL cleanup resources", () => {
+    const app = makeApp();
+    const conv = new ConversationTableStack(app, "ConvTable", {
+      env: TEST_ENV,
+      tableName: "event-dev-conversations",
+      stream: cdk.aws_dynamodb.StreamViewType.KEYS_ONLY,
+    });
+    const stack = new ConversationEventStack(app, "EventTable", {
+      env: TEST_ENV,
+      metadataTable: conv.table,
+      eventTableName: "event-dev-events",
+      cleanupFunctionName: "event-dev-cleanup",
+    });
+    const t = Template.fromStack(stack);
+
+    t.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "event-dev-events",
+      BillingMode: "PAY_PER_REQUEST",
+      KeySchema: [
+        { AttributeName: "conversation_id", KeyType: "HASH" },
+        { AttributeName: "event_key", KeyType: "RANGE" },
+      ],
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+    });
+    t.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "event-dev-cleanup",
+      Handler: "chatroom_api.event_cleanup.handler",
+      Environment: { Variables: { DYNAMODB_EVENT_TABLE: Match.anyValue() } },
+    });
+    t.resourceCountIs("AWS::Lambda::EventSourceMapping", 1);
+    t.resourceCountIs("AWS::SQS::Queue", 1);
+    t.resourceCountIs("AWS::CloudWatch::Alarm", 1);
   });
 });
 
@@ -310,6 +347,7 @@ describe("ChatroomApiStack", () => {
       jwtSecret: secrets.jwtSecret,
       adminToken: secrets.adminToken,
       tickHandler: tickHandler.lambdaFunction,
+      eventTable: conv.table,
     });
     const t = Template.fromStack(stack);
 
@@ -319,6 +357,7 @@ describe("ChatroomApiStack", () => {
       Environment: {
         Variables: Match.objectLike({
           DYNAMODB_TABLE: Match.anyValue(),
+          DYNAMODB_EVENT_TABLE: Match.anyValue(),
           LOBBY_TABLE: Match.anyValue(),
           JWT_SECRET_ARN: Match.anyValue(),
           ADMIN_TOKEN_SECRET_ARN: Match.anyValue(),

@@ -1,6 +1,11 @@
 import { CfnOutput, Stack, StackProps, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
 
+export interface SecretsStackProps extends StackProps {
+  secretPrefix?: string;
+  exportPrefix?: string | null;
+}
+
 /**
  * Secrets owned by the chatroom backend.
  *
@@ -19,11 +24,11 @@ export class SecretsStack extends Stack {
    */
   public readonly adminToken: secretsmanager.ISecret;
 
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  constructor(scope: Construct, id: string, props?: SecretsStackProps) {
     super(scope, id, props);
 
     this.jwtSecret = new secretsmanager.Secret(this, "JwtSecret", {
-      secretName: "stimulize-chatroom/jwt-secret",
+      secretName: `${props?.secretPrefix ?? "stimulize-chatroom"}/jwt-secret`,
       generateSecretString: {
         passwordLength: 32,
         excludePunctuation: true,
@@ -33,11 +38,13 @@ export class SecretsStack extends Stack {
     new CfnOutput(this, "JwtSecretArn", {
       value: this.jwtSecret.secretArn,
       description: "ARN of the JWT signing secret",
-      exportName: "StimulizeChatroom-JwtSecretArn",
+      exportName: props?.exportPrefix === null
+        ? undefined
+        : `${props?.exportPrefix ?? "StimulizeChatroom"}-JwtSecretArn`,
     });
 
     this.adminToken = new secretsmanager.Secret(this, "AdminToken", {
-      secretName: "stimulize-chatroom/admin-token",
+      secretName: `${props?.secretPrefix ?? "stimulize-chatroom"}/admin-token`,
       generateSecretString: {
         passwordLength: 48,
         excludePunctuation: true,
@@ -47,7 +54,9 @@ export class SecretsStack extends Stack {
     new CfnOutput(this, "AdminTokenArn", {
       value: this.adminToken.secretArn,
       description: "ARN of the admin bearer token (?include_ticks=true)",
-      exportName: "StimulizeChatroom-AdminTokenArn",
+      exportName: props?.exportPrefix === null
+        ? undefined
+        : `${props?.exportPrefix ?? "StimulizeChatroom"}-AdminTokenArn`,
     });
   }
 }

@@ -31,6 +31,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _rooms: dict = {}
+_history: dict[str, list[dict]] = {}
 _lock = threading.Lock()
 
 # Dev-mode dump directory. When set (typically by ``dev_server.py``), every
@@ -119,6 +120,7 @@ def reset() -> None:
     """Clear all in-memory rooms. Tests call this in ``setup_method``."""
     with _lock:
         _rooms.clear()
+        _history.clear()
 
 
 def get_events(conversation_id: str, after: int = 0) -> list[dict]:
@@ -209,7 +211,41 @@ def append_events(
             _rooms[conversation_id] = new_row
             room = new_row
 
+        legacy_offset = len(room["events"])
         room["events"].extend(copy.deepcopy(normalized))
+        visible_history = []
+        for event in normalized:
+            if event.get("type") in {"tick", "lobby_created"}:
+                continue
+            history_event = copy.deepcopy(event)
+            visible_at = int(
+                history_event.pop(
+                    "visible_at", history_event.get("timestamp", 0)
+                ) or 0
+            )
+            authored_at = int(history_event.get("timestamp", 0) or 0)
+            history_event["timestamp"] = visible_at
+            if authored_at and authored_at != visible_at:
+                history_event["authored_at"] = authored_at
+            if history_event.get("role") == "ai":
+                history_event["ai_participant_id"] = (
+                    history_event.get("ai_participant_id")
+                    or history_event.get("session_id")
+                )
+                history_event.pop("session_id", None)
+            elif history_event.get("role") == "system":
+                history_event.pop("session_id", None)
+                history_event.pop("ai_participant_id", None)
+            visible_history.append(history_event)
+        if visible_history:
+            from chatroom_api.event_store import normalize_history_events
+
+            batch_id = f"legacy{legacy_offset:08d}"
+            _history.setdefault(conversation_id, []).extend(
+                normalize_history_events(
+                    conversation_id, visible_history, batch_id
+                )
+            )
         room["updated_at"] = now
         _maybe_dump(conversation_id, room)
 

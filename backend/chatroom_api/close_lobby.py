@@ -10,9 +10,8 @@ Implements the 5-step procedure in
    list is copied as-is. If empty, mark the lobby ``aborted`` and return.
 3. Compute ``ai_count`` per the configured strategy and generate that many
    AI participants with unique nicknames + avatars.
-4. Write the conversation row via ``db.append_events`` (whose underlying
-   ``put_item`` is conditional on ``attribute_not_exists(conversation_id)``,
-   making this step idempotent under racing closers).
+4. Transactionally create conversation metadata and participant-visible
+   history through the event store.
 5. Flip lobby ``status`` from ``closing`` → ``closed`` and stamp ``closed_at``.
 
 This module lives outside ``lobby.py`` so it can talk to *both* the lobby
@@ -22,13 +21,15 @@ keeping ``lobby.py`` focused on its DDB primitives.
 
 from __future__ import annotations
 
+import logging
 import random
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 from typing import Optional
 
 from chatroom_api import config
 from chatroom_api.constants import EMOJI_POOL
+from chatroom_api._providers import get_event_store_provider
 from chatroom_api.lobby import compute_ai_count
 from chatroom_api.settings import (
     is_single_human_single_ai_assistant_room,
@@ -36,6 +37,8 @@ from chatroom_api.settings import (
     normalize_persona_entries,
     resolve_runtime_setting,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Backend selection (mirrors the auth.py pattern).
@@ -51,19 +54,14 @@ def _get_lobby():
     return lobby
 
 
-def _get_db():
-    """Return the conversation-store module (real or mock) per ``USE_MOCK_DYNAMO``."""
-    if config.USE_MOCK_DYNAMO:
-        from chatroom_api import mock_dynamo
-        return mock_dynamo
-    from chatroom_api import dynamo
-    return dynamo
-
-
 def _get_rds():
     """Return the RDS module (real, mock, or management-API HTTP) per config."""
     from chatroom_api._providers import get_rds_provider
     return get_rds_provider()
+
+
+def _get_event_store():
+    return get_event_store_provider()
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +168,7 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
       call was a no-op.
     """
     lobby_mod = _get_lobby()
-    db = _get_db()
+    history_store = _get_event_store()
     rds_mod = _get_rds()
 
     # --- Step 1: flip status open -> closing.
@@ -274,7 +272,7 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
         used_nicknames.add(nickname)
         used_emojis.add(avatar["emojiText"])
         ai_participants.append({
-            "session_id": "ai_" + uuid4().hex[:8],
+            "ai_participant_id": "ai_" + uuid4().hex[:8],
             "nickname": nickname,
             "avatar": avatar,
             "role": "ai",
@@ -299,38 +297,14 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
     conversation_id = lobby["conversation_id"]
 
     now_iso = _now_iso()
-    # ``lobby_created`` audit event captures the lobby start timestamp on
-    # the conversation row for researcher debugging (how long did this
-    # cohort wait?). It's filtered out of /chat/messages just like ticks
-    # — admin can opt in via include_ticks=true if a future flag is added.
-    lobby_created_iso = lobby.get("created_at") or now_iso
-    lobby_created_ms = _iso_to_ms_safe(lobby_created_iso)
     events: list[dict] = [
         {
-            "type": "lobby_created",
-            "session_id": None,
-            "sender": "System",
-            "role": "system",
-            "ai_participant_id": None,
-            "content": "Lobby created",
-            "timestamp": lobby_created_ms,
-            "visible_at": lobby_created_ms,
-            "created_at": lobby_created_iso,
-            "lobby_id": lobby_id,
-            "target_human_count": lobby.get("target_human_count"),
-            "ai_join_strategy": lobby.get("ai_join_strategy"),
-            "ai_strategy_value": lobby.get("ai_strategy_value"),
-            "max_wait_seconds": lobby.get("max_wait_seconds"),
-        },
-        {
             "type": "system",
-            "session_id": None,
+            "subtype": "conversation_started",
             "sender": "System",
             "role": "system",
-            "ai_participant_id": None,
             "content": "Conversation started",
             "timestamp": now_ms,
-            "visible_at": now_ms,
             "created_at": now_iso,
         }
     ]
@@ -338,13 +312,11 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
         ts = now_ms + 1 + i  # space the join events 1ms apart
         events.append({
             "type": "system",
-            "session_id": p["session_id"],
+            "subtype": "participant_joined",
             "sender": "System",
             "role": "system",
-            "ai_participant_id": p["session_id"] if p.get("role") == "ai" else None,
             "content": f"{p['nickname']} joined",
             "timestamp": ts,
-            "visible_at": ts,
             "created_at": now_iso,
         })
 
@@ -352,16 +324,31 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
     # makes the very first heartbeat-driven tick eligible (any positive
     # ``now_ms - dedupe_window_ms`` threshold beats 0). ``started_at`` is the
     # ISO timestamp the tick handler compares against ``max_duration_seconds``.
-    db.append_events(
-        conversation_id,
-        chatroom_id,
+    creation_batch_id = uuid5(
+        NAMESPACE_URL, f"stimulize:conversation-create:{conversation_id}"
+    ).hex
+    history_store.create_conversation(
+        {
+            "conversation_id": conversation_id,
+            "chatroom_id": chatroom_id,
+            "chatroom_setting": chatroom_setting,
+            "participants": participants,
+            "status": "active",
+            "started_at": now_iso,
+            "last_tick_at": 0,
+            "ai_tick_state_by_participant_id": {},
+            "next_actionable_tick_at": 0,
+        },
         events,
-        chatroom_setting=chatroom_setting,
-        participants=participants,
-        status="active",
-        started_at=now_iso,
-        last_tick_at=0,
-        last_speak_at_by_session={},
+        creation_batch_id,
+    )
+    logger.info(
+        "lobby_closed conversation_id=%s lobby_id=%s humans=%s ais=%s wait_ms=%s",
+        conversation_id,
+        lobby_id,
+        len(humans),
+        len(ai_participants),
+        max(0, now_ms - _iso_to_ms_safe(lobby.get("created_at") or now_iso)),
     )
 
     # --- Step 5: closing -> closed; stamp closed_at.

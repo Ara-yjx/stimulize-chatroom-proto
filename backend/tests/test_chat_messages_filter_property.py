@@ -6,7 +6,8 @@ Validates: Correctness Properties §3.7 from
   For any conversation snapshot, any ``now`` and any ``after``, the
   returned events (without admin override) equal the set
   ``{ e : e.type != "tick" AND after < e.visible_at <= now }``,
-  ordered as the underlying events list.
+  ordered by canonical presentation timestamp, with old list order breaking
+  equal-timestamp ties during legacy normalization.
 
 We seed ``mock_dynamo`` with the snapshot, patch ``chat_mod._now_ms`` to
 return our chosen ``now``, and call ``handle_chat_messages`` without an
@@ -114,7 +115,7 @@ def test_chat_messages_filter_matches_specification(
     """Validates: Tasks 3.7 — /chat/messages filter correctness.
 
     Returned events == ``{ e : type != "tick" AND after < visible_at <= now }``,
-    in the same relative order as the seeded list.
+    in canonical timestamp order.
     """
     _setup_mocks()
 
@@ -146,12 +147,19 @@ def test_chat_messages_filter_matches_specification(
     assert status == 200, body
 
     # Compute expected set per the specification.
-    expected = [
-        e for e in events
-        if e.get("type") != "tick"
-        and after < int(e.get("visible_at", e.get("timestamp", 0)) or 0) <= now
-    ]
-    expected_contents = [e["content"] for e in expected]
+    expected = sorted(
+        (
+            (index, e)
+            for index, e in enumerate(events)
+            if e.get("type") != "tick"
+            and after < int(e.get("visible_at", e.get("timestamp", 0)) or 0) <= now
+        ),
+        key=lambda pair: (
+            int(pair[1].get("visible_at", pair[1].get("timestamp", 0)) or 0),
+            pair[0],
+        ),
+    )
+    expected_contents = [e["content"] for _, e in expected]
 
     actual_contents = [e["content"] for e in body["events"]]
 

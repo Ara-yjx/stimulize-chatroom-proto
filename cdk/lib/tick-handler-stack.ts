@@ -15,6 +15,9 @@ export interface TickHandlerStackProps extends StackProps {
   lobbyTable: dynamodb.ITable;
   jwtSecret: secretsmanager.ISecret;
   adminToken: secretsmanager.ISecret;
+  eventTable?: dynamodb.ITable;
+  functionName?: string;
+  useMockRds?: boolean;
 }
 
 /**
@@ -36,19 +39,22 @@ export class TickHandlerStack extends Stack {
   constructor(scope: Construct, id: string, props: TickHandlerStackProps) {
     super(scope, id, props);
 
-    const { conversationTable, lobbyTable, jwtSecret, adminToken } = props;
+    const { conversationTable, lobbyTable, jwtSecret, adminToken, eventTable } = props;
+    const useMockRds = props.useMockRds ?? false;
     const rdsHost = this.node.tryGetContext("rdsHost") as string;
     const rdsPort = this.node.tryGetContext("rdsPort") as string || "5432";
     const rdsDatabase = this.node.tryGetContext("rdsDatabase") as string || "postgres";
     const rdsSecretArn = this.node.tryGetContext("rdsSecretArn") as string;
-    const rdsSecret = secretsmanager.Secret.fromSecretCompleteArn(
-      this,
-      "TickHandlerRdsSecret",
-      rdsSecretArn,
-    );
+    const rdsSecret = useMockRds
+      ? undefined
+      : secretsmanager.Secret.fromSecretCompleteArn(
+          this,
+          "TickHandlerRdsSecret",
+          rdsSecretArn,
+        );
 
     this.lambdaFunction = new lambda.Function(this, "TickHandlerFunction", {
-      functionName: "chatroom-tick-handler",
+      functionName: props.functionName ?? "chatroom-tick-handler",
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "chatroom_api.tick_handler.handle_tick",
       code: backendPythonCode(),
@@ -59,16 +65,20 @@ export class TickHandlerStack extends Stack {
       timeout: Duration.seconds(60),
       environment: {
         DYNAMODB_TABLE: conversationTable.tableName,
+        ...(eventTable ? { DYNAMODB_EVENT_TABLE: eventTable.tableName } : {}),
+        EVENT_STORAGE_ENABLED: String(Boolean(eventTable)),
         LOBBY_TABLE: lobbyTable.tableName,
         JWT_SECRET_ARN: jwtSecret.secretArn,
         ADMIN_TOKEN_SECRET_ARN: adminToken.secretArn,
-        RDS_HOST: rdsHost,
-        RDS_PORT: rdsPort,
-        RDS_DATABASE: rdsDatabase,
-        RDS_SECRET_ARN: rdsSecret.secretArn,
+        ...(useMockRds ? {} : {
+          RDS_HOST: rdsHost,
+          RDS_PORT: rdsPort,
+          RDS_DATABASE: rdsDatabase,
+          RDS_SECRET_ARN: rdsSecret!.secretArn,
+        }),
         BEDROCK_REGION: "us-east-2",
         USE_MOCK_DYNAMO: "false",
-        USE_MOCK_RDS: "false",
+        USE_MOCK_RDS: String(useMockRds),
         USE_MOCK_LOBBY: "false",
         TICK_HANDLER_LOCAL: "false",
       },
@@ -79,6 +89,7 @@ export class TickHandlerStack extends Stack {
     // DynamoDB R/W on the conversation table (idempotency guard, status
     // flip, append events, last_speak_at_by_session updates).
     conversationTable.grantReadWriteData(this.lambdaFunction);
+    eventTable?.grantReadWriteData(this.lambdaFunction);
 
     // The handler doesn't write to lobby rows during tick processing, but
     // grant read so debugging utilities and shared helpers stay working.
@@ -97,6 +108,6 @@ export class TickHandlerStack extends Stack {
     // but kept symmetric with chatroom-api so shared helpers initialize cleanly.
     jwtSecret.grantRead(this.lambdaFunction);
     adminToken.grantRead(this.lambdaFunction);
-    rdsSecret.grantRead(this.lambdaFunction);
+    rdsSecret?.grantRead(this.lambdaFunction);
   }
 }

@@ -1,16 +1,4 @@
-"""Property tests for the ``/chat/messages`` admin tick-events gate.
-
-Validates: Correctness Properties §3.8 from
-``.kiro/specs/stimulize-chatroom-beta/tasks.md``:
-
-  Given any (admin_token, bearer, include_ticks_flag), tick events appear
-  in the response **iff**
-  ``bearer == admin_token AND include_ticks_flag == true AND
-  admin_token != ""``.
-
-The implementation in ``chat.py`` short-circuits when ``ADMIN_TOKEN`` is
-empty, so an empty configured token must never gate on the header.
-"""
+"""Tick diagnostics never enter participant-visible event storage."""
 
 from __future__ import annotations
 
@@ -105,22 +93,14 @@ def _seed_one_tick_one_message(now_ms: int = 1_000) -> None:
     bearer=st.sampled_from(_TOKEN_VALUES),
     include_ticks_flag=st.booleans(),
 )
-def test_admin_gate_iff_admin_token_and_bearer_and_flag(
+def test_tick_events_never_return_for_any_legacy_admin_parameters(
     admin_token: str,
     bearer: str,
     include_ticks_flag: bool,
 ) -> None:
-    """Validates: Tasks 3.8 — admin gate iff condition.
-
-    Tick events appear iff
-    ``admin_token != "" AND bearer == admin_token AND include_ticks_flag``.
-    """
+    """Legacy admin parameters cannot expose discarded tick diagnostics."""
     _setup_mocks()
     _seed_one_tick_one_message()
-
-    expected_visible = (
-        admin_token != "" and bearer == admin_token and include_ticks_flag
-    )
 
     query_params = {"include_ticks": "true" if include_ticks_flag else "false"}
     headers = {"X-Admin-Token": bearer}
@@ -139,14 +119,7 @@ def test_admin_gate_iff_admin_token_and_bearer_and_flag(
 
     has_tick = any(e["type"] == "tick" for e in body["events"])
 
-    assert has_tick == expected_visible, (
-        f"admin gate mismatch:\n"
-        f"  admin_token={admin_token!r}, bearer={bearer!r}, "
-        f"include_ticks_flag={include_ticks_flag!r}\n"
-        f"  expected ticks visible: {expected_visible}\n"
-        f"  actual ticks visible:   {has_tick}\n"
-        f"  events: {body['events']!r}"
-    )
+    assert not has_tick
 
     # The message event must always be present regardless of admin gate.
     has_message = any(e["type"] == "message" for e in body["events"])

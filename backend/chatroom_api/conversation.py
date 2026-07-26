@@ -8,6 +8,8 @@ tests in 3.6 rely on).
 
 from __future__ import annotations
 
+from chatroom_api.participants import event_author_id, participant_id
+
 
 def build_bedrock_messages(
     conv: dict, ai_session_id: str, now: int
@@ -60,15 +62,16 @@ def build_bedrock_messages(
 
     # Nickname fallback for events that didn't stamp ``sender``.
     participants_by_session = {
-        p["session_id"]: p
+        participant_id(p): p
         for p in (conv.get("participants") or [])
-        if "session_id" in p
+        if participant_id(p)
     }
 
     out: list[dict] = []
     for e in visible:
         # Step 2: pick role + text.
-        if e.get("session_id") == ai_session_id:
+        author_id = event_author_id(e)
+        if author_id == ai_session_id:
             role = "assistant"
             text = e.get("content", "")
         else:
@@ -76,7 +79,7 @@ def build_bedrock_messages(
             sender = e.get("sender")
             if not sender:
                 participant = participants_by_session.get(
-                    e.get("session_id"), {}
+                    author_id, {}
                 )
                 sender = participant.get("nickname", "Participant")
             text = f"[{sender}] {e.get('content', '')}"

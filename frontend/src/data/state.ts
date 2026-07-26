@@ -7,7 +7,7 @@ import type {
   LobbyState,
   SessionInfo,
 } from "./types";
-import { exchangeToken, sendMessage, pollMessages } from "./api";
+import { exchangeToken, fetchHistory, sendMessage, pollMessages } from "./api";
 const DEFAULT_API_BASE_URL = "https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod";
 
 // --- Callback types ---
@@ -30,7 +30,7 @@ export class ChatroomState {
   avatar: Avatar = { emojiText: "" };
   chatroomSetting: ChatroomSetting | null = null;
   chatHistory: ChatMessage[] = [];
-  lastTimestamp = 0;
+  liveCursor: string | null = null;
   conversationStatus: "active" | "ended" | "lobby" = "lobby";
 
   private _apiBaseUrl = "";
@@ -38,13 +38,16 @@ export class ChatroomState {
   private _timerInterval: ReturnType<typeof setInterval> | null = null;
   private _chatStartTime = 0;
   private _prefetchedEvents: ConversationEvent[] = [];
-  private _pendingEvents: Array<{ evt: ConversationEvent; timer: ReturnType<typeof setTimeout> }> = [];
+  private _historyBeforeCursor: string | null = null;
+  private _hasOlderHistory = false;
+  private _endNotified = false;
   private _initOptions: InitOptions | null = null;
   private _pollFailingSince: number | null = null;
   /** Tracks whether we've seen a lobby block in any poll response so far. */
   private _sawLobby = false;
   private _lobbyPollTimer: ReturnType<typeof setInterval> | null = null;
   private _seenRemoteMessageKeys = new Set<string>();
+  private _pendingOptimisticMessages: ChatMessage[] = [];
 
   // Callback registries
   private _onMessage: OnMessageCallback[] = [];
@@ -101,11 +104,15 @@ export class ChatroomState {
     this._initOptions = options;
     this._apiBaseUrl = (options.apiBaseUrl || DEFAULT_API_BASE_URL).replace(/\/+$/, "");
     this.chatHistory = [];
-    this.lastTimestamp = 0;
+    this.liveCursor = null;
     this.conversationStatus = "lobby";
     this._pollFailingSince = null;
     this._sawLobby = false;
     this._seenRemoteMessageKeys.clear();
+    this._pendingOptimisticMessages = [];
+    this._historyBeforeCursor = null;
+    this._hasOlderHistory = false;
+    this._endNotified = false;
 
     const resp = await exchangeToken(this._apiBaseUrl, options.chatroomId);
     this.token = resp.token;
@@ -130,9 +137,6 @@ export class ChatroomState {
   async prefetchEvents(): Promise<void> {
     try {
       const resp = await pollMessages(this._apiBaseUrl, this.token, 0);
-      if (resp.events) {
-        this._prefetchedEvents = resp.events;
-      }
       if (resp.conversation_status) {
         this.conversationStatus = resp.conversation_status;
       }
@@ -141,7 +145,16 @@ export class ChatroomState {
       if (resp.lobby) {
         this._sawLobby = true;
         this._onLobbyUpdate.forEach((cb) => cb(resp.lobby!));
+        return;
       }
+
+      // Start at the newest page. Resume support can then prepend older pages
+      // without replaying an unbounded conversation through the live endpoint.
+      const history = await fetchHistory(this._apiBaseUrl, this.token, null);
+      this._prefetchedEvents = history.events || [];
+      this.liveCursor = history.latest_cursor || null;
+      this._historyBeforeCursor = history.next_before || null;
+      this._hasOlderHistory = history.has_more;
     } catch {
       // Silently ignore — events will be picked up by regular polling
     }
@@ -153,6 +166,31 @@ export class ChatroomState {
       this._processEvent(evt);
     }
     this._prefetchedEvents = [];
+  }
+
+  hasOlderHistory(): boolean {
+    return this._hasOlderHistory;
+  }
+
+  async loadOlderHistory(): Promise<ChatMessage[]> {
+    if (!this._hasOlderHistory || !this._historyBeforeCursor) return [];
+    const page = await fetchHistory(
+      this._apiBaseUrl,
+      this.token,
+      this._historyBeforeCursor
+    );
+    this._historyBeforeCursor = page.next_before || null;
+    this._hasOlderHistory = page.has_more;
+
+    const messages: ChatMessage[] = [];
+    for (const event of page.events || []) {
+      const message = this._eventToMessage(event);
+      if (!message || this._isDuplicate(event)) continue;
+      this._rememberEvent(event);
+      messages.push(message);
+    }
+    if (messages.length) this.chatHistory.unshift(...messages);
+    return messages;
   }
 
   // --- Send message ---
@@ -168,11 +206,20 @@ export class ChatroomState {
       avatar: this.avatar,
     };
     this.chatHistory.push(userMsg);
+    this._pendingOptimisticMessages.push(userMsg);
     this._onMessage.forEach((cb) => cb(userMsg, true));
 
     try {
       await sendMessage(this._apiBaseUrl, this.token, text);
     } catch (err: any) {
+      // A definite client/auth/state rejection means the server did not append
+      // this event. Keep pending entries after network/5xx failures because the
+      // request may have committed before the response was lost.
+      if (err?.status && err.status < 500) {
+        this._pendingOptimisticMessages = this._pendingOptimisticMessages.filter(
+          (message) => message !== userMsg
+        );
+      }
       if (err?.status === 401) {
         this._onError.forEach((cb) => cb("Session expired. Please refresh."));
         return;
@@ -245,7 +292,7 @@ export class ChatroomState {
 
   private async _poll(): Promise<void> {
     try {
-      const resp = await pollMessages(this._apiBaseUrl, this.token, this.lastTimestamp);
+      const resp = await pollMessages(this._apiBaseUrl, this.token, this.liveCursor);
 
       // Poll success — clear reconnect state
       if (this._pollFailingSince !== null) {
@@ -262,18 +309,23 @@ export class ChatroomState {
         return;
       }
 
-      // Handle conversation status
-      if (resp.conversation_status === "ended" && this.conversationStatus !== "ended") {
+      if (resp.next_after) this.liveCursor = resp.next_after;
+
+      // Process visible events before deciding whether a soft-ended
+      // conversation has fully drained its prescheduled history.
+      if (resp.events) {
+        for (const evt of resp.events) this._processEvent(evt);
+      }
+
+      if (resp.conversation_status === "ended") {
         this.conversationStatus = "ended";
-        // Process any final events first
-        if (resp.events) {
-          for (const evt of resp.events) {
-            this._processEvent(evt);
-          }
+        const waitingForHistory = Boolean(resp.has_more || resp.next_pending_at);
+        if (!waitingForHistory && !this._endNotified) {
+          this._endNotified = true;
+          this._onConversationEnded.forEach((cb) => cb());
+          this.stopPolling();
+          this.stopTimer();
         }
-        this._onConversationEnded.forEach((cb) => cb());
-        this.stopPolling();
-        this.stopTimer();
         return;
       }
 
@@ -281,10 +333,6 @@ export class ChatroomState {
         this.conversationStatus = "active";
       }
 
-      if (!resp.events) return;
-      for (const evt of resp.events) {
-        this._processEvent(evt);
-      }
     } catch (err: any) {
       if (err?.status === 401) {
         this.stopPolling();
@@ -308,38 +356,68 @@ export class ChatroomState {
   }
 
   private _processEvent(evt: ConversationEvent): void {
-    // Skip own messages (already shown via optimistic UI)
-    if (evt.type === "message" && evt.session_id === this.sessionId) return;
-
-    // Advance the polling cursor by visible_at (matches the server's
-    // `?after` filter, which compares visible_at). Using `timestamp` here
-    // causes the same event to be re-delivered every poll until visible_at
-    // passes (typing delay window), producing duplicates in chatHistory.
-    const visibleAt = evt.visible_at ?? evt.timestamp;
-    if (visibleAt > this.lastTimestamp) {
-      this.lastTimestamp = visibleAt;
-    }
-
-    // visible_at scheduling: defer rendering if event isn't visible yet
-    const now = Date.now();
-    if (visibleAt > now) {
-      const delay = visibleAt - now;
-      const timer = setTimeout(() => {
-        this._pendingEvents = this._pendingEvents.filter((p) => p.timer !== timer);
-        this._renderEvent(evt);
-      }, delay);
-      this._pendingEvents.push({ evt, timer });
-      return;
-    }
+    // Only suppress the matching optimistic message. Older messages authored by
+    // this session still need to render when history is loaded or resumed.
+    if (this._consumeOptimisticMessage(evt)) return;
 
     this._renderEvent(evt);
   }
 
+  private _consumeOptimisticMessage(evt: ConversationEvent): boolean {
+    if (evt.type !== "message" || evt.session_id !== this.sessionId) return false;
+    const index = this._pendingOptimisticMessages.findIndex(
+      (message) => message.content === evt.content
+    );
+    if (index < 0) return false;
+
+    const [message] = this._pendingOptimisticMessages.splice(index, 1);
+    message.event_id = evt.event_id;
+    message.timestamp = evt.timestamp;
+    message.participant_id = evt.participant_id;
+    this._rememberEvent(evt);
+    return true;
+  }
+
+  private _eventKey(evt: ConversationEvent): string {
+    return evt.event_id || this._dedupeKey(evt.sender, evt.content, evt.timestamp, evt.role);
+  }
+
+  private _isDuplicate(evt: ConversationEvent): boolean {
+    return this._seenRemoteMessageKeys.has(this._eventKey(evt));
+  }
+
+  private _rememberEvent(evt: ConversationEvent): void {
+    this._seenRemoteMessageKeys.add(this._eventKey(evt));
+  }
+
+  private _eventToMessage(evt: ConversationEvent): ChatMessage | null {
+    if (evt.type === "error") {
+      return {
+        event_id: evt.event_id,
+        sender: "System",
+        content: evt.content,
+        role: "system",
+        timestamp: evt.timestamp,
+      };
+    }
+    return {
+      event_id: evt.event_id,
+      sender: evt.sender,
+      content: evt.content,
+      role: evt.type === "system" ? "system" : evt.role === "ai" ? "ai" : "user",
+      timestamp: evt.timestamp,
+      session_id: evt.session_id,
+      participant_id: evt.participant_id,
+      ai_participant_id: evt.ai_participant_id,
+      internal_name: evt.internal_name ?? null,
+      avatar: evt.avatar,
+    };
+  }
+
   private _renderEvent(evt: ConversationEvent): void {
     if (evt.type === "system") {
-      const systemKey = this._dedupeKey(evt.sender, evt.content, evt.timestamp, "system");
-      if (this._seenRemoteMessageKeys.has(systemKey)) return;
-      this._seenRemoteMessageKeys.add(systemKey);
+      if (this._isDuplicate(evt)) return;
+      this._rememberEvent(evt);
       const content = evt.content;
       let displayContent = content;
       if (evt.session_id === this.sessionId) {
@@ -348,6 +426,7 @@ export class ChatroomState {
           : content.replace(this.nickname, `${this.nickname} (you)`);
       }
       this.chatHistory.push({
+        event_id: evt.event_id,
         sender: evt.sender,
         content,
         role: "system",
@@ -355,10 +434,10 @@ export class ChatroomState {
       });
       this._onSystemEvent.forEach((cb) => cb(displayContent));
     } else if (evt.type === "error") {
-      const errorKey = this._dedupeKey("System", evt.content, evt.timestamp, "system");
-      if (this._seenRemoteMessageKeys.has(errorKey)) return;
-      this._seenRemoteMessageKeys.add(errorKey);
+      if (this._isDuplicate(evt)) return;
+      this._rememberEvent(evt);
       this.chatHistory.push({
+        event_id: evt.event_id,
         sender: "System",
         content: evt.content,
         role: "system",
@@ -366,20 +445,20 @@ export class ChatroomState {
       });
       this._onError.forEach((cb) => cb(evt.content));
     } else {
-      // Rarely, the client can receive the same remote message twice across
-      // polling/reconnect edges. Deduping on sender/content/timestamp/role is
-      // the smallest client-only fix that suppresses the duplicate bubble
-      // without changing the backend event schema.
       const messageRole = evt.role === "ai" ? "ai" : "user";
-      const messageKey = this._dedupeKey(evt.sender, evt.content, evt.timestamp, messageRole);
-      if (this._seenRemoteMessageKeys.has(messageKey)) return;
-      this._seenRemoteMessageKeys.add(messageKey);
+      // Event IDs are authoritative. The legacy tuple remains a fallback
+      // while cached beta widgets and old rows coexist during migration.
+      if (this._isDuplicate(evt)) return;
+      this._rememberEvent(evt);
       const msg: ChatMessage = {
+        event_id: evt.event_id,
         sender: evt.sender,
         content: evt.content,
         role: messageRole,
         timestamp: evt.timestamp,
         session_id: evt.session_id,
+        participant_id: evt.participant_id,
+        ai_participant_id: evt.ai_participant_id,
         internal_name: evt.internal_name ?? null,
         avatar: evt.avatar,
       };
@@ -418,10 +497,6 @@ export class ChatroomState {
       this._lobbyPollTimer = null;
     }
     this.stopTimer();
-    for (const p of this._pendingEvents) {
-      clearTimeout(p.timer);
-    }
-    this._pendingEvents = [];
   }
 
   // --- History accessors ---

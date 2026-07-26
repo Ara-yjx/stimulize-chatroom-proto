@@ -40,3 +40,17 @@ def get_rds_provider():
         return management_api_rds
     from chatroom_api import rds
     return rds
+
+
+def get_event_store_provider():
+    """Return the configured conversation-history adapter."""
+    if config.USE_MOCK_DYNAMO:
+        from chatroom_api import mock_event_store
+        return mock_event_store
+    if not config.EVENT_STORAGE_ENABLED:
+        # Existing stacks do not receive the new table until the migration
+        # cutover. Keep their embedded-history behavior deployable meanwhile.
+        from chatroom_api import legacy_event_store
+        return legacy_event_store
+    from chatroom_api import event_store
+    return event_store

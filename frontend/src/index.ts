@@ -197,9 +197,27 @@ export async function init(options: InitOptions): Promise<void> {
   }
 
   // 5. Render chatroom UI
-  renderChatroom(element, (text: string) => {
-    state!.send(text);
-  });
+  renderChatroom(
+    element,
+    (text: string) => {
+      state!.send(text);
+    },
+    async () => {
+      const messages = await state!.loadOlderHistory();
+      writeToED(state!.getHistory(), state!.getHistoryText());
+      return messages.map((message) => ({
+        ...message,
+        isSelf: message.session_id === state!.sessionId,
+        sender: state!.getDisplaySender(
+          message.sender,
+          message.session_id === state!.sessionId
+        ),
+        avatar: state!.chatroomSetting?.show_avatars === false
+          ? undefined
+          : message.avatar,
+      }));
+    }
+  );
 
   // 6. Replay prefetched events into the UI
   state.replayPrefetchedEvents();

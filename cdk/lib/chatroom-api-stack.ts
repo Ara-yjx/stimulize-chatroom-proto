@@ -19,6 +19,10 @@ export interface ChatroomApiStackProps extends StackProps {
   jwtSecret: secretsmanager.ISecret;
   adminToken: secretsmanager.ISecret;
   tickHandler: lambda.IFunction;
+  eventTable?: dynamodb.ITable;
+  useMockRds?: boolean;
+  apiName?: string;
+  functionName?: string;
 }
 
 export class ChatroomApiStack extends Stack {
@@ -28,7 +32,8 @@ export class ChatroomApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ChatroomApiStackProps) {
     super(scope, id, props);
 
-    const { table, lobbyTable, jwtSecret, adminToken, tickHandler } = props;
+    const { table, lobbyTable, jwtSecret, adminToken, tickHandler, eventTable } = props;
+    const useMockRds = props.useMockRds ?? false;
 
     // --------------- Context params ---------------
     const rdsHost = this.node.tryGetContext("rdsHost") as string;
@@ -39,13 +44,16 @@ export class ChatroomApiStack extends Stack {
     const enableCustomDomain = this.node.tryGetContext("enableCustomDomain") === "true";
 
     // --------------- RDS direct connection (beta) ---------------
-    const rdsSecret = secretsmanager.Secret.fromSecretCompleteArn(
-      this, "RdsSecret", rdsSecretArn
-    );
+    const rdsSecret = useMockRds
+      ? undefined
+      : secretsmanager.Secret.fromSecretCompleteArn(
+          this, "RdsSecret", rdsSecretArn
+        );
 
     // --------------- Lambda ---------------
 
     this.lambdaFunction = new lambda.Function(this, "ChatroomApiFunction", {
+      functionName: props.functionName,
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "chatroom_api.handler.lambda_handler",
       code: backendPythonCode(),
@@ -53,17 +61,21 @@ export class ChatroomApiStack extends Stack {
       timeout: Duration.seconds(30),
       environment: {
         DYNAMODB_TABLE: table.tableName,
+        ...(eventTable ? { DYNAMODB_EVENT_TABLE: eventTable.tableName } : {}),
+        EVENT_STORAGE_ENABLED: String(Boolean(eventTable)),
         LOBBY_TABLE: lobbyTable.tableName,
         JWT_SECRET_ARN: jwtSecret.secretArn,
         ADMIN_TOKEN_SECRET_ARN: adminToken.secretArn,
         TICK_HANDLER_LAMBDA: tickHandler.functionName,
-        RDS_HOST: rdsHost,
-        RDS_PORT: rdsPort,
-        RDS_DATABASE: rdsDatabase,
-        RDS_SECRET_ARN: rdsSecret.secretArn,
+        ...(useMockRds ? {} : {
+          RDS_HOST: rdsHost,
+          RDS_PORT: rdsPort,
+          RDS_DATABASE: rdsDatabase,
+          RDS_SECRET_ARN: rdsSecret!.secretArn,
+        }),
         BEDROCK_REGION: "us-east-2",
         USE_MOCK_DYNAMO: "false",
-        USE_MOCK_RDS: "false",
+        USE_MOCK_RDS: String(useMockRds),
         USE_MOCK_LOBBY: "false",
         // MGMT_API_URL / MGMT_API_TOKEN_SECRET_ARN are intentionally NOT set:
         // per docs/api-management.yml the chatroom Lambda doesn't talk to the
@@ -77,6 +89,7 @@ export class ChatroomApiStack extends Stack {
 
     // DynamoDB read/write — conversation table
     table.grantReadWriteData(this.lambdaFunction);
+    eventTable?.grantReadWriteData(this.lambdaFunction);
 
     // DynamoDB read/write — lobby table (open lobby query, atomic join,
     // close_lobby, last_seen_at heartbeat updates).
@@ -97,7 +110,7 @@ export class ChatroomApiStack extends Stack {
     adminToken.grantRead(this.lambdaFunction);
 
     // Secrets Manager read (RDS credentials)
-    rdsSecret.grantRead(this.lambdaFunction);
+    rdsSecret?.grantRead(this.lambdaFunction);
 
     // Only /chat/send for the single-human, single-AI, non-mimic preset uses
     // this direct async wake-up. The heartbeat remains the fallback scheduler.
@@ -106,7 +119,7 @@ export class ChatroomApiStack extends Stack {
     // --------------- API Gateway ---------------
 
     this.api = new apigw.RestApi(this, "ChatroomApi", {
-      restApiName: "Chatroom API",
+      restApiName: props.apiName ?? "Chatroom API",
       defaultCorsPreflightOptions: {
         allowOrigins: apigw.Cors.ALL_ORIGINS,
         allowMethods: apigw.Cors.ALL_METHODS,
@@ -126,6 +139,9 @@ export class ChatroomApiStack extends Stack {
 
     // GET /chat/messages
     chatResource.addResource("messages").addMethod("GET", integration);
+
+    // GET /chat/history
+    chatResource.addResource("history").addMethod("GET", integration);
 
     // --------------- Custom domain ---------------
 
@@ -154,9 +170,11 @@ export class ChatroomApiStack extends Stack {
       description: "API Gateway URL",
     });
 
-    new CfnOutput(this, "RdsHost", {
-      value: rdsHost,
-      description: "Direct RDS hostname configured for Lambda",
-    });
+    if (!useMockRds) {
+      new CfnOutput(this, "RdsHost", {
+        value: rdsHost,
+        description: "Direct RDS hostname configured for Lambda",
+      });
+    }
   }
 }

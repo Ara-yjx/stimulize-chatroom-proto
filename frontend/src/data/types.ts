@@ -6,23 +6,29 @@ export interface Avatar {
 }
 
 export interface ChatMessage {
+  event_id?: string;
   sender: string;
   content: string;
   role: "user" | "ai" | "system";
   timestamp: number;
   session_id?: string;
+  participant_id?: string;
+  ai_participant_id?: string;
   internal_name?: string | null;
   avatar?: Avatar;
 }
 
 export interface ConversationEvent {
+  event_id?: string;
   type: "message" | "system" | "error";
-  session_id: string;
+  subtype?: string;
+  session_id?: string;
+  participant_id?: string;
+  ai_participant_id?: string;
   sender: string;
   role: "human" | "ai" | "system";
   content: string;
   timestamp: number;
-  visible_at?: number;
   avatar?: Avatar;
   internal_name?: string | null;
 }
@@ -93,6 +99,16 @@ export interface SendMessageResponse {
 
 export interface PollMessagesResponse {
   events: ConversationEvent[];
+  next_after?: string | null;
+  has_more?: boolean;
+  next_pending_at?: number | null;
   lobby?: LobbyState;
   conversation_status?: "active" | "ended";
+}
+
+export interface HistoryPageResponse {
+  events: ConversationEvent[];
+  next_before?: string | null;
+  latest_cursor?: string | null;
+  has_more: boolean;
 }

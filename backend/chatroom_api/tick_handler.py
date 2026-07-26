@@ -10,24 +10,26 @@ Implements the 5-step procedure in
 2. **Max-duration check.** If ``now > started_at + max_duration_seconds``,
    flip ``status="ended"`` and append a system "conversation ended" event.
 3. **Gate.** Pure ``run_gate(conv, now)`` decides whether some AI should
-   speak. On skip, append a ``tick`` event recording the reason and exit.
+   speak. Skips are written to structured logs, not conversation history.
 4. **Bedrock.** Build the per-AI system prompt (SCAFFOLD + TOPIC + PERSONA
    + CONVERSATION_CONTEXT) plus the Bedrock messages array, then call
    ``invoke_speak_tool`` (which reuses the shared retry + error
    classification in ``bedrock_client.py``).
-5. **Append tick + messages.** Stack typing delays to compute ``visible_at``
-   for each AI bubble; record one ``tick`` event plus the message events;
-   bump ``last_speak_at_by_session`` on a non-empty turn.
+5. **Persist result.** Stack presentation timestamps, write visible messages
+   to the event table, and update compact per-AI tick state.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
 from chatroom_api import config
+from chatroom_api._providers import get_event_store_provider
 from chatroom_api.bedrock_client import (
     BedrockInferenceError,
     invoke_speak_tool,
@@ -40,6 +42,8 @@ from chatroom_api.constants import (
 from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.delays import compute_visible_at, pick_delays_ms
 from chatroom_api.gate import run_gate
+from chatroom_api.event_store import ConditionalWriteFailed
+from chatroom_api.participants import participant_id
 from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
 from chatroom_api.settings import (
     derive_runtime_mode,
@@ -123,6 +127,36 @@ def _get_rds():
     return get_rds_provider()
 
 
+def _get_event_store():
+    return get_event_store_provider()
+
+
+def _log_tick(conversation_id: str, status: str, **fields) -> None:
+    """Emit redacted structured diagnostics; never include message content."""
+    logger.info(
+        "tick_decision %s",
+        json.dumps(
+            {
+                "version": 1,
+                "conversation_id": conversation_id,
+                "status": status,
+                **{key: value for key, value in fields.items() if value is not None},
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    )
+
+
+def _next_actionable_from_states(states: dict, default: int) -> int:
+    values = [
+        int(state.get("next_actionable_at", 0) or 0)
+        for state in states.values()
+        if int(state.get("next_actionable_at", 0) or 0) > 0
+    ]
+    return min(values) if values else int(default)
+
+
 # ---------------------------------------------------------------------------
 # Time helpers.
 # ---------------------------------------------------------------------------
@@ -147,52 +181,6 @@ def _iso_to_ms(iso: str) -> int:
         )
     except (ValueError, TypeError):
         return 0
-
-
-# ---------------------------------------------------------------------------
-# Event factories.
-# ---------------------------------------------------------------------------
-
-
-def _make_tick_event(
-    now_ms: int,
-    *,
-    chosen_session_id: Optional[str] = None,
-    gate_decision: str = "skip",
-    skip_reason: Optional[str] = None,
-    ai_decision: Optional[str] = None,
-    bedrock_invoked: bool = False,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    cache_read_input_tokens: int = 0,
-    cache_write_input_tokens: int = 0,
-    error: Optional[str] = None,
-) -> dict:
-    """Build a ``type="tick"`` event for the conversation audit trail.
-
-    Tick events are filtered out by ``/chat/messages`` (see task 3.4) — they
-    exist solely for researcher-facing audit via ``?include_ticks=true``.
-    """
-    return {
-        "type": "tick",
-        "session_id": None,
-        "sender": "System",
-        "role": "system",
-        "content": "",  # tick events don't render to users
-        "timestamp": now_ms,
-        "visible_at": now_ms,
-        "created_at": _now_iso(),
-        "chosen_session_id": chosen_session_id,
-        "gate_decision": gate_decision,
-        "skip_reason": skip_reason,
-        "ai_decision": ai_decision,
-        "bedrock_invoked": bedrock_invoked,
-        "input_tokens": int(input_tokens),
-        "output_tokens": int(output_tokens),
-        "cache_read_input_tokens": int(cache_read_input_tokens),
-        "cache_write_input_tokens": int(cache_write_input_tokens),
-        "error": error,
-    }
 
 
 def _utc_iso_from_ms(value_ms: int) -> str:
@@ -659,6 +647,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         return None
 
     db = _get_db()
+    history_store = _get_event_store()
     rds = _get_rds()
     now_ms = _now_ms()
 
@@ -676,6 +665,14 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
 
     chatroom_id = conv.get("chatroom_id")
     chatroom_setting = conv.get("chatroom_setting") or {}
+    visible_history = history_store.query_prompt_events(conversation_id, now_ms)
+    runtime_conv = {**conv, "events": visible_history}
+    states = dict(conv.get("ai_tick_state_by_participant_id") or {})
+    legacy_last_speak = dict(conv.get("last_speak_at_by_session") or {})
+    for ai_id, state in states.items():
+        if state.get("last_spoke_at") is not None:
+            legacy_last_speak[ai_id] = state["last_spoke_at"]
+    runtime_conv["last_speak_at_by_session"] = legacy_last_speak
 
     # If the conversation already ended, do not tick further. This guards
     # against a slow heartbeat that's still seeing the row in ``status-index``
@@ -689,21 +686,25 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     if max_duration and started_at:
         started_ms = _iso_to_ms(started_at)
         if started_ms and now_ms > started_ms + int(max_duration) * 1000:
-            db.update_status(conversation_id, "ended")
-            db.append_events(
-                conversation_id,
-                chatroom_id,
-                [{
+            try:
+                history_store.append_history_batch(
+                    conversation_id,
+                    [{
                     "type": "system",
-                    "session_id": None,
+                    "subtype": "conversation_ended",
                     "sender": "System",
                     "role": "system",
                     "content": "This conversation has ended.",
                     "timestamp": now_ms,
-                    "visible_at": now_ms,
                     "created_at": _now_iso(),
-                }],
-            )
+                    }],
+                    uuid4().hex,
+                    metadata_updates={"status": "ended"},
+                    expected_status="active",
+                )
+            except ConditionalWriteFailed:
+                return {"status": "already_ended"}
+            _log_tick(conversation_id, "ended")
             return {"status": "ended"}
 
     # --- Step 3: gate. -----------------------------------------------------
@@ -711,25 +712,17 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     # message. Skip only the generic silence window for that case; every other
     # room keeps the normal gate unchanged.
     require_response = _requires_response_after_human(
-        conv,
+        runtime_conv,
         chatroom_setting,
         now_ms,
     )
     decision = run_gate(
-        conv,
+        runtime_conv,
         now_ms,
         min_silence_ms=0 if require_response else MIN_SILENCE_MS,
     )
     if decision.skip:
-        db.append_events(
-            conversation_id,
-            chatroom_id,
-            [_make_tick_event(
-                now_ms,
-                gate_decision="skip",
-                skip_reason=decision.reason,
-            )],
-        )
+        _log_tick(conversation_id, "skipped", reason=decision.reason)
         return {"status": "skipped", "reason": decision.reason}
 
     candidate_session_id = decision.candidate_session_id
@@ -738,7 +731,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     candidate_participant = next(
         (
             p for p in conv.get("participants", []) or []
-            if p.get("session_id") == candidate_session_id
+            if participant_id(p) == candidate_session_id
         ),
         None,
     )
@@ -746,18 +739,20 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
 
     # --- Step 4: Bedrock with the speak tool. ------------------------------
     mode = derive_runtime_mode(chatroom_setting)
-    history_block = _render_history_block(conv, now_ms)
+    history_block = _render_history_block(runtime_conv, now_ms)
     participant_nicknames = [
         p.get("nickname") for p in conv.get("participants", []) or []
         if p.get("nickname")
     ]
     idle_follow_up = _requires_idle_follow_up(
-        conv,
+        runtime_conv,
         chatroom_setting,
         now_ms,
     )
 
-    bedrock_messages = build_bedrock_messages(conv, candidate_session_id, now_ms)
+    bedrock_messages = build_bedrock_messages(
+        runtime_conv, candidate_session_id, now_ms
+    )
     model_id = (
         (candidate_participant or {}).get("model_id")
         or chatroom_setting.get("model_id")
@@ -814,32 +809,43 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
             require_message=require_response or idle_follow_up,
         )
     except BedrockInferenceError as err:
-        # Fatal Bedrock error: append one tick + one system event (so the
-        # widget surfaces "Chatroom server error: ..."). Conversation
-        # continues — the next tick still fires.
-        db.append_events(
+        tick_state = {
+            **states.get(candidate_session_id, {}),
+            "last_completed_tick_id": uuid4().hex,
+            "last_evaluated_at": now_ms,
+            "last_result": "error",
+            "observed_history_cursor": (
+                visible_history[-1].get("event_key") if visible_history else None
+            ),
+            "consecutive_silent_count": 0,
+            "next_actionable_at": now_ms,
+        }
+        states[candidate_session_id] = tick_state
+        history_store.append_history_batch(
             conversation_id,
-            chatroom_id,
-            [
-                _make_tick_event(
-                    now_ms,
-                    chosen_session_id=candidate_session_id,
-                    gate_decision="consider",
-                    ai_decision=None,
-                    bedrock_invoked=True,
-                    error=err.error_type,
-                ),
-                {
+            [{
                     "type": "system",
-                    "session_id": None,
+                    "subtype": "inference_error",
                     "sender": "System",
                     "role": "system",
                     "content": f"Chatroom server error: {err.error_type}",
                     "timestamp": now_ms,
-                    "visible_at": now_ms,
                     "created_at": _now_iso(),
-                },
-            ],
+            }],
+            uuid4().hex,
+            metadata_updates={
+                "ai_tick_state_by_participant_id": states,
+                "next_actionable_tick_at": _next_actionable_from_states(
+                    states, now_ms
+                ),
+            },
+            expected_status="active",
+        )
+        _log_tick(
+            conversation_id,
+            "bedrock_error",
+            ai_participant_id=candidate_session_id,
+            error=err.error_type,
         )
         return {"status": "bedrock_error", "error_type": err.error_type}
 
@@ -898,18 +904,9 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     except Exception as usage_exc:
         logger.warning("tick: usage write failed for conversation %s: %s", conversation_id, usage_exc)
 
-    # --- Step 5: append tick + AI messages with stacked visible_at. --------
-    new_events: list[dict] = [_make_tick_event(
-        now_ms,
-        chosen_session_id=candidate_session_id,
-        gate_decision="consider",
-        ai_decision="speak" if messages else "silent",
-        bedrock_invoked=True,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_input_tokens=cache_read_input_tokens,
-        cache_write_input_tokens=cache_write_input_tokens,
-    )]
+    # --- Step 5: persist visible output and compact tick projection. -------
+    new_events: list[dict] = []
+    visible_ats: list[int] = []
 
     if messages:
         if require_response or idle_follow_up:
@@ -922,23 +919,67 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         for text, visible_at in zip(messages, visible_ats):
             new_events.append({
                 "type": "message",
-                "session_id": candidate_session_id,
                 "sender": candidate_nickname,
                 "role": "ai",
                 "ai_participant_id": candidate_session_id,
                 "internal_name": internal_name,
                 "content": text,
-                "timestamp": now_ms,
-                "visible_at": visible_at,
+                "timestamp": visible_at,
+                **({"authored_at": now_ms} if visible_at != now_ms else {}),
                 "created_at": _now_iso(),
                 **({"message_kind": "idle_follow_up"} if idle_follow_up else {}),
                 **({"avatar": avatar} if avatar else {}),
             })
 
-    db.append_events(conversation_id, chatroom_id, new_events)
+    prior_state = states.get(candidate_session_id, {})
+    final_visible_at = max(visible_ats) if visible_ats else now_ms
+    tick_state = {
+        **prior_state,
+        "last_completed_tick_id": uuid4().hex,
+        "last_evaluated_at": now_ms,
+        "last_result": "spoke" if messages else "silent",
+        "observed_history_cursor": (
+            visible_history[-1].get("event_key") if visible_history else None
+        ),
+        "consecutive_silent_count": (
+            0
+            if messages
+            else int(prior_state.get("consecutive_silent_count", 0) or 0) + 1
+        ),
+        "next_actionable_at": final_visible_at,
+        **({"last_spoke_at": final_visible_at} if messages else {}),
+    }
+    states[candidate_session_id] = tick_state
+    metadata_updates = {
+        "ai_tick_state_by_participant_id": states,
+        "next_actionable_tick_at": _next_actionable_from_states(states, now_ms),
+    }
+    if new_events:
+        history_store.append_history_batch(
+            conversation_id,
+            new_events,
+            uuid4().hex,
+            metadata_updates=metadata_updates,
+            expected_status="active",
+        )
+    else:
+        history_store.update_tick_projection(
+            conversation_id,
+            candidate_session_id,
+            tick_state,
+            expected_status="active",
+            next_actionable_tick_at=_next_actionable_from_states(states, now_ms),
+        )
 
-    if messages:
-        db.update_last_speak_at(conversation_id, candidate_session_id, now_ms)
+    _log_tick(
+        conversation_id,
+        "spoke" if messages else "silent",
+        ai_participant_id=candidate_session_id,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
+    )
 
     return {
         "status": "spoke" if messages else "silent",

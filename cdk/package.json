@@ -6,6 +6,8 @@
     "build": "tsc",
     "cdk": "cdk",
     "synth": "cdk synth",
+    "synth:event-dev": "cdk -a 'npx ts-node --prefer-ts-exts bin/event-storage-dev.ts' synth",
+    "deploy:event-dev": "cdk -a 'npx ts-node --prefer-ts-exts bin/event-storage-dev.ts' deploy --all",
     "deploy": "cdk deploy --all",
     "test": "jest"
   },

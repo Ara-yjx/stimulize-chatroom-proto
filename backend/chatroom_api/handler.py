@@ -100,6 +100,10 @@ def lambda_handler(event: dict, context) -> dict:
                     return _response(410, {"error": "lobby aborted"})
                 return _response(status, resp)
 
+            if http_method == "GET" and path == "/chat/history":
+                status, resp = chat.handle_chat_history(query_params, claims)
+                return _response(status, resp)
+
         # --- fallback ---
         return _response(404, {"error": "not found"})
 

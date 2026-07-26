@@ -1,12 +1,11 @@
-"""Tests for chatroom_api.chat — beta /chat/send and /chat/messages.
+"""Tests for chatroom_api.chat send, live polling, and history paging.
 
 Per beta tasks 3.3, 3.4, 3.5:
 - ``/chat/send`` never invokes Bedrock directly; it appends the human's
   message event and returns the same shape as ``/chat/messages``. Only the
   single-human, single-AI, non-mimic preset wakes the tick handler directly.
-- ``/chat/messages`` filters by ``visible_at <= now`` and ``type != tick``;
-  surfaces a ``lobby`` block while the conversation row is missing; the
-  admin-token gate controls ``?include_ticks=true``.
+- ``/chat/messages`` returns available history and surfaces a ``lobby`` block
+  while the conversation row is missing.
 - Aborted lobbies bubble up as ``LobbyAbortedException`` (mapped to 410 by
   ``handler.py``).
 """
@@ -25,6 +24,7 @@ from chatroom_api import (
     mock_lobby,
 )
 from chatroom_api.errors import LobbyAbortedException
+from chatroom_api.cursors import encode_cursor, make_event_key
 
 
 HUMAN_SESSION = "sess_human_1"
@@ -94,7 +94,7 @@ class TestHandleChatSend:
 
         assert status == 200, body
         assert "events" in body
-        # The single appended event is the human message; visible_at == ts.
+        # The single appended event is the canonical human message.
         assert len(body["events"]) == 1
         evt = body["events"][0]
         assert evt["type"] == "message"
@@ -102,7 +102,8 @@ class TestHandleChatSend:
         assert evt["role"] == "human"
         assert evt["content"] == "hello"
         assert evt["timestamp"] == 1_000_000
-        assert evt["visible_at"] == 1_000_000
+        assert "visible_at" not in evt
+        assert evt["event_id"]
         assert evt["avatar"] == {"emojiText": "🐱"}
 
         # The store actually has the new event.
@@ -234,6 +235,22 @@ class TestHandleChatMessages:
     def setup_method(self) -> None:
         _setup_mocks()
 
+    def test_ended_conversation_reports_future_scheduled_history(self) -> None:
+        _seed_active_conversation(
+            status="ended",
+            events=[
+                {"type": "message", "role": "human", "session_id": HUMAN_SESSION, "sender": "Alice", "content": "now", "timestamp": 100},
+                {"type": "message", "role": "ai", "session_id": "ai_abc", "sender": "Sam", "content": "later", "timestamp": 5000},
+            ],
+        )
+        with patch.object(chat_mod, "_now_ms", return_value=1000):
+            status, body = chat_mod.handle_chat_messages({"after": "0"}, CLAIMS)
+
+        assert status == 200
+        assert [event["content"] for event in body["events"]] == ["now"]
+        assert body["conversation_status"] == "ended"
+        assert body["next_pending_at"] == 5000
+
     def test_returns_visible_events_with_avatar_and_status(self) -> None:
         # ``visible_at = 200`` is in the past; ``visible_at = 5000`` is pending.
         _seed_active_conversation(
@@ -306,7 +323,7 @@ class TestHandleChatMessages:
         assert len(body["events"]) == 1
         assert body["events"][0]["sender"] == "Alice"
 
-    def test_admin_token_enables_tick_events(self) -> None:
+    def test_tick_events_are_never_returned_from_history(self) -> None:
         _seed_active_conversation(
             events=[
                 {
@@ -337,9 +354,7 @@ class TestHandleChatMessages:
 
         assert status == 200
         ticks = [e for e in body["events"] if e["type"] == "tick"]
-        assert len(ticks) == 1
-        assert ticks[0]["gate_decision"] == "skip"
-        assert ticks[0]["skip_reason"] == "min_silence_not_elapsed"
+        assert ticks == []
 
     def test_admin_token_mismatch_strips_tick_events(self) -> None:
         _seed_active_conversation(
@@ -431,3 +446,43 @@ class TestHandleChatMessages:
     def test_no_lobby_no_conversation_returns_404(self) -> None:
         status, body = chat_mod.handle_chat_messages({}, CLAIMS)
         assert status == 404
+
+
+class TestHandleChatHistory:
+    def setup_method(self) -> None:
+        _setup_mocks()
+
+    def test_returns_newest_page_in_display_order(self) -> None:
+        _seed_active_conversation(events=[
+            {
+                "type": "message",
+                "role": "human",
+                "session_id": HUMAN_SESSION,
+                "sender": "Alice",
+                "content": str(index),
+                "timestamp": index,
+            }
+            for index in range(1, 5)
+        ])
+        with patch.object(chat_mod, "_now_ms", return_value=10):
+            status, body = chat_mod.handle_chat_history({"limit": "2"}, CLAIMS)
+
+        assert status == 200
+        assert [event["content"] for event in body["events"]] == ["3", "4"]
+        assert body["has_more"] is True
+        assert body["next_before"]
+        assert body["latest_cursor"]
+
+    def test_rejects_cross_conversation_cursor(self) -> None:
+        _seed_active_conversation()
+        other_cursor = encode_cursor(
+            "conv_other",
+            make_event_key(1, "batch", 0),
+        )
+        status, body = chat_mod.handle_chat_history(
+            {"before": other_cursor},
+            CLAIMS,
+        )
+
+        assert status == 400
+        assert body == {"error": "invalid_cursor"}

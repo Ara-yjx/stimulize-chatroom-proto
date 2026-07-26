@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
 from chatroom_api.constants import MIN_SILENCE_MS, SAME_AI_COOLDOWN_MS
+from chatroom_api.participants import event_author_id, participant_id
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ def _ai_last_batch_max_visible_at(
     for event in reversed(events):
         if event.get("type") != "message":
             continue
-        if event.get("session_id") != session_id:
+        if event_author_id(event) != session_id:
             continue
         ts = int(event.get("timestamp", 0) or 0)
         if last_ts is None:
@@ -121,9 +122,9 @@ def run_gate(
     # 3. same AI just spoke
     last_msg = _last_message_event(visible)
     if last_msg is not None:
-        sender_session_id = last_msg.get("session_id")
+        sender_session_id = event_author_id(last_msg)
         sender = next(
-            (p for p in participants if p.get("session_id") == sender_session_id),
+            (p for p in participants if participant_id(p) == sender_session_id),
             None,
         )
         if sender is not None and sender.get("role") == "ai":
@@ -140,7 +141,12 @@ def run_gate(
     last_speak_map = conv.get("last_speak_at_by_session", {}) or {}
     candidates = []
     for ai in ai_participants:
-        session_id = ai.get("session_id")
+        session_id = participant_id(ai)
+        tick_state = (conv.get("ai_tick_state_by_participant_id") or {}).get(
+            session_id, {}
+        )
+        if int(tick_state.get("next_actionable_at", 0) or 0) > now:
+            continue
         last_batch_max = _ai_last_batch_max_visible_at(events, session_id)
         if last_batch_max is not None and last_batch_max > now:
             continue
@@ -151,13 +157,13 @@ def run_gate(
 
     # 6. fairness: smallest last_speak_at, tie-break by session_id ascending.
     def _sort_key(ai: Dict[str, Any]):
-        session_id = ai.get("session_id") or ""
+        session_id = participant_id(ai) or ""
         return (int(last_speak_map.get(session_id, 0) or 0), session_id)
 
     candidates.sort(key=_sort_key)
     chosen = candidates[0]
     return Decision(
         skip=False,
-        candidate_session_id=chosen.get("session_id"),
+        candidate_session_id=participant_id(chosen),
         candidate_nickname=chosen.get("nickname"),
     )

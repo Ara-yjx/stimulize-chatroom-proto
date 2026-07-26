@@ -14,6 +14,8 @@ import { backendPythonCode } from "./backend-code";
 export interface TickHeartbeatStackProps extends StackProps {
   tickHandler: lambda.IFunction;
   conversationTable: dynamodb.ITable;
+  functionName?: string;
+  intervalSeconds?: number;
 }
 
 /**
@@ -34,7 +36,7 @@ export class TickHeartbeatStack extends Stack {
     const { tickHandler, conversationTable } = props;
 
     this.lambdaFunction = new lambda.Function(this, "HeartbeatFunction", {
-      functionName: "chatroom-tick-heartbeat",
+      functionName: props.functionName ?? "chatroom-tick-heartbeat",
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "tick_loop.heartbeat_lambda.handler",
       code: backendPythonCode(),
@@ -42,7 +44,7 @@ export class TickHeartbeatStack extends Stack {
       timeout: Duration.minutes(15),
       reservedConcurrentExecutions: 1,
       environment: {
-        HEARTBEAT_INTERVAL_SEC: "5",
+        HEARTBEAT_INTERVAL_SEC: String(props.intervalSeconds ?? 5),
         HEARTBEAT_WINDOW_SEC: "840",
         TICK_HANDLER_LAMBDA: tickHandler.functionName,
         CONVERSATION_TABLE: conversationTable.tableName,

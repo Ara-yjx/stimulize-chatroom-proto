@@ -1,4 +1,4 @@
-"""POST /chat/send and GET /chat/messages handlers (beta).
+"""POST /chat/send and GET chat history handlers.
 
 Beta delta vs v2 (tasks 3.3, 3.4, 3.5):
 
@@ -6,13 +6,12 @@ Beta delta vs v2 (tasks 3.3, 3.4, 3.5):
   message event and returns the same payload shape as ``/chat/messages``.
   For a single-human, single-AI, non-mimic room only, it also async-invokes
   the tick handler so the required reply does not wait for the heartbeat.
-- ``/chat/messages`` filters events by ``visible_at <= now`` AND
-  ``type != tick``. When the conversation row hasn't been written yet,
+- ``/chat/messages`` reads participant-visible events from the history table.
+  When the conversation row hasn't been written yet,
   the response carries a ``lobby`` block describing the open lobby;
   ``aborted`` lobbies surface as ``LobbyAbortedException`` so
   ``handler.py`` can map them to HTTP 410.
-- ``?include_ticks=true`` is honored only when the caller carries the
-  admin bearer (``X-Admin-Token`` header matching ``config.ADMIN_TOKEN``).
+Tick diagnostics are CloudWatch-only and never returned by this module.
 """
 
 from __future__ import annotations
@@ -22,12 +21,16 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
 import boto3
 
 from chatroom_api import close_lobby as close_lobby_mod
 from chatroom_api import config
+from chatroom_api._providers import get_event_store_provider
+from chatroom_api.cursors import InvalidCursorError
 from chatroom_api.errors import LobbyAbortedException
+from chatroom_api.event_store import ConditionalWriteFailed
 from chatroom_api.settings import is_single_human_single_ai_assistant_room
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,10 @@ def _get_lobby():
         return mock_lobby
     from chatroom_api import lobby
     return lobby
+
+
+def _get_event_store():
+    return get_event_store_provider()
 
 
 def _get_lambda_client():
@@ -101,63 +108,26 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _filter_visible_events_for_client(
-    events: list[dict],
-    now_ms: int,
-    after: int,
-    include_ticks: bool,
-) -> list[dict]:
-    """Return events visible to a client right now.
-
-    Filters: ``after < visible_at <= now_ms``. When *include_ticks* is False
-    (the default for non-admin callers), ``type`` values that are
-    server-internal audit (``tick``, ``lobby_created``) are also dropped —
-    the widget never renders these.
-    """
-    audit_types = {"tick", "lobby_created"}
-    out: list[dict] = []
-    for e in events:
-        visible_at = int(e.get("visible_at", e.get("timestamp", 0)) or 0)
-        if visible_at > now_ms:
-            continue
-        if visible_at <= after:
-            continue
-        if not include_ticks and e.get("type") in audit_types:
-            continue
-        out.append(e)
-    return out
-
-
 def _decorate_with_avatar(events: list[dict], avatar_map: dict) -> list[dict]:
     """Project events onto the wire shape, looking up avatars by sender."""
     decorated: list[dict] = []
     for e in events:
         sender = e.get("sender")
         item = {
+            "event_id": e.get("event_id"),
             "type": e.get("type", "message"),
+            "subtype": e.get("subtype"),
             "sender": sender,
             "role": e.get("role"),
             "content": e.get("content", ""),
             "timestamp": e.get("timestamp", 0),
-            "visible_at": e.get("visible_at", e.get("timestamp", 0)),
             "session_id": e.get("session_id"),
-            "avatar": avatar_map.get(sender) if sender else None,
+            "participant_id": e.get("participant_id"),
+            "ai_participant_id": e.get("ai_participant_id"),
+            "avatar": e.get("avatar") or (avatar_map.get(sender) if sender else None),
             "internal_name": e.get("internal_name"),
         }
-        # Pass tick-specific fields through untouched when present (admin path).
-        for key in (
-            "chosen_session_id",
-            "gate_decision",
-            "skip_reason",
-            "ai_decision",
-            "bedrock_invoked",
-            "input_tokens",
-            "output_tokens",
-            "error",
-        ):
-            if key in e:
-                item[key] = e[key]
-        decorated.append(item)
+        decorated.append({key: value for key, value in item.items() if value is not None})
     return decorated
 
 
@@ -170,16 +140,6 @@ def _avatar_map_for(conv: Optional[dict]) -> dict:
         for p in (conv.get("participants") or [])
         if p.get("nickname")
     }
-
-
-def _admin_token_from_headers(headers: Optional[dict]) -> str:
-    """Return the value of the ``X-Admin-Token`` header (case-insensitive), or empty."""
-    if not headers:
-        return ""
-    for k, v in headers.items():
-        if k.lower() == "x-admin-token":
-            return v or ""
-    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +156,7 @@ def handle_chat_send(body: dict, claims: dict) -> tuple[int, dict]:
     - Only a 1-human + 1-AI + non-mimic room async-invokes the tick handler
       immediately after the human message is persisted. Other rooms continue
       to rely exclusively on the heartbeat.
-    - Response shape mirrors ``/chat/messages``: ``{events: [...]}`` with
-      events visible to this caller right now (``visible_at <= now``,
-      ``type != tick``, ``visible_at > after``).
+    - Response keeps the ``events`` envelope and adds cursor pagination.
     - 409 when the conversation is in the lobby phase (no row yet) or has
       ended.
     """
@@ -206,12 +164,12 @@ def handle_chat_send(body: dict, claims: dict) -> tuple[int, dict]:
     after = int(body.get("after", 0) or 0)
     session_id = claims["session_id"]
     conversation_id = claims["conversation_id"]
-    chatroom_id = claims["chatroom_id"]
 
     if not isinstance(message, str) or not message.strip():
         return (400, {"error": "message is required"})
 
     db = _get_db()
+    history_store = _get_event_store()
 
     conv = db.get_conversation(conversation_id)
     if conv is None:
@@ -239,27 +197,33 @@ def handle_chat_send(body: dict, claims: dict) -> tuple[int, dict]:
         "session_id": session_id,
         "sender": nickname,
         "role": "human",
-        "ai_participant_id": None,
         "content": message,
         "timestamp": now_ms,
-        "visible_at": now_ms,
         "created_at": now_iso,
     }
-    db.append_events(conversation_id, chatroom_id, [user_event])
+    try:
+        history_store.append_history_batch(
+            conversation_id,
+            [user_event],
+            uuid4().hex,
+            expected_status="active",
+        )
+    except ConditionalWriteFailed:
+        return (409, {"error": "conversation has ended"})
     _trigger_immediate_assistant_tick(conv, conversation_id)
 
-    # Re-read so the response reflects the just-appended event without race
-    # against another writer (e.g. a tick handler).
-    refreshed = db.get_conversation(conversation_id)
-    all_events = (refreshed or {}).get("events", []) or []
-    visible = _filter_visible_events_for_client(
-        all_events, now_ms=now_ms, after=after, include_ticks=False
+    page = history_store.query_live_after_timestamp(
+        conversation_id, after, now_ms, 100
     )
-    return (200, {"events": _decorate_with_avatar(visible, _avatar_map_for(refreshed))})
+    return (200, {
+        "events": _decorate_with_avatar(page["events"], _avatar_map_for(conv)),
+        "next_after": page["next_after"],
+        "has_more": page["has_more"],
+    })
 
 
 # ---------------------------------------------------------------------------
-# /chat/messages — visible-event poll + lobby block + admin gate.
+# /chat/messages — visible-event poll plus lobby block.
 # ---------------------------------------------------------------------------
 
 
@@ -270,11 +234,10 @@ def handle_chat_messages(
 ) -> tuple[int, dict]:
     """Return events visible to this caller right now.
 
-    Behavior summary (requirements 4.x / 1.6):
+    Behavior summary:
 
-    - Conversation row exists: filter events to ``visible_at <= now`` and
-      ``type != tick``; include a ``conversation_status`` field; ``lobby`` is
-      ``None``.
+    - Conversation row exists: query history through the current server time;
+      include ``conversation_status`` and a null ``lobby``.
     - Conversation row missing: locate the pre-allocated lobby via
       ``conversation_id-index``.
         - ``open`` and past ``deadline_at``: run the freshness ``close_lobby``
@@ -287,35 +250,48 @@ def handle_chat_messages(
           maps it to HTTP 410.
     """
     qp = query_params or {}
-    after = int(qp.get("after", 0) or 0)
-    include_ticks_flag = str(qp.get("include_ticks", "")).lower() == "true"
+    after_raw = str(qp.get("after", "0") or "0")
+    try:
+        limit = min(max(int(qp.get("limit", 100) or 100), 1), 100)
+    except (TypeError, ValueError):
+        return (400, {"error": "invalid limit"})
     conversation_id = claims["conversation_id"]
     session_id = claims["session_id"]
 
     db = _get_db()
+    history_store = _get_event_store()
     lobby_mod = _get_lobby()
 
     now_ms = _now_ms()
 
-    # Admin gate — ``include_ticks=true`` is only honored when (a) the env
-    # has an admin token configured AND (b) the caller's ``X-Admin-Token``
-    # header matches it. Without both, the parameter is silently ignored.
-    admin_match = False
-    if include_ticks_flag and config.ADMIN_TOKEN:
-        admin_match = _admin_token_from_headers(headers) == config.ADMIN_TOKEN
-    include_ticks = include_ticks_flag and admin_match
-
     conv = db.get_conversation(conversation_id)
     if conv is not None:
-        all_events = conv.get("events", []) or []
-        visible = _filter_visible_events_for_client(
-            all_events,
-            now_ms=now_ms,
-            after=after,
-            include_ticks=include_ticks,
-        )
+        try:
+            if after_raw.isdigit():
+                page = history_store.query_live_after_timestamp(
+                    conversation_id, int(after_raw), now_ms, limit
+                )
+                cursor_for_pending = page.get("next_after")
+            else:
+                page = history_store.query_live_after(
+                    conversation_id, after_raw, now_ms, limit
+                )
+                cursor_for_pending = page.get("next_after") or after_raw
+        except InvalidCursorError:
+            return (400, {"error": "invalid_cursor"})
+        next_pending_at = None
+        if conv.get("status") == "ended" and not page["has_more"]:
+            try:
+                next_pending_at = history_store.query_next_pending(
+                    conversation_id, cursor_for_pending, now_ms
+                )
+            except InvalidCursorError:
+                return (400, {"error": "invalid_cursor"})
         return (200, {
-            "events": _decorate_with_avatar(visible, _avatar_map_for(conv)),
+            "events": _decorate_with_avatar(page["events"], _avatar_map_for(conv)),
+            "next_after": page.get("next_after"),
+            "has_more": page["has_more"],
+            "next_pending_at": next_pending_at,
             "conversation_status": conv.get("status", "active"),
             "lobby": None,
         })
@@ -369,3 +345,30 @@ def handle_chat_messages(
 
     # Unknown status — be conservative and treat as not found.
     return (404, {"error": "conversation not found"})
+
+
+def handle_chat_history(
+    query_params: Optional[dict],
+    claims: dict,
+) -> tuple[int, dict]:
+    """Return one backward page of participant-visible history."""
+    qp = query_params or {}
+    before = str(qp.get("before") or "") or None
+    try:
+        limit = min(max(int(qp.get("limit", 50) or 50), 1), 100)
+    except (TypeError, ValueError):
+        return (400, {"error": "invalid limit"})
+    conversation_id = claims["conversation_id"]
+    conv = _get_db().get_conversation(conversation_id)
+    if conv is None:
+        return (404, {"error": "conversation not found"})
+    try:
+        page = _get_event_store().query_history_before(
+            conversation_id, before, _now_ms(), limit
+        )
+    except InvalidCursorError:
+        return (400, {"error": "invalid_cursor"})
+    return (200, {
+        **page,
+        "events": _decorate_with_avatar(page["events"], _avatar_map_for(conv)),
+    })

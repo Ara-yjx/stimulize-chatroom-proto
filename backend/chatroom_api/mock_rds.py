@@ -20,9 +20,11 @@ _chatrooms = {
         "setting": {
             "topic_instruction": "Anything about your college life.",
             "model_id": "global.anthropic.claude-sonnet-4-6",
+            "mimic_human": False,
             "simulate_pairing_seconds": 3,
-            "timer_min_minutes": 5,
-            "timer_max_minutes": 10,
+            "timer_min_minutes": None,
+            "timer_max_minutes": 0.5,
+            "max_duration_seconds": 45,
             "human_count": 1,
             "ai_count": 1,
             "replace_human_with_ai": False,

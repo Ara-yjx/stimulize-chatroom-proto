@@ -10,7 +10,9 @@ The following decisions are locked for implementation:
 - Use `conversation_id` as the messaging-history identity and event partition
   key.
 - Use the activity-agnostic key
-  `H#T{timestamp}#B{batch_id}#I{index}`. Do not put episode in the key or event.
+  `H#T{timestamp}#B{batch_id}#I{index}`. Never put episode in the key or make
+  core history writes/queries depend on it; an application may attach it as
+  optional event metadata.
 - `timestamp` is the server-assigned history/availability time. Remove
   `visible_at`; delayed AI messages may add optional `authored_at`.
 - Message authors use role-specific immutable IDs. AI identity always uses the
@@ -20,12 +22,16 @@ The following decisions are locked for implementation:
 - Keep scheduling state in compact conversation metadata, never in logs.
 - Read history with opaque forward/backward cursors. Application activity
   periods use start/end cursors rather than storage partitions.
+- Keep numeric-timestamp `after` compatibility through the documented
+  cache/session/JWT window and rollout soak; maintenance duration alone does
+  not expire JavaScript already loaded by an open page.
 - Retention belongs to the metadata row. Event items have no TTL; metadata TTL
   removal triggers partition cleanup. Enable PITR and `RETAIN`.
 - Rehearse on restored tables, then use a short beta write freeze for cutover.
   Keep the legacy `events` list through initial soak.
 
-Implementation is pending. Until cutover, `design.md`,
+The implementation is complete on an isolated development stack. Beta cutover
+and live-data migration remain pending. Until cutover, `design.md`,
 `low-level-design.md`, and `api-reference.md` continue to describe the deployed
 embedded-list/`visible_at` contract.
 
@@ -101,6 +107,7 @@ role                     # human, ai, or system for message-like events
 session_id               # optional human source session
 participant_id           # optional resumable-human identity
 ai_participant_id        # optional stable AI identity
+episode_number           # optional opaque application metadata
 sender                   # display-name snapshot
 internal_name            # optional AI label snapshot
 timestamp                 # canonical history time, epoch ms
@@ -145,10 +152,12 @@ timestamp use deterministic but otherwise arbitrary `batch_id` ordering; no
 stronger cross-batch causal or FIFO guarantee is promised.
 
 Do not use episode in the key. It is an AI application lifecycle concept and
-may be renamed or replaced. Live polling already reads after a cursor;
-scrollback reads before one; an application-owned active period is the range
-between its stored start/end cursors. Removing episode adds no scan or extra
-query.
+may be renamed or replaced. Core writes and queries remain conversation/cursor
+based and treat an optional `episode_number` as opaque payload. Live polling
+already reads after a cursor; scrollback reads before one; an
+application-owned active period is the range between its stored start/end
+cursors. An application-level episode API may translate an episode to those
+cursors and call the generic range query without changing the storage key.
 
 ### Time semantics
 
@@ -167,11 +176,10 @@ There is no `visible_at` in the new schema.
 Example: a turn produced at `12:00:00` may contain messages with timestamps
 `12:00:02` and `12:00:05`; both have `authored_at=12:00:00`.
 
-For the current runtime, an already-persisted future AI message remains
-deliverable after an end boundary. Ending the activity prevents new ticks and
-inference but does not cancel accepted history. After AI behavior is separated,
-it will wait before sending; the chatroom server will reject a send whose
-episode is no longer active instead of storing a future message.
+For the current non-resumable runtime, an already-persisted future AI message
+remains deliverable after an end boundary. Resumable conversations are stricter:
+the AI runtime waits before appending, and drops the output when the active
+episode fence no longer matches, so they never persist future history.
 
 An application activity's end cursor must include all history accepted for that
 activity, including future-timestamp events. Its visible end marker is therefore
@@ -414,11 +422,15 @@ and set `next_actionable_at` to cutover time.
    acceptance checks while writes remain blocked. Keep E2E duration below one
    minute.
 8. Re-enable API and heartbeat only after all checks pass.
-9. Deploy the cursor widget, then retain timestamp compatibility for at least
-   the GitHub Pages 10-minute cache TTL plus the longest supported active
-   widget session.
-10. Monitor through the agreed soak, then remove timestamp compatibility and
-    conditionally remove legacy lists.
+9. Deploy the cursor widget, then retain numeric-timestamp `after`
+   compatibility. A maintenance window does not expire JavaScript already
+   loaded by an open page. Keep compatibility through the longer of the
+   current three-hour JWT lifetime or the GitHub Pages 10-minute cache
+   freshness plus the longest supported active widget session, and until the
+   rollout soak shows no legacy traffic.
+10. After that compatibility window and soak, remove numeric timestamps other
+    than any explicitly retained initialization sentinel, then conditionally
+    remove legacy lists.
 
 Before traffic reopens, rollback is the legacy runtime plus its untouched
 embedded lists. After event-table-only writes are accepted, the legacy writer
@@ -429,8 +441,10 @@ is unsafe; stop writes and fix forward instead.
 - Keys order by canonical timestamp/batch/index; equal-timestamp batches have
   deterministic arbitrary order and do not skip or duplicate events.
 - Future `timestamp` events are unavailable until their history time.
-- Accepted future messages may appear after an activity end boundary; ending
-  prevents new tick/inference work rather than retracting history.
+- In the current non-resumable runtime, accepted future messages may appear
+  after an end boundary; ending prevents new tick/inference work rather than
+  retracting history. Resumable paths instead delay before append and drop on a
+  stale active-episode fence.
 - Delayed AI messages retain optional `authored_at` and group by `batch_id`.
 - Only `H#` is persisted; diagnostics are structured/redacted CloudWatch logs.
 - Silent ticks update projection without writing an event; gate skips do not
@@ -450,9 +464,12 @@ is unsafe; stop writes and fix forward instead.
 1. Infrastructure, event-store adapters, and tests.
 2. Backend/frontend cutover implementation and local isolated E2E.
 3. Restored-table migration rehearsal and report.
-4. Beta maintenance migration, acceptance checks, reopen, and soak.
-5. Conditional legacy-list cleanup.
-6. Resume feature implementation on the new history layer.
+4. Resume development and isolated dev E2E may proceed on the new history
+   layer before the live migration.
+5. Beta maintenance migration, acceptance checks, reopen, and soak. Resume
+   must not be released to beta before this cutover succeeds.
+6. Conditional legacy-list and numeric-polling cleanup after their respective
+   compatibility windows.
 
 ## Rejected and Deferred
 

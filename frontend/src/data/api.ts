@@ -2,6 +2,7 @@ import type {
   ExchangeTokenResponse,
   SendMessageResponse,
   PollMessagesResponse,
+  HistoryPageResponse,
 } from "./types";
 import { _$ } from "../lib/jquery";
 
@@ -34,10 +35,27 @@ export async function sendMessage(
 export async function pollMessages(
   apiBaseUrl: string,
   token: string,
-  after: number
+  after: string | number | null
 ): Promise<PollMessagesResponse> {
+  const value = after ?? 0;
   return _$.ajax({
-    url: `${apiBaseUrl}/chat/messages?after=${after}`,
+    url: `${apiBaseUrl}/chat/messages?after=${encodeURIComponent(String(value))}`,
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function fetchHistory(
+  apiBaseUrl: string,
+  token: string,
+  before: string | null,
+  limit = 50
+): Promise<HistoryPageResponse> {
+  const query = before
+    ? `?before=${encodeURIComponent(before)}&limit=${limit}`
+    : `?limit=${limit}`;
+  return _$.ajax({
+    url: `${apiBaseUrl}/chat/history${query}`,
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
   });

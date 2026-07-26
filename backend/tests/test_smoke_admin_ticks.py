@@ -1,12 +1,4 @@
-"""End-to-end smoke for the admin-tick gate via the Lambda handler.
-
-Mirrors a real Qualtrics widget call:
-  GET /chat/messages?include_ticks=true
-  Authorization: Bearer <session_jwt>
-  X-Admin-Token: <admin_token>
-
-Verifies the routing in handler.py + chat.py + the gate in chat.py work together.
-"""
+"""End-to-end proof that legacy admin flags cannot expose tick diagnostics."""
 
 from __future__ import annotations
 
@@ -79,7 +71,7 @@ def _seed() -> None:
     )
 
 
-def test_include_ticks_returns_ticks_with_admin_token() -> None:
+def test_include_ticks_is_ignored_even_with_admin_token() -> None:
     _seed()
     original = config.ADMIN_TOKEN
     config.ADMIN_TOKEN = "smoke-admin-token"
@@ -102,7 +94,8 @@ def test_include_ticks_returns_ticks_with_admin_token() -> None:
 
     assert resp["statusCode"] == 200, resp
     body = json.loads(resp["body"])
-    assert any(e["type"] == "tick" for e in body["events"])
+    assert all(e["type"] != "tick" for e in body["events"])
+    assert any(e["type"] == "message" for e in body["events"])
 
 
 def test_include_ticks_ignored_without_admin_token() -> None:

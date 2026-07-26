@@ -80,7 +80,7 @@ def test_max_duration_enforcement_flips_to_ended_and_skips_bedrock():
     )
 
 
-def test_bedrock_fatal_error_appends_tick_and_system_events_and_keeps_active():
+def test_bedrock_fatal_error_updates_projection_and_appends_system_event():
     cid, started_at_ms = _seed()
     now_seconds = (started_at_ms / 1000) + 60  # 60s after start
 
@@ -100,15 +100,11 @@ def test_bedrock_fatal_error_appends_tick_and_system_events_and_keeps_active():
     assert conv["status"] == "active"
 
     events = mock_dynamo.get_events(cid)
-    tick_events = [e for e in events if e.get("type") == "tick"]
     system_events = [e for e in events if e.get("type") == "system"]
-    assert len(tick_events) == 1
-    assert tick_events[0].get("error") == "ValidationException"
-    assert tick_events[0].get("bedrock_invoked") is True
-    assert tick_events[0].get("ai_decision") is None
-
-    # One system event with "Chatroom server error".
+    # One visible system event plus compact server-only tick state.
     assert any("server error" in e.get("content", "").lower() for e in system_events)
+    projection = conv["ai_tick_state_by_participant_id"]["ai_001"]
+    assert projection["last_result"] == "error"
 
 
 def test_bedrock_resource_not_found_falls_back_to_default_model():
@@ -190,7 +186,8 @@ def test_single_non_mimic_ai_must_reply_to_human_without_typing_delay():
         "Sure.",
         "What part should we start with?",
     ]
-    assert {event["visible_at"] for event in ai_messages} == {now_ms}
+    assert {event["timestamp"] for event in ai_messages} == {now_ms}
+    assert all("visible_at" not in event for event in ai_messages)
 
 
 def test_required_response_only_applies_when_latest_visible_message_is_human():
@@ -288,7 +285,8 @@ def test_idle_follow_up_is_forced_once_without_typing_delay():
         if event.get("message_kind") == "idle_follow_up"
     ]
     assert len(follow_ups) == 1
-    assert follow_ups[0]["visible_at"] == follow_ups[0]["timestamp"] == now_ms
+    assert follow_ups[0]["timestamp"] == now_ms
+    assert "visible_at" not in follow_ups[0]
     assert not tick_handler._requires_idle_follow_up(
         conv,
         conv["chatroom_setting"],

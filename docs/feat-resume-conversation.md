@@ -15,6 +15,14 @@ Phase 1 is limited to chatrooms with:
 Resuming and referencing are separate features. Resuming continues one logical
 conversation; future referencing may quote or branch from another conversation.
 
+Development may proceed before the beta event-storage maintenance window on
+the isolated event-storage dev stack. Fresh and synthetic migrated
+conversations are sufficient for implementation and E2E there. Beta release is
+blocked until the event-storage migration and cutover succeed; resume work must
+not mutate the existing beta/prod DynamoDB tables, API, heartbeat, or hosted
+widget beforehand. Prefer a separate beta release after the initial
+event-storage soak so storage-cutover and resume regressions remain separable.
+
 ## Terminology
 
 - **Conversation**: the long-lived chat, identified by the existing
@@ -32,10 +40,11 @@ term; the system uses `conversation` and `conversation_id` consistently.
 
 ## Participant Identity and Access Boundary
 
-The researcher supplies `participant_id`, either from an earlier survey
-question or from the survey link. The researcher must ensure the corresponding
-Qualtrics Embedded Data value exists before the chatroom page launches. The ED
-field name will be decided later.
+The researcher supplies `participant_id`, for example from an earlier survey
+question, survey link, or researcher-chosen Embedded Data field. The widget
+does not prescribe a fixed Qualtrics field name: the host passes the resolved
+value through `init({ participantId })`. The value must exist before the
+chatroom launches.
 
 Phase 1 resolves a conversation by:
 
@@ -52,6 +61,11 @@ Rules:
 - Allow exactly one conversation per `chatroom_id + participant_id`.
 - A participant cannot intentionally start over with the same pair.
 - An inactive/deleted chatroom cannot create or resume a conversation.
+
+Bootstrap remains one step. `POST /auth/token` accepts optional
+`participant_id`; it is ignored for non-resumable chatrooms and required for a
+resumable chatroom. A missing value for the latter returns
+`400 participant_id_required`. No discovery request is required first.
 
 `participant_id` is intentionally a weak identifier, not strong authentication.
 Mechanically it still grants access to matching history, so Phase 1 explicitly
@@ -116,6 +130,10 @@ active_connection_id
 ttl
 ```
 
+`active_episode_number` is present only while an episode is active and is the
+runtime write fence. Do not introduce a duplicate `write_generation` in Phase
+1. `episode_count` retains the latest allocated number while inactive.
+
 An opaque episode ID is unnecessary while episodes cannot branch and only one
 may be active. `conversation_id + episode_number` uniquely identifies an
 episode. Add an ID later if episodes become independently referenceable.
@@ -131,7 +149,8 @@ history_start_cursor
 history_end_cursor
 ```
 
-Messages do not carry `episode_number`, and event keys do not include it.
+Messages may carry `episode_number` as optional application metadata. Event
+keys and core messaging write/query APIs never depend on it.
 `history_start_cursor` is the last history cursor before the episode's first
 event; `history_end_cursor` is the last cursor included when the episode ends.
 The range `(history_start_cursor, history_end_cursor]` therefore identifies that
@@ -165,8 +184,8 @@ Lifecycle:
    `active_episode_started_at`.
 3. **Episode timeout**: atomically set `status=inactive`, record the end time,
    optionally append a visible boundary event, and save the last included
-   history cursor. New ticks and inference stop, but already-accepted delayed
-   AI messages may appear afterward and the connection may still read them.
+   history cursor. Clear `active_episode_number`; new ticks and inference stop,
+   and no delayed AI message may be appended afterward.
 4. **Resume**: resolve the same conversation, increment `episode_number`, set
    the new active timing/connection fields, capture the new start cursor,
    refresh TTL, and optionally append a visible boundary event.
@@ -178,6 +197,14 @@ Lifecycle:
 
 Conditional writes must prevent duplicate conversation creation and duplicate
 episode increments under retries or concurrent launches.
+
+Every AI tick captures `active_episode_number` before inference. Its message
+append transaction requires both `status=active` and the same
+`active_episode_number`. If the episode ended or a later episode started while
+inference or simulated delay was in progress, the append is rejected and the
+output is dropped with a structured CloudWatch diagnostic. Usage is still
+recorded because inference already incurred cost. Resumable paths do not
+pre-persist future-timestamp messages.
 
 ## Connection Supersession
 
@@ -225,6 +252,10 @@ GET /chat/messages?after=<live_cursor>
 GET /chat/history?before=<older_cursor>&limit=50
 ```
 
+These core messaging APIs remain episode-agnostic. A later chatroom-level
+episode endpoint may resolve its stored start/end cursors and delegate to a
+generic cursor-range query; it does not require an episode key or index.
+
 Messaging uses `H#T{timestamp}#B{batch_id}#I{index}`. `timestamp` is the
 server-assigned canonical history and availability time. There is no
 `visible_at`. A delayed AI message may additionally carry optional
@@ -239,8 +270,11 @@ metadata, render separators without changing messaging keys.
 Two history views remain intentionally different:
 
 - The widget can page through the complete conversation.
-- Qualtrics ED contains only events after the current
-  `history_start_cursor`, bounded by `history_end_cursor` after the period ends.
+- Qualtrics ED continues using `QUALTRICS_CHATROOM_HISTORY` and
+  `QUALTRICS_CHATROOM_HISTORY_JSON`. It contains only events after the current
+  `history_start_cursor`, bounded by `history_end_cursor` after the period
+  ends. Loading or displaying older episodes must not add them to these ED
+  values.
 
 Researchers may later retrieve the complete conversation history through a
 backend export API.
@@ -292,22 +326,25 @@ The broader planned runtime refactor may later separate:
 - browser/JWT connection state
 - AI inference and tick ownership
 
-In that design, AI behavior performs simulated delay before calling the
-chatroom server. The send includes the episode number, and the server rejects
-it when that episode is no longer active. This replaces pre-scheduled future
-history without coupling message keys to episodes.
+For resumable conversations, AI behavior performs simulated delay before the
+history append. The application passes the captured episode number as a write
+precondition, and the append is dropped when it no longer matches
+`active_episode_number`. Core history keys and queries remain episode-agnostic.
+A later service split can preserve this contract while moving the delay outside
+the current tick Lambda.
 
 Resume adds only the provisional episode and connection boundaries it needs
 after the event store lands. Replacing that lifecycle model later does not
 change message keys. Resume does not wait for a full inference-service refactor.
 
-## Open Decisions
+## Remaining LLD Work
 
-1. **Bootstrap API**: exact one-step/two-step flow for discovering `resumable`
-   before collecting the participant ID.
-2. **Qualtrics contract**: Embedded Data field name and generated snippet.
-3. **Initial UI copy**: whether a new conversation displays "This is the
-   beginning of the conversation" after user testing.
-4. **Resume LLD details**: atomic AI-activity transition expressions and the
-   exact widget bootstrap/resume request sequence. Event storage and pagination
-   LLD are owned by the prerequisite event-storage document.
+- Define the atomic participant-binding, conversation-create, episode-start,
+  and connection-supersession writes.
+- Define the exact token response fields and widget state transitions.
+- Use concise system copy such as "This is the beginning of the conversation"
+  for first launch and "Conversation resumed" for later episodes; wording is a
+  reversible UI detail.
+
+Event storage and pagination LLD remain owned by the prerequisite
+event-storage document.
