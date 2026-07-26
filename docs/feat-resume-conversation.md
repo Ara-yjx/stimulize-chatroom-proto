@@ -15,13 +15,11 @@ Phase 1 is limited to chatrooms with:
 Resuming and referencing are separate features. Resuming continues one logical
 conversation; future referencing may quote or branch from another conversation.
 
-Development may proceed before the beta event-storage maintenance window on
-the isolated event-storage dev stack. Fresh and synthetic migrated
-conversations are sufficient for implementation and E2E there. Beta release is
-blocked until the event-storage migration and cutover succeed; resume work must
-not mutate the existing beta/prod DynamoDB tables, API, heartbeat, or hosted
-widget beforehand. Prefer a separate beta release after the initial
-event-storage soak so storage-cutover and resume regressions remain separable.
+Event storage cut over on 2026-08-15 and is now the only supported runtime
+writer. Resume development and E2E first update only the isolated resume-dev
+environment. The later beta release is code-only: it adds no table/index and
+does not migrate existing conversations. Non-resumable rooms must preserve
+their current lobby, token, lifecycle, history, and prompt behavior.
 
 ## Terminology
 
