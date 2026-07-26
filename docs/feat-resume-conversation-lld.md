@@ -131,8 +131,9 @@ Neither accepts episode as a filter.
 
 ## Widget and Editor
 
-- Add `init({ participantId })`; send it only during token exchange.
-- A resumable room without it surfaces the backend's participant-ID error.
+- Phase 1 uses `init({ resumable: true })` to show the widget launch prompt
+  `Please enter your participant ID`; the entered value is sent only during
+  token exchange. `participantId` remains an optional prefill.
 - Initial render fetches the newest history page; upward scroll loads older
   pages. Stable `participant_id`, not old `session_id`, marks prior human
   messages as self.
@@ -140,9 +141,23 @@ Neither accepts episode as a filter.
   episode, even when prior history is displayed.
 - `inactive` disables the current input; a later init with the same participant
   starts the next episode.
-- The editor exposes `resumable` only for the supported room shape. Preview
-  accepts a participant ID; generated Qualtrics code includes a clearly marked
-  participant-ID placeholder only when resumable is enabled.
+- The editor exposes `resumable` only for the supported room shape. Preview and
+  generated Qualtrics code pass the flag, while the widget owns the input UI.
+
+### Follow-up: two-stage launch
+
+Remove the host-provided `resumable` hint after adding bootstrap auth:
+
+1. `POST /auth/bootstrap { chatroom_id }` validates the room and returns its
+   read-only setting plus a short-lived, single-purpose bootstrap token. It
+   does not create or resume a conversation.
+2. The widget reads `setting.resumable`; when true it asks for
+   `participant_id`, then exchanges the bootstrap token at `POST /auth/token`
+   for the normal conversation token and starts/resumes the conversation.
+
+The bootstrap token binds the second request to the validated chatroom and
+cannot call messaging APIs. This keeps setting discovery separate from
+participant identity and conversation side effects.
 
 ## Prompt Context
 

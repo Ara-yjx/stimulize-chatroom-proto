@@ -109,12 +109,35 @@ async function main() {
     await page.getByRole('heading', { name: 'Edit Chatroom' }).waitFor({ timeout: 60000 });
 
     await page.getByRole('switch', { name: 'Mimic human', exact: true }).click();
-    await page.getByRole('switch', { name: 'Resume conversation', exact: true }).click();
+    const resumeSwitch = page.getByRole('switch', { name: 'Resume conversation', exact: true });
+    await resumeSwitch.click();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (await resumeSwitch.getAttribute('aria-checked') === 'true') break;
+      await page.waitForTimeout(50);
+    }
+    if (await resumeSwitch.getAttribute('aria-checked') !== 'true') {
+      throw new Error('Resume switch did not turn on');
+    }
+
+    await page.getByRole('button', { name: 'Generate Script' }).click();
+    const snippetField = page.locator('textarea[readonly]').last();
+    await snippetField.waitFor();
+    const snippet = await snippetField.inputValue();
+    if (!snippet.includes('resumable: true')) {
+      throw new Error('Generated script does not enable the resumable widget prompt');
+    }
+    if (!snippet.includes('apiBaseUrl: "https://')) {
+      throw new Error('Generated script does not pin the hosted runtime API');
+    }
+    if (snippet.includes('REPLACE_WITH_PARTICIPANT_ID')) {
+      throw new Error('Generated script still contains the old participant-ID placeholder');
+    }
 
     await page.getByRole('button', { name: 'Save, Activate, and Launch Preview' }).click();
     const frameElement = await page.waitForSelector('iframe[src^="blob:"]', { timeout: 60000 });
     const frame = await frameElement.contentFrame();
     if (!frame) throw new Error('Preview iframe is unavailable');
+    await frame.getByLabel('Please enter your participant ID').fill('editor-preview-1');
     await frame.getByRole('button', { name: 'Start Chat' }).click();
     const input = frame.getByPlaceholder('Type a message...');
     await input.waitFor({ timeout: 60000 });

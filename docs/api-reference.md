@@ -177,6 +177,8 @@ interface InitOptions {
   parentElement?: string | HTMLElement; // parent where the widget creates its mount
   qualtricsQuestion?: object;           // question instance from the addOnload callback
   chatroomId: string;                   // chatroom ID (e.g. "scid_550e8400-...")
+  resumable?: boolean;                  // show participant-ID prompt before launch
+  participantId?: string;               // optional prompt prefill
   apiBaseUrl?: string;                  // override backend URL
   beta?: boolean;                       // beta mode flag
 }
@@ -188,7 +190,8 @@ interface InitOptions {
 ```javascript
 StimulizeChatroom.init({
   element: "#chatroom-container",
-  chatroomId: "scid_550e8400-e29b-41d4-a716-446655440000"
+  chatroomId: "scid_550e8400-e29b-41d4-a716-446655440000",
+  resumable: true
 });
 ```
 
