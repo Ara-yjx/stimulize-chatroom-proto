@@ -118,6 +118,7 @@ def _metadata_update_action(
     conversation_id: str,
     metadata_updates: Optional[dict],
     expected_status: Optional[str],
+    expected_active_tick_id: Optional[str],
     *,
     refresh_history: bool,
 ) -> dict:
@@ -141,6 +142,10 @@ def _metadata_update_action(
         names["#status"] = "status"
         values[":expected_status"] = expected_status
         condition += " AND #status = :expected_status"
+    if expected_active_tick_id is not None:
+        names["#active_tick_id"] = "active_tick_id"
+        values[":expected_active_tick_id"] = expected_active_tick_id
+        condition += " AND #active_tick_id = :expected_active_tick_id"
 
     return {
         "Update": {
@@ -244,6 +249,7 @@ def append_history_batch(
     batch_id: str,
     metadata_updates: Optional[dict] = None,
     expected_status: Optional[str] = None,
+    expected_active_tick_id: Optional[str] = None,
 ) -> list[dict]:
     items = normalize_history_events(conversation_id, history_events, batch_id)
     if not items:
@@ -253,6 +259,7 @@ def append_history_batch(
             conversation_id,
             metadata_updates,
             expected_status,
+            expected_active_tick_id,
             refresh_history=True,
         ),
         *_event_put_actions(items),
@@ -275,8 +282,9 @@ def update_tick_projection(
     ai_participant_id: str,
     tick_state: dict,
     expected_status: Optional[str] = None,
+    expected_active_tick_id: Optional[str] = None,
     next_actionable_tick_at: Optional[int] = None,
-) -> None:
+) -> bool:
     table = _get_metadata_table()
     names = {
         "#states": "ai_tick_state_by_participant_id",
@@ -296,6 +304,10 @@ def update_tick_projection(
         names["#status"] = "status"
         values[":expected"] = expected_status
         condition += " AND #status = :expected"
+    if expected_active_tick_id is not None:
+        names["#active_tick_id"] = "active_tick_id"
+        values[":expected_active_tick_id"] = expected_active_tick_id
+        condition += " AND #active_tick_id = :expected_active_tick_id"
     try:
         table.update_item(
             Key={"conversation_id": conversation_id},
@@ -305,7 +317,8 @@ def update_tick_projection(
             ExpressionAttributeValues=values,
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
-        return
+        return False
+    return True
 
 
 def _query_ascending(

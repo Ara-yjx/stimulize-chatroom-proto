@@ -12,6 +12,12 @@ from chatroom_api.bedrock_client import BedrockInferenceError
 CHATROOM_ID = "scid_pbt-tick-examples"
 
 
+@pytest.fixture(autouse=True)
+def _skip_real_typing_delay(monkeypatch):
+    """Keep existing examples fast; delay behavior has fake-clock tests below."""
+    monkeypatch.setattr(tick_handler.time, "sleep", lambda _seconds: None)
+
+
 def _seed(*, max_duration_seconds=None, started_at_ms=None, setting_overrides=None):
     """Reset mocks; seed an active conversation. Returns (conversation_id, started_at_ms_used)."""
     config.USE_MOCK_DYNAMO = True
@@ -317,3 +323,128 @@ def test_participant_model_id_overrides_chatroom_default():
 
     assert result["status"] == "spoke"
     assert seen_models == [tick_handler._DEFAULT_MODEL_ID]
+
+
+def test_delayed_messages_are_absent_until_each_delay_finishes(monkeypatch):
+    cid, started_at_ms = _seed()
+
+    class FakeClock:
+        now_ms = started_at_ms + 60_000
+
+        def time(self):
+            return self.now_ms / 1000
+
+        def sleep(self, seconds):
+            ai_events = [
+                event for event in mock_dynamo.get_events(cid)
+                if event.get("type") == "message" and event.get("role") == "ai"
+            ]
+            assert len(ai_events) == len(sleeps)
+            sleeps.append(seconds)
+            self.now_ms += int(seconds * 1000)
+
+    clock = FakeClock()
+    sleeps: list[float] = []
+    monkeypatch.setattr(tick_handler.time, "time", clock.time)
+    monkeypatch.setattr(tick_handler.time, "sleep", clock.sleep)
+    monkeypatch.setattr(tick_handler, "pick_delays_ms", lambda _count: [2_000, 3_000])
+    monkeypatch.setattr(
+        tick_handler,
+        "invoke_speak_tool",
+        lambda *_args, **_kwargs: {
+            "messages": ["first bubble", "second bubble"],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        },
+    )
+
+    authored_at = clock.now_ms
+    result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "spoke"
+    assert result["messages_persisted"] == 2
+    assert sleeps == [2, 3]
+    ai_events = [
+        event for event in mock_dynamo.get_events(cid)
+        if event.get("type") == "message" and event.get("role") == "ai"
+    ]
+    assert [event["timestamp"] for event in ai_events] == [
+        authored_at + 2_000,
+        authored_at + 5_000,
+    ]
+    assert {event["authored_at"] for event in ai_events} == {authored_at}
+    assert len({event["turn_id"] for event in ai_events}) == 1
+    assert all(event["timestamp"] <= clock.now_ms for event in ai_events)
+
+
+def test_delayed_message_is_dropped_when_conversation_ends_during_wait(monkeypatch):
+    cid, started_at_ms = _seed()
+    now_ms = started_at_ms + 60_000
+
+    def end_during_sleep(_seconds):
+        mock_dynamo.update_status(cid, "ended")
+
+    monkeypatch.setattr(tick_handler.time, "time", lambda: now_ms / 1000)
+    monkeypatch.setattr(tick_handler.time, "sleep", end_during_sleep)
+    monkeypatch.setattr(tick_handler, "pick_delays_ms", lambda _count: [2_000])
+    monkeypatch.setattr(
+        tick_handler,
+        "invoke_speak_tool",
+        lambda *_args, **_kwargs: {
+            "messages": ["must never be stored"],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        },
+    )
+
+    result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "dropped_stale_tick"
+    assert not [
+        event for event in mock_dynamo.get_events(cid)
+        if event.get("type") == "message" and event.get("role") == "ai"
+    ]
+    assert len(mock_rds._usage_records) == 1
+
+
+def test_delayed_message_is_dropped_when_duration_elapses_during_wait(monkeypatch):
+    cid, started_at_ms = _seed(max_duration_seconds=62)
+
+    class FakeClock:
+        now_ms = started_at_ms + 60_000
+
+        def time(self):
+            return self.now_ms / 1000
+
+        def sleep(self, seconds):
+            self.now_ms += int(seconds * 1000)
+
+    clock = FakeClock()
+    monkeypatch.setattr(tick_handler.time, "time", clock.time)
+    monkeypatch.setattr(tick_handler.time, "sleep", clock.sleep)
+    monkeypatch.setattr(tick_handler, "pick_delays_ms", lambda _count: [3_000])
+    monkeypatch.setattr(
+        tick_handler,
+        "invoke_speak_tool",
+        lambda *_args, **_kwargs: {
+            "messages": ["too late"],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        },
+    )
+
+    result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result == {
+        "status": "ended",
+        "messages_persisted": 0,
+        "messages_dropped": 1,
+    }
+    conv = mock_dynamo.get_conversation(cid)
+    assert conv["status"] == "ended"
+    assert not [event for event in conv["events"] if event.get("role") == "ai"]
+    assert len([
+        event for event in conv["events"]
+        if event.get("subtype") == "conversation_ended"
+    ]) == 1
+    assert len(mock_rds._usage_records) == 1

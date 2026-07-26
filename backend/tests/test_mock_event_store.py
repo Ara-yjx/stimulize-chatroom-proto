@@ -101,6 +101,42 @@ def test_status_condition_and_cursor_scope_are_enforced():
         mock_event_store.query_live_after("conv_two", cursor, 100, 1)
 
 
+def test_active_tick_condition_fences_history_and_projection():
+    _create()
+    mock_dynamo._rooms["conv_one"]["active_tick_id"] = "current-tick"
+
+    with pytest.raises(ConditionalWriteFailed):
+        mock_event_store.append_history_batch(
+            "conv_one",
+            [_event(200, "stale")],
+            "stale_batch",
+            expected_status="active",
+            expected_active_tick_id="old-tick",
+        )
+    assert not mock_event_store.update_tick_projection(
+        "conv_one",
+        "ai_one",
+        {"last_result": "silent"},
+        expected_status="active",
+        expected_active_tick_id="old-tick",
+    )
+
+    assert mock_event_store.append_history_batch(
+        "conv_one",
+        [_event(200, "owned")],
+        "owned_batch",
+        expected_status="active",
+        expected_active_tick_id="current-tick",
+    )
+    assert mock_event_store.update_tick_projection(
+        "conv_one",
+        "ai_one",
+        {"last_result": "spoke"},
+        expected_status="active",
+        expected_active_tick_id="current-tick",
+    )
+
+
 def test_tick_projection_does_not_refresh_history_timestamps():
     _create()
     room = mock_dynamo.get_conversation("conv_one")

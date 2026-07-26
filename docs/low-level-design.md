@@ -478,7 +478,7 @@ def handler(event, context):
     cid = event["conversation_id"]
     tick_id = context.aws_request_id
     now = int(time.time() * 1000)
-    active_until = now + 60000
+    active_until = now + 125000
 
     # 1. Acquire the active-tick slot before any Bedrock reasoning.
     #    Heartbeat prefilter is advisory only; this conditional write is authoritative.
@@ -529,7 +529,8 @@ def handler(event, context):
         )
         messages = parse_speak_tool_call(response)  # [] if silent
 
-        # 5. record tick + messages, conditionally on still owning active_tick_id
+        # 5. wait before each delayed message, then write it with server-now.
+        #    Every append must still own active_tick_id and see active status.
         append_tick_event(cid,
             chosen_session_id=candidate.session_id,
             gate_decision="consider",
@@ -539,9 +540,13 @@ def handler(event, context):
             output_tokens=response.usage.output_tokens,
             condition_active_tick_id=tick_id,
         )
-        for m in messages:
+        for m, delay_ms in zip(messages[:5], pick_delays_ms(len(messages[:5]))):
+            time.sleep(delay_ms / 1000)
             append_message_event(cid, candidate, m, triggered_by_tick_id=...,
-                                 condition_active_tick_id=tick_id)
+                                 timestamp=server_now_ms(),
+                                 authored_at=model_completed_at,
+                                 condition_active_tick_id=tick_id,
+                                 condition_status="active")
         if messages:
             update_last_speak_at(cid, candidate.session_id, now,
                                  condition_active_tick_id=tick_id)
@@ -632,24 +637,29 @@ Runtime summary:
 
 ### Simulated typing delay
 
-To mimic human typing tempo, AI messages get a `visible_at` timestamp later than their `timestamp` (authoring time). Random delay 2-8s per message. For a multi-message turn, delays **stack** so the messages reveal one after another, not simultaneously:
+In the event-storage runtime, the tick handler waits 2-8 seconds before each AI
+bubble and writes it only after the delay. Multi-message delays stack because
+each wait starts after the prior bubble is stored. `timestamp` is server time at
+append; optional `authored_at` records model completion time. Bubbles from one
+model result share `turn_id`.
 
-Exception: the required-response non-mimic single-AI case sets
-`visible_at=timestamp` for every returned bubble, so no simulated typing delay
-is applied.
+The required-response non-mimic single-AI case writes immediately and does not
+apply simulated typing delay.
 
 ```
 turn returned at t=10s with 3 messages and delays [3, 5, 2]:
-  msg1.timestamp = 10000   visible_at = 13000
-  msg2.timestamp = 10000   visible_at = 18000
-  msg3.timestamp = 10000   visible_at = 20000
+  msg1.timestamp = 13000   authored_at = 10000
+  msg2.timestamp = 18000   authored_at = 10000
+  msg3.timestamp = 20000   authored_at = 10000
 ```
 
-Filtering rule: any consumer of `events` (UI render, gate input, history rendered into the next AI's prompt) excludes events where `visible_at > now`. This keeps the AI's perception of the conversation aligned with what users see.
+No future message exists to filter. The conversation-level active tick lease
+prevents another AI tick while Bedrock or typing delay is in progress. If the
+conversation ends or the lease is replaced before a write, remaining output is
+dropped while the already-recorded usage is retained.
 
-Human messages and system events have `visible_at == timestamp`. They become visible the moment they're recorded.
-
-Side effect: an AI is in "still typing" state until the last message of its turn becomes visible. The gate adds a rule — skip an AI candidate if its previous turn isn't fully visible yet (`max(visible_at) > now` for that AI's last batch). Otherwise the same AI could be force-picked twice while the user still sees it "typing".
+The legacy embedded-list runtime still uses `visible_at` until its migration;
+the migration maps that field into canonical `timestamp`.
 
 Future polish: scale delay by message length (~30-50 wpm). Out of scope for v1.
 

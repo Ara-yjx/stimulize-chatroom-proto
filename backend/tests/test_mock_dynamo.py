@@ -225,6 +225,24 @@ class TestUpdateStatus:
         assert mock_dynamo.update_status("no-such-room", "ended") is False
 
 
+class TestActiveTickLease:
+    def setup_method(self):
+        mock_dynamo.reset()
+        mock_dynamo.append_events("r1", "cr1", [_make_message(ts=100)])
+
+    def test_blocks_overlap_and_releases_only_for_owner(self):
+        assert mock_dynamo.acquire_active_tick("r1", "tick-1", 10_000, 125_000, 4_000)
+        assert not mock_dynamo.acquire_active_tick("r1", "tick-2", 20_000, 125_000, 4_000)
+        assert not mock_dynamo.release_active_tick("r1", "tick-2", 20_000)
+        assert mock_dynamo.release_active_tick("r1", "tick-1", 20_000)
+
+    def test_retains_short_dedupe_window_after_release(self):
+        assert mock_dynamo.acquire_active_tick("r1", "tick-1", 10_000, 125_000, 4_000)
+        assert mock_dynamo.release_active_tick("r1", "tick-1", 10_100)
+        assert not mock_dynamo.acquire_active_tick("r1", "tick-2", 13_999, 125_000, 4_000)
+        assert mock_dynamo.acquire_active_tick("r1", "tick-3", 14_001, 125_000, 4_000)
+
+
 class TestUpdateLastSpeakAt:
     def setup_method(self):
         mock_dynamo.reset()

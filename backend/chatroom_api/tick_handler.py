@@ -3,10 +3,8 @@
 Implements the 5-step procedure in
 ``docs/low-level-design.md#tick-handler``:
 
-1. **Idempotency guard.** Conditional update on ``last_tick_at``: skip if
-   another tick fired within ``TICK_DEDUPE_WINDOW_MS``. The heartbeat
-   container's at-least-once invocation, plus Lambda's own retry, both
-   funnel through this guard.
+1. **Tick lease.** Acquire a conversation-level lease before inference so a
+   second heartbeat cannot overlap Bedrock work or simulated typing delays.
 2. **Max-duration check.** If ``now > started_at + max_duration_seconds``,
    flip ``status="ended"`` and append a system "conversation ended" event.
 3. **Gate.** Pure ``run_gate(conv, now)`` decides whether some AI should
@@ -15,8 +13,8 @@ Implements the 5-step procedure in
    + CONVERSATION_CONTEXT) plus the Bedrock messages array, then call
    ``invoke_speak_tool`` (which reuses the shared retry + error
    classification in ``bedrock_client.py``).
-5. **Persist result.** Stack presentation timestamps, write visible messages
-   to the event table, and update compact per-AI tick state.
+5. **Persist result.** Wait out each simulated typing delay, then append the
+   message with the current server timestamp and update compact per-AI state.
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ from chatroom_api.constants import (
     TICK_DEDUPE_WINDOW_MS,
 )
 from chatroom_api.conversation import build_bedrock_messages
-from chatroom_api.delays import compute_visible_at, pick_delays_ms
+from chatroom_api.delays import pick_delays_ms
 from chatroom_api.gate import run_gate
 from chatroom_api.event_store import ConditionalWriteFailed
 from chatroom_api.participants import participant_id
@@ -62,6 +60,8 @@ logger = logging.getLogger(__name__)
 # Default model id used when a chatroom row doesn't carry one. Matches the
 # value baked into the editor preset and ``experiment/group-poc.js``.
 _DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+MAX_AI_BUBBLES_PER_TICK = 5
+ACTIVE_TICK_LEASE_MS = 125_000
 
 
 def _invoke_with_model_fallback(
@@ -635,28 +635,11 @@ def _requires_idle_follow_up(
 # ---------------------------------------------------------------------------
 
 
-def handle_tick(event: dict, context=None) -> Optional[dict]:
-    """Tick handler entry — async Lambda invocation target.
-
-    ``event`` shape: ``{"conversation_id": "..."}``. Returns a small dict
-    summarizing the outcome for CloudWatch (or ``None`` for a no-op).
-    """
-    conversation_id = (event or {}).get("conversation_id")
-    if not conversation_id:
-        logger.warning("tick handler called without conversation_id")
-        return None
-
+def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
+    """Run one tick after ``tick_id`` acquired the conversation lease."""
     db = _get_db()
     history_store = _get_event_store()
     rds = _get_rds()
-    now_ms = _now_ms()
-
-    # --- Step 1: idempotency guard. ----------------------------------------
-    won = db.update_last_tick_at_conditional(
-        conversation_id, now_ms, TICK_DEDUPE_WINDOW_MS
-    )
-    if not won:
-        return {"status": "deduped"}
 
     conv = db.get_conversation(conversation_id)
     if conv is None:
@@ -701,6 +684,7 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
                     uuid4().hex,
                     metadata_updates={"status": "ended"},
                     expected_status="active",
+                    expected_active_tick_id=tick_id,
                 )
             except ConditionalWriteFailed:
                 return {"status": "already_ended"}
@@ -821,9 +805,10 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
             "next_actionable_at": now_ms,
         }
         states[candidate_session_id] = tick_state
-        history_store.append_history_batch(
-            conversation_id,
-            [{
+        try:
+            history_store.append_history_batch(
+                conversation_id,
+                [{
                     "type": "system",
                     "subtype": "inference_error",
                     "sender": "System",
@@ -831,16 +816,25 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
                     "content": f"Chatroom server error: {err.error_type}",
                     "timestamp": now_ms,
                     "created_at": _now_iso(),
-            }],
-            uuid4().hex,
-            metadata_updates={
-                "ai_tick_state_by_participant_id": states,
-                "next_actionable_tick_at": _next_actionable_from_states(
-                    states, now_ms
-                ),
-            },
-            expected_status="active",
-        )
+                }],
+                uuid4().hex,
+                metadata_updates={
+                    "ai_tick_state_by_participant_id": states,
+                    "next_actionable_tick_at": _next_actionable_from_states(
+                        states, now_ms
+                    ),
+                },
+                expected_status="active",
+                expected_active_tick_id=tick_id,
+            )
+        except ConditionalWriteFailed:
+            _log_tick(
+                conversation_id,
+                "dropped_stale_tick",
+                ai_participant_id=candidate_session_id,
+                reason="inference_error_after_tick_lost_ownership",
+            )
+            return {"status": "dropped_stale_tick"}
         _log_tick(
             conversation_id,
             "bedrock_error",
@@ -849,7 +843,14 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         )
         return {"status": "bedrock_error", "error_type": err.error_type}
 
-    messages = result.get("messages", []) or []
+    authored_at_ms = _now_ms()
+    messages = (result.get("messages", []) or [])[:MAX_AI_BUBBLES_PER_TICK]
+    if len(result.get("messages", []) or []) > MAX_AI_BUBBLES_PER_TICK:
+        logger.warning(
+            "tick: truncating AI output for conversation %s to %s bubbles",
+            conversation_id,
+            MAX_AI_BUBBLES_PER_TICK,
+        )
     input_tokens = result.get("input_tokens", 0)
     output_tokens = result.get("output_tokens", 0)
     cache_read_input_tokens = result.get("cache_read_input_tokens", 0)
@@ -904,76 +905,155 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     except Exception as usage_exc:
         logger.warning("tick: usage write failed for conversation %s: %s", conversation_id, usage_exc)
 
-    # --- Step 5: persist visible output and compact tick projection. -------
-    new_events: list[dict] = []
-    visible_ats: list[int] = []
+    # --- Step 5: wait, then persist output and compact tick projection. -----
+    # Delayed AI messages are intentionally absent from DynamoDB until their
+    # typing delay has elapsed. This prevents ended/replaced ticks from
+    # leaving future-scheduled messages that later appear in the chat.
+    persisted_events: list[dict] = []
+    avatar = (candidate_participant or {}).get("avatar")
+    internal_name = (candidate_participant or {}).get("internal_name")
+    turn_id = uuid4().hex if messages else None
+    delays = (
+        [0] * len(messages)
+        if require_response or idle_follow_up
+        else pick_delays_ms(len(messages))
+    )
+    started_ms = _iso_to_ms(started_at) if started_at else None
+    end_deadline_ms = (
+        started_ms + int(max_duration) * 1000
+        if started_ms is not None and max_duration
+        else None
+    )
+    duration_elapsed = False
 
-    if messages:
-        if require_response or idle_follow_up:
-            visible_ats = [now_ms] * len(messages)
-        else:
-            delays = pick_delays_ms(len(messages))
-            visible_ats = compute_visible_at(now_ms, delays)
-        avatar = (candidate_participant or {}).get("avatar")
-        internal_name = (candidate_participant or {}).get("internal_name")
-        for text, visible_at in zip(messages, visible_ats):
-            new_events.append({
-                "type": "message",
-                "sender": candidate_nickname,
-                "role": "ai",
-                "ai_participant_id": candidate_session_id,
-                "internal_name": internal_name,
-                "content": text,
-                "timestamp": visible_at,
-                **({"authored_at": now_ms} if visible_at != now_ms else {}),
-                "created_at": _now_iso(),
-                **({"message_kind": "idle_follow_up"} if idle_follow_up else {}),
-                **({"avatar": avatar} if avatar else {}),
-            })
+    for text, delay_ms in zip(messages, delays):
+        if delay_ms:
+            time.sleep(delay_ms / 1000)
+        persisted_at_ms = _now_ms()
+        if end_deadline_ms is not None and persisted_at_ms > end_deadline_ms:
+            duration_elapsed = True
+            _log_tick(
+                conversation_id,
+                "dropped_delayed_messages",
+                ai_participant_id=candidate_session_id,
+                reason="conversation_duration_elapsed",
+                persisted_count=len(persisted_events),
+                dropped_count=len(messages) - len(persisted_events),
+            )
+            break
+        event = {
+            "type": "message",
+            "sender": candidate_nickname,
+            "role": "ai",
+            "ai_participant_id": candidate_session_id,
+            "internal_name": internal_name,
+            "content": text,
+            "timestamp": persisted_at_ms,
+            **(
+                {"authored_at": authored_at_ms}
+                if persisted_at_ms != authored_at_ms
+                else {}
+            ),
+            "turn_id": turn_id,
+            "created_at": _now_iso(),
+            **({"message_kind": "idle_follow_up"} if idle_follow_up else {}),
+            **({"avatar": avatar} if avatar else {}),
+        }
+        try:
+            persisted_events.extend(history_store.append_history_batch(
+                conversation_id,
+                [event],
+                uuid4().hex,
+                expected_status="active",
+                expected_active_tick_id=tick_id,
+            ))
+        except ConditionalWriteFailed:
+            _log_tick(
+                conversation_id,
+                "dropped_stale_tick",
+                ai_participant_id=candidate_session_id,
+                persisted_count=len(persisted_events),
+                dropped_count=len(messages) - len(persisted_events),
+            )
+            break
+
+    if duration_elapsed:
+        ended_at_ms = _now_ms()
+        try:
+            history_store.append_history_batch(
+                conversation_id,
+                [{
+                    "type": "system",
+                    "subtype": "conversation_ended",
+                    "sender": "System",
+                    "role": "system",
+                    "content": "This conversation has ended.",
+                    "timestamp": ended_at_ms,
+                    "created_at": _now_iso(),
+                }],
+                uuid4().hex,
+                metadata_updates={"status": "ended"},
+                expected_status="active",
+                expected_active_tick_id=tick_id,
+            )
+        except ConditionalWriteFailed:
+            return {
+                "status": "partially_spoke" if persisted_events else "dropped_stale_tick",
+                "messages_persisted": len(persisted_events),
+            }
+        return {
+            "status": "ended",
+            "messages_persisted": len(persisted_events),
+            "messages_dropped": len(messages) - len(persisted_events),
+        }
 
     prior_state = states.get(candidate_session_id, {})
-    final_visible_at = max(visible_ats) if visible_ats else now_ms
+    final_visible_at = (
+        int(persisted_events[-1]["timestamp"])
+        if persisted_events
+        else authored_at_ms
+    )
     tick_state = {
         **prior_state,
         "last_completed_tick_id": uuid4().hex,
         "last_evaluated_at": now_ms,
-        "last_result": "spoke" if messages else "silent",
+        "last_result": "spoke" if persisted_events else "silent",
         "observed_history_cursor": (
             visible_history[-1].get("event_key") if visible_history else None
         ),
         "consecutive_silent_count": (
             0
-            if messages
+            if persisted_events
             else int(prior_state.get("consecutive_silent_count", 0) or 0) + 1
         ),
         "next_actionable_at": final_visible_at,
-        **({"last_spoke_at": final_visible_at} if messages else {}),
+        **({"last_spoke_at": final_visible_at} if persisted_events else {}),
     }
     states[candidate_session_id] = tick_state
-    metadata_updates = {
-        "ai_tick_state_by_participant_id": states,
-        "next_actionable_tick_at": _next_actionable_from_states(states, now_ms),
-    }
-    if new_events:
-        history_store.append_history_batch(
+    projection_updated = history_store.update_tick_projection(
+        conversation_id,
+        candidate_session_id,
+        tick_state,
+        expected_status="active",
+        expected_active_tick_id=tick_id,
+        next_actionable_tick_at=_next_actionable_from_states(states, now_ms),
+    )
+    if not projection_updated:
+        _log_tick(
             conversation_id,
-            new_events,
-            uuid4().hex,
-            metadata_updates=metadata_updates,
-            expected_status="active",
+            "dropped_stale_tick",
+            ai_participant_id=candidate_session_id,
+            persisted_count=len(persisted_events),
+            reason="projection_update_lost_ownership",
         )
-    else:
-        history_store.update_tick_projection(
-            conversation_id,
-            candidate_session_id,
-            tick_state,
-            expected_status="active",
-            next_actionable_tick_at=_next_actionable_from_states(states, now_ms),
-        )
+        return {
+            "status": "partially_spoke" if persisted_events else "dropped_stale_tick",
+            "messages_persisted": len(persisted_events),
+        }
 
     _log_tick(
         conversation_id,
-        "spoke" if messages else "silent",
+        "spoke" if persisted_events else "silent",
         ai_participant_id=candidate_session_id,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -982,14 +1062,45 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
     )
 
     return {
-        "status": "spoke" if messages else "silent",
+        "status": "spoke" if persisted_events else "silent",
         "ai_decision": "speak" if messages else "silent",
+        "messages_persisted": len(persisted_events),
         "candidate_session_id": candidate_session_id,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cache_read_input_tokens": cache_read_input_tokens,
         "cache_write_input_tokens": cache_write_input_tokens,
     }
+
+
+def handle_tick(event: dict, context=None) -> Optional[dict]:
+    """Acquire a tick lease, run one tick, and always release ownership."""
+    conversation_id = (event or {}).get("conversation_id")
+    if not conversation_id:
+        logger.warning("tick handler called without conversation_id")
+        return None
+
+    db = _get_db()
+    now_ms = _now_ms()
+    tick_id = getattr(context, "aws_request_id", None) or uuid4().hex
+    if not db.acquire_active_tick(
+        conversation_id,
+        tick_id,
+        now_ms,
+        ACTIVE_TICK_LEASE_MS,
+        TICK_DEDUPE_WINDOW_MS,
+    ):
+        return {"status": "deduped"}
+
+    try:
+        return _handle_owned_tick(conversation_id, tick_id, now_ms)
+    finally:
+        if not db.release_active_tick(conversation_id, tick_id, _now_ms()):
+            logger.info(
+                "tick: lease already lost for conversation %s tick %s",
+                conversation_id,
+                tick_id,
+            )
 
 
 __all__ = [

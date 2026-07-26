@@ -217,6 +217,67 @@ def update_last_tick_at_conditional(
     return True
 
 
+def acquire_active_tick(
+    conversation_id: str,
+    tick_id: str,
+    now_ms: int,
+    lease_ms: int,
+    dedupe_window_ms: int,
+) -> bool:
+    """Acquire the conversation's tick lease before inference or delay."""
+    table = _get_table()
+    try:
+        table.update_item(
+            Key={"conversation_id": conversation_id},
+            UpdateExpression=(
+                "SET active_tick_id = :tick_id, "
+                "active_tick_until = :active_until, "
+                "last_tick_at = :now, last_tick_started_at = :now"
+            ),
+            ConditionExpression=(
+                "#status = :active AND "
+                "(attribute_not_exists(active_tick_until) OR active_tick_until < :now) AND "
+                "(attribute_not_exists(last_tick_at) OR last_tick_at < :stale)"
+            ),
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":active": "active",
+                ":tick_id": tick_id,
+                ":active_until": int(now_ms) + int(lease_ms),
+                ":now": int(now_ms),
+                ":stale": int(now_ms) - int(dedupe_window_ms),
+            },
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def release_active_tick(
+    conversation_id: str,
+    tick_id: str,
+    completed_at_ms: int,
+) -> bool:
+    """Release only the tick lease still owned by ``tick_id``."""
+    table = _get_table()
+    try:
+        table.update_item(
+            Key={"conversation_id": conversation_id},
+            UpdateExpression=(
+                "SET last_tick_completed_at = :completed "
+                "REMOVE active_tick_id, active_tick_until"
+            ),
+            ConditionExpression="active_tick_id = :tick_id",
+            ExpressionAttributeValues={
+                ":completed": int(completed_at_ms),
+                ":tick_id": tick_id,
+            },
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
 def update_status(conversation_id: str, new_status: str) -> bool:
     """Set ``status = new_status`` unconditionally. Returns True (always
     treats the operation as effective; the underlying ``UpdateItem`` is a

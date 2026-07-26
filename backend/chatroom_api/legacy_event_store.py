@@ -63,6 +63,7 @@ def append_history_batch(
     batch_id: str,
     metadata_updates: Optional[dict] = None,
     expected_status: Optional[str] = None,
+    expected_active_tick_id: Optional[str] = None,
 ) -> list[dict]:
     items = normalize_history_events(conversation_id, history_events, batch_id)
     if not items:
@@ -100,6 +101,10 @@ def append_history_batch(
         names["#status"] = "status"
         values[":status"] = expected_status
         condition += " AND #status = :status"
+    if expected_active_tick_id is not None:
+        names["#active_tick_id"] = "active_tick_id"
+        values[":active_tick_id"] = expected_active_tick_id
+        condition += " AND #active_tick_id = :active_tick_id"
 
     table = dynamo._get_table()
     try:
@@ -122,30 +127,47 @@ def update_tick_projection(
     ai_participant_id: str,
     tick_state: dict,
     expected_status: Optional[str] = None,
+    expected_active_tick_id: Optional[str] = None,
     next_actionable_tick_at: Optional[int] = None,
-) -> None:
+) -> bool:
     conversation = dynamo.get_conversation(conversation_id)
-    if conversation is None or (
-        expected_status is not None and conversation.get("status") != expected_status
-    ):
-        return
+    if conversation is None:
+        return False
     states = dict(conversation.get("ai_tick_state_by_participant_id") or {})
     states[ai_participant_id] = copy.deepcopy(tick_state)
-    dynamo._get_table().update_item(
-        Key={"conversation_id": conversation_id},
-        UpdateExpression=(
-            "SET ai_tick_state_by_participant_id = :states, "
-            "next_actionable_tick_at = :next"
+    names = {}
+    values = {
+        ":states": dynamo._to_dynamodb_safe(states),
+        ":next": int(
+            next_actionable_tick_at
+            if next_actionable_tick_at is not None
+            else tick_state.get("next_actionable_at", 0) or 0
         ),
-        ExpressionAttributeValues={
-            ":states": dynamo._to_dynamodb_safe(states),
-            ":next": int(
-                next_actionable_tick_at
-                if next_actionable_tick_at is not None
-                else tick_state.get("next_actionable_at", 0) or 0
+    }
+    condition = "attribute_exists(conversation_id)"
+    if expected_status is not None:
+        names["#status"] = "status"
+        values[":status"] = expected_status
+        condition += " AND #status = :status"
+    if expected_active_tick_id is not None:
+        names["#active_tick_id"] = "active_tick_id"
+        values[":active_tick_id"] = expected_active_tick_id
+        condition += " AND #active_tick_id = :active_tick_id"
+    table = dynamo._get_table()
+    try:
+        table.update_item(
+            Key={"conversation_id": conversation_id},
+            UpdateExpression=(
+                "SET ai_tick_state_by_participant_id = :states, "
+                "next_actionable_tick_at = :next"
             ),
-        },
-    )
+            ConditionExpression=condition,
+            **({"ExpressionAttributeNames": names} if names else {}),
+            ExpressionAttributeValues=values,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
 
 
 def _ascending_page(events: list[dict], lower: Optional[str], upper: str, limit: int) -> dict:

@@ -276,6 +276,52 @@ def update_last_tick_at_conditional(
         return True
 
 
+def acquire_active_tick(
+    conversation_id: str,
+    tick_id: str,
+    now_ms: int,
+    lease_ms: int,
+    dedupe_window_ms: int,
+) -> bool:
+    with _lock:
+        room = _rooms.get(conversation_id)
+        if room is None or room.get("status") != "active":
+            return False
+        active_until = int(room.get("active_tick_until", 0) or 0)
+        if active_until >= int(now_ms):
+            return False
+        last_tick_at = room.get("last_tick_at")
+        if (
+            last_tick_at is not None
+            and int(last_tick_at) >= int(now_ms) - int(dedupe_window_ms)
+        ):
+            return False
+        room["active_tick_id"] = tick_id
+        room["active_tick_until"] = int(now_ms) + int(lease_ms)
+        room["last_tick_at"] = int(now_ms)
+        room["last_tick_started_at"] = int(now_ms)
+        room["updated_at"] = _now_iso()
+        _maybe_dump(conversation_id, room)
+        return True
+
+
+def release_active_tick(
+    conversation_id: str,
+    tick_id: str,
+    completed_at_ms: int,
+) -> bool:
+    with _lock:
+        room = _rooms.get(conversation_id)
+        if room is None or room.get("active_tick_id") != tick_id:
+            return False
+        room.pop("active_tick_id", None)
+        room.pop("active_tick_until", None)
+        room["last_tick_completed_at"] = int(completed_at_ms)
+        room["updated_at"] = _now_iso()
+        _maybe_dump(conversation_id, room)
+        return True
+
+
 def update_status(conversation_id: str, new_status: str) -> bool:
     """Set ``status = new_status`` unconditionally. Returns False if the row
     is gone (mirrors a no-op ``UpdateItem`` against a missing key)."""

@@ -59,10 +59,9 @@ export class TickHandlerStack extends Stack {
       handler: "chatroom_api.tick_handler.handle_tick",
       code: backendPythonCode(),
       memorySize: 512,
-      // 60s gives Bedrock retries (3 attempts, exponential backoff) plus the
-      // DDB writes plenty of headroom. Heartbeat fires every 5s; the dedupe
-      // guard prevents pile-up if a single tick runs long.
-      timeout: Duration.seconds(60),
+      // Includes Bedrock retries plus up to five sequential 2-8s typing
+      // delays. The conversation-level tick lease prevents overlap.
+      timeout: Duration.seconds(120),
       environment: {
         DYNAMODB_TABLE: conversationTable.tableName,
         ...(eventTable ? { DYNAMODB_EVENT_TABLE: eventTable.tableName } : {}),

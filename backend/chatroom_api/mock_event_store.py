@@ -70,6 +70,7 @@ def append_history_batch(
     batch_id: str,
     metadata_updates: Optional[dict] = None,
     expected_status: Optional[str] = None,
+    expected_active_tick_id: Optional[str] = None,
 ) -> list[dict]:
     items = normalize_history_events(conversation_id, history_events, batch_id)
     if not items:
@@ -80,6 +81,11 @@ def append_history_batch(
             raise ValueError("conversation not found")
         if expected_status is not None and room.get("status") != expected_status:
             raise ConditionalWriteFailed("conversation status changed")
+        if (
+            expected_active_tick_id is not None
+            and room.get("active_tick_id") != expected_active_tick_id
+        ):
+            raise ConditionalWriteFailed("active tick ownership changed")
         history = mock_dynamo._history.setdefault(conversation_id, [])
         by_key = {event["event_key"]: event for event in history}
         if all(item["event_key"] in by_key for item in items):
@@ -102,14 +108,20 @@ def update_tick_projection(
     ai_participant_id: str,
     tick_state: dict,
     expected_status: Optional[str] = None,
+    expected_active_tick_id: Optional[str] = None,
     next_actionable_tick_at: Optional[int] = None,
-) -> None:
+) -> bool:
     with mock_dynamo._lock:
         room = mock_dynamo._rooms.get(conversation_id)
         if room is None:
-            return
+            return False
         if expected_status is not None and room.get("status") != expected_status:
-            return
+            return False
+        if (
+            expected_active_tick_id is not None
+            and room.get("active_tick_id") != expected_active_tick_id
+        ):
+            return False
         room.setdefault("ai_tick_state_by_participant_id", {})[
             ai_participant_id
         ] = copy.deepcopy(tick_state)
@@ -119,6 +131,7 @@ def update_tick_projection(
             else tick_state.get("next_actionable_at", 0) or 0
         )
         mock_dynamo._maybe_dump(conversation_id, room)
+    return True
 
 
 def _page(items: list[dict], limit: int) -> tuple[list[dict], bool]:

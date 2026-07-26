@@ -233,6 +233,7 @@ describe("TickHandlerStack", () => {
       FunctionName: "chatroom-tick-handler",
       Runtime: "python3.12",
       Handler: "chatroom_api.tick_handler.handle_tick",
+      Timeout: 120,
       Environment: {
         Variables: Match.objectLike({
           // Tables — values are CFN Refs that resolve cross-stack, just check keys.

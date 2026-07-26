@@ -14,7 +14,8 @@ The following decisions are locked for implementation:
   core history writes/queries depend on it; an application may attach it as
   optional event metadata.
 - `timestamp` is the server-assigned history/availability time. Remove
-  `visible_at`; delayed AI messages may add optional `authored_at`.
+  `visible_at`; delayed AI messages are written only after waiting and may add
+  optional `authored_at`.
 - Message authors use role-specific immutable IDs. AI identity always uses the
   conversation-scoped `ai_participant_id`, not a display or internal name.
 - Persist only participant-facing `H#` history. Reserve `A#`, but send current
@@ -112,6 +113,7 @@ sender                   # display-name snapshot
 internal_name            # optional AI label snapshot
 timestamp                 # canonical history time, epoch ms
 authored_at               # optional pre-delay production time, epoch ms
+turn_id                    # optional model-turn grouping across delayed writes
 created_at                # server persistence time, ISO 8601
 ...message/system payload
 ```
@@ -141,10 +143,12 @@ A#T{timestamp:016d}#B{batch_id}#I{index:03d}   # reserved, not written now
   access pattern.
 - `T` gives server-assigned chronological ordering. Padding preserves lexical
   order.
-- `B` is a UUID shared by one logical write/model turn. Retain it across
-  retries and use it as the DynamoDB transaction idempotency token.
+- `B` is a UUID shared by one atomic write. Retain it across retries and use it
+  as the DynamoDB transaction idempotency token.
 - `I` preserves order within a batch and prevents same-millisecond collisions.
 - `event_id` is `<batch_id>#<index>` and is returned to clients for dedupe.
+- Delayed bubbles from one model turn are separate writes and share an optional
+  `turn_id`; do not overload the storage transaction ID for this grouping.
 
 History order is the server-assigned `timestamp`, followed by the event key.
 Within a batch, `index` preserves order. Separate batches with the same
@@ -168,22 +172,20 @@ gate input, and prompt history, and must be server-assigned.
 There is no `visible_at` in the new schema.
 
 - Immediate human/system event: `timestamp = now`; omit `authored_at`.
-- Delayed AI event: `timestamp` is the future presentation time;
+- Delayed AI event: wait first, then assign `timestamp = server now` and append;
   `authored_at` is when the model output was produced.
 - `authored_at` never controls ordering or delivery.
-- Group one model turn by `batch_id`, not either timestamp.
+- Group one delayed model turn by `turn_id`, not either timestamp.
 
-Example: a turn produced at `12:00:00` may contain messages with timestamps
-`12:00:02` and `12:00:05`; both have `authored_at=12:00:00`.
+Example: a turn produced at `12:00:00` may be appended at `12:00:02` and
+`12:00:05`; both events have `authored_at=12:00:00` and the same `turn_id`.
 
-For the current non-resumable runtime, an already-persisted future AI message
-remains deliverable after an end boundary. Resumable conversations are stricter:
-the AI runtime waits before appending, and drops the output when the active
-episode fence no longer matches, so they never persist future history.
-
-An application activity's end cursor must include all history accepted for that
-activity, including future-timestamp events. Its visible end marker is therefore
-not guaranteed to be the final displayed event.
+The tick handler holds a conversation-level tick lease while it waits. Every
+append requires the same active tick ID and active conversation status. If the
+conversation ends or ownership changes before a delay finishes, the remaining
+output is dropped; usage for the completed inference is still retained. Newly
+generated messages are therefore never stored with future timestamps. Migration
+may preserve future timestamps that the legacy runtime had already accepted.
 
 ### History versus diagnostics
 
@@ -225,7 +227,8 @@ completed per-AI decision in metadata:
 - A gate-only skip logs diagnostics but does not replace a completed AI
   decision.
 - A silent/error result with no visible output updates metadata only.
-- Visible output and its projection commit in one transaction.
+- Delayed bubbles commit independently after their waits. The active tick lease
+  prevents another tick from running before the final projection update.
 - CloudWatch delivery is intentionally not atomic with DynamoDB.
 - The existing pre-gate tick guard remains separate. Its crash gap is deferred
   to the tick-ownership refactor.
@@ -440,16 +443,13 @@ is unsafe; stop writes and fix forward instead.
 
 - Keys order by canonical timestamp/batch/index; equal-timestamp batches have
   deterministic arbitrary order and do not skip or duplicate events.
-- Future `timestamp` events are unavailable until their history time.
-- In the current non-resumable runtime, accepted future messages may appear
-  after an end boundary; ending prevents new tick/inference work rather than
-  retracting history. Resumable paths instead delay before append and drop on a
-  stale active-episode fence.
-- Delayed AI messages retain optional `authored_at` and group by `batch_id`.
+- Newly generated events are never pre-written with future timestamps; migrated
+  legacy future events remain unavailable until their preserved history time.
+- Delayed AI messages retain optional `authored_at` and group by `turn_id`.
 - Only `H#` is persisted; diagnostics are structured/redacted CloudWatch logs.
 - Silent ticks update projection without writing an event; gate skips do not
   overwrite the last completed decision.
-- Visible output and its projection commit together.
+- Tick ownership remains valid through inference, delay, append, and projection.
 - Forward/backward cursor pages have no gaps or overlap.
 - Cached legacy widgets can continue numeric-timestamp polling during rollout.
 - Prompt/gate behavior matches the legacy visible-history behavior.

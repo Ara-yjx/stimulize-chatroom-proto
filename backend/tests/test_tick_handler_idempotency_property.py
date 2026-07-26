@@ -132,7 +132,7 @@ def test_tick_handler_idempotent_within_dedupe_window(now_ms_offset: int) -> Non
         tick_handler,
         "invoke_speak_tool",
         return_value=_FAKE_BEDROCK_RESPONSE,
-    ):
+    ), patch.object(tick_handler.time, "sleep"):
         # First call: ``time.time()`` returns ``base_seconds`` (epoch s).
         # ``_now_ms`` will compute ``base_seconds * 1000``.
         with patch.object(tick_handler.time, "time", return_value=float(base_seconds)):
@@ -177,7 +177,8 @@ def test_tick_handler_first_call_records_projection_and_one_message() -> None:
         tick_handler,
         "invoke_speak_tool",
         return_value=_FAKE_BEDROCK_RESPONSE,
-    ), patch.object(tick_handler.time, "time", return_value=float(base_seconds)):
+    ), patch.object(tick_handler.time, "time", return_value=float(base_seconds)), \
+         patch.object(tick_handler.time, "sleep"):
         result = tick_handler.handle_tick({"conversation_id": conversation_id})
 
     assert result is not None

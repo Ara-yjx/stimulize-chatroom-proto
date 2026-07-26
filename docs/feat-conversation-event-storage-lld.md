@@ -212,16 +212,19 @@ stop reading `conv["events"]`.
   only.
 - Participant-visible server error: append one `H#` system event and update the
   projection transactionally.
-- AI output: assign `timestamp=scheduled presentation time`,
-  `authored_at=model completion time`, and `ai_participant_id`; append the
-  batch and projection transactionally.
-- Set the AI's `next_actionable_at` to at least the final scheduled message
-  time so another tick does not run while it is still "typing."
+- AI output: acquire a 125-second conversation tick lease, wait each 2-8 second
+  typing delay, then append that bubble with `timestamp=server now`,
+  `authored_at=model completion time`, `turn_id`, and `ai_participant_id`.
+- Every append and the final projection update require the same active tick ID
+  and active status. Drop remaining output if either condition is stale.
+- Limit one model turn to five bubbles, fitting at most 40 seconds of typing
+  delay inside the 120-second Lambda timeout.
 - End: conditionally change status and append the end boundary in one
   transaction. No new tick starts afterward.
 
-Already-accepted future AI messages remain readable after the soft end. The
-end cursor includes them even when the visible end marker sorts earlier.
+Usage is recorded once Bedrock returns, before presentation delay, and remains
+billable even if a later stale guard drops the output. The new runtime never
+pre-writes future events; migration alone may preserve legacy future events.
 
 ## Read API and Widget
 

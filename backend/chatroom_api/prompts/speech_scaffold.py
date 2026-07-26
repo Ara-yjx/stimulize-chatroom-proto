@@ -563,6 +563,7 @@ SPEAK_TOOL_CONFIG = {
                         "properties": {
                             "messages": {
                                 "type": "array",
+                                "maxItems": 5,
                                 "items": {"type": "string"},
                                 "description": (
                                     "Zero or more message texts. "
@@ -594,6 +595,7 @@ REQUIRED_SPEAK_TOOL_CONFIG = {
                             "messages": {
                                 "type": "array",
                                 "minItems": 1,
+                                "maxItems": 5,
                                 "items": {"type": "string", "minLength": 1},
                                 "description": (
                                     "One or more non-empty message texts. "
