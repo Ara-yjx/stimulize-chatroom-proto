@@ -20,6 +20,22 @@ const baseGroupSetting = (): ChatroomSetting => ({
 })
 
 describe('validateChatroomSetting', () => {
+  it('allows resumable only for one-human one-AI assistant rooms', () => {
+    const supported = {
+      ...defaultChatroomSetting(),
+      resumable: true,
+      mimic_human: false,
+    }
+    expect(validateChatroomSetting(supported).ok).toBe(true)
+
+    expect(validateChatroomSetting({ ...supported, mimic_human: true }).errors.resumable)
+      .toContain('one human')
+    expect(validateChatroomSetting({ ...supported, human_count: 2 }).errors.resumable)
+      .toContain('one human')
+    expect(validateChatroomSetting({ ...supported, ai_count: 2 }).errors.resumable)
+      .toContain('one human')
+  })
+
   it('returns ok=true for a valid group setting', () => {
     expect(validateChatroomSetting(baseGroupSetting())).toEqual({ ok: true, errors: {} })
   })

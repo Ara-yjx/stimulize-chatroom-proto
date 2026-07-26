@@ -15,6 +15,7 @@ export interface ChatMessage {
   participant_id?: string;
   ai_participant_id?: string;
   internal_name?: string | null;
+  episode_number?: number;
   avatar?: Avatar;
 }
 
@@ -31,6 +32,7 @@ export interface ConversationEvent {
   timestamp: number;
   avatar?: Avatar;
   internal_name?: string | null;
+  episode_number?: number;
 }
 
 export interface ChatroomSetting {
@@ -53,6 +55,7 @@ export interface ChatroomSetting {
   ai_count?: number;
   replace_human_with_ai?: boolean;
   max_wait_seconds?: number;
+  resumable?: boolean;
 }
 
 export interface LobbyState {
@@ -71,6 +74,7 @@ export interface InitOptions {
     showNextButton?: () => void;
   };
   chatroomId: string;
+  participantId?: string;
   apiBaseUrl?: string;
   beta?: boolean;
 }
@@ -82,6 +86,9 @@ export interface SessionInfo {
   nickname: string;
   avatar: Avatar;
   chatroomSetting: ChatroomSetting;
+  participantId?: string;
+  episodeNumber?: number;
+  episodeStartedAt?: string;
 }
 
 export interface ExchangeTokenResponse {
@@ -91,6 +98,13 @@ export interface ExchangeTokenResponse {
   nickname: string;
   avatar: Avatar;
   chatroom_setting: ChatroomSetting;
+  participant_id?: string;
+  connection_id?: string;
+  episode_number?: number;
+  episode_started_at?: string;
+  history_start_cursor?: string | null;
+  resumed?: boolean;
+  lobby?: LobbyState | null;
 }
 
 export interface SendMessageResponse {
@@ -103,7 +117,7 @@ export interface PollMessagesResponse {
   has_more?: boolean;
   next_pending_at?: number | null;
   lobby?: LobbyState;
-  conversation_status?: "active" | "ended";
+  conversation_status?: "active" | "inactive" | "ended";
 }
 
 export interface HistoryPageResponse {

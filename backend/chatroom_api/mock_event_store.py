@@ -69,8 +69,10 @@ def append_history_batch(
     history_events: list[dict],
     batch_id: str,
     metadata_updates: Optional[dict] = None,
+    metadata_remove: Optional[list[str]] = None,
     expected_status: Optional[str] = None,
     expected_active_tick_id: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
 ) -> list[dict]:
     items = normalize_history_events(conversation_id, history_events, batch_id)
     if not items:
@@ -86,6 +88,11 @@ def append_history_batch(
             and room.get("active_tick_id") != expected_active_tick_id
         ):
             raise ConditionalWriteFailed("active tick ownership changed")
+        if any(
+            room.get(key) != value
+            for key, value in (expected_metadata or {}).items()
+        ):
+            raise ConditionalWriteFailed("conversation metadata changed")
         history = mock_dynamo._history.setdefault(conversation_id, [])
         by_key = {event["event_key"]: event for event in history}
         if all(item["event_key"] in by_key for item in items):
@@ -96,11 +103,40 @@ def append_history_batch(
             raise ValueError("partial history batch conflict")
         history.extend(copy.deepcopy(items))
         room.update(copy.deepcopy(metadata_updates or {}))
+        for key in metadata_remove or []:
+            room.pop(key, None)
         room["updated_at"] = _now_iso()
         room["ttl"] = int(time.time()) + TTL_SECONDS
         _mirror_legacy(room, items)
         mock_dynamo._maybe_dump(conversation_id, room)
     return copy.deepcopy(items)
+
+
+def update_metadata(
+    conversation_id: str,
+    metadata_updates: Optional[dict] = None,
+    metadata_remove: Optional[list[str]] = None,
+    expected_status: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
+) -> bool:
+    with mock_dynamo._lock:
+        room = mock_dynamo._rooms.get(conversation_id)
+        if room is None:
+            return False
+        if expected_status is not None and room.get("status") != expected_status:
+            return False
+        if any(
+            room.get(key) != value
+            for key, value in (expected_metadata or {}).items()
+        ):
+            return False
+        room.update(copy.deepcopy(metadata_updates or {}))
+        for key in metadata_remove or []:
+            room.pop(key, None)
+        room["updated_at"] = _now_iso()
+        room["ttl"] = int(time.time()) + TTL_SECONDS
+        mock_dynamo._maybe_dump(conversation_id, room)
+        return True
 
 
 def update_tick_projection(
@@ -109,6 +145,7 @@ def update_tick_projection(
     tick_state: dict,
     expected_status: Optional[str] = None,
     expected_active_tick_id: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
     next_actionable_tick_at: Optional[int] = None,
 ) -> bool:
     with mock_dynamo._lock:
@@ -120,6 +157,11 @@ def update_tick_projection(
         if (
             expected_active_tick_id is not None
             and room.get("active_tick_id") != expected_active_tick_id
+        ):
+            return False
+        if any(
+            room.get(key) != value
+            for key, value in (expected_metadata or {}).items()
         ):
             return False
         room.setdefault("ai_tick_state_by_participant_id", {})[

@@ -139,6 +139,7 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
     normalized["simulate_pairing_seconds"] = (
         simulate_pairing_seconds if human_count == 1 and mimic_human else 0
     )
+    normalized["resumable"] = bool(normalized.get("resumable", False))
 
     temperature = normalized.get("temperature", 0.7)
     normalized["temperature"] = normalize_temperature(temperature, default=0.7)

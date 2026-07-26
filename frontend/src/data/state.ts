@@ -25,13 +25,15 @@ export class ChatroomState {
   // Session state
   token = "";
   sessionId = "";
+  participantId = "";
+  episodeNumber: number | null = null;
   conversationId = "";
   nickname = "";
   avatar: Avatar = { emojiText: "" };
   chatroomSetting: ChatroomSetting | null = null;
   chatHistory: ChatMessage[] = [];
   liveCursor: string | null = null;
-  conversationStatus: "active" | "ended" | "lobby" = "lobby";
+  conversationStatus: "active" | "inactive" | "ended" | "lobby" = "lobby";
 
   private _apiBaseUrl = "";
   private _pollingTimer: ReturnType<typeof setInterval> | null = null;
@@ -114,13 +116,22 @@ export class ChatroomState {
     this._hasOlderHistory = false;
     this._endNotified = false;
 
-    const resp = await exchangeToken(this._apiBaseUrl, options.chatroomId);
+    const resp = await exchangeToken(
+      this._apiBaseUrl,
+      options.chatroomId,
+      options.participantId
+    );
     this.token = resp.token;
     this.sessionId = resp.session_id;
+    this.participantId = resp.participant_id || "";
+    this.episodeNumber = resp.episode_number ?? null;
     this.conversationId = resp.conversation_id;
     this.nickname = resp.nickname;
     this.avatar = resp.avatar;
     this.chatroomSetting = resp.chatroom_setting;
+    this._chatStartTime = resp.episode_started_at
+      ? Date.parse(resp.episode_started_at)
+      : Date.now();
 
     const info: SessionInfo = {
       token: this.token,
@@ -129,6 +140,9 @@ export class ChatroomState {
       nickname: this.nickname,
       avatar: this.avatar,
       chatroomSetting: this.chatroomSetting,
+      participantId: this.participantId || undefined,
+      episodeNumber: this.episodeNumber ?? undefined,
+      episodeStartedAt: resp.episode_started_at,
     };
     this._onSessionReady.forEach((cb) => cb(info));
   }
@@ -195,7 +209,7 @@ export class ChatroomState {
 
   // --- Send message ---
   async send(text: string): Promise<void> {
-    if (this.conversationStatus === "ended") return;
+    if (this.conversationStatus === "ended" || this.conversationStatus === "inactive") return;
 
     const userMsg: ChatMessage = {
       sender: this.nickname,
@@ -203,6 +217,8 @@ export class ChatroomState {
       role: "user",
       timestamp: Date.now(),
       session_id: this.sessionId,
+      ...(this.participantId ? { participant_id: this.participantId } : {}),
+      ...(this.episodeNumber !== null ? { episode_number: this.episodeNumber } : {}),
       avatar: this.avatar,
     };
     this.chatHistory.push(userMsg);
@@ -222,6 +238,10 @@ export class ChatroomState {
       }
       if (err?.status === 401) {
         this._onError.forEach((cb) => cb("Session expired. Please refresh."));
+        return;
+      }
+      if (err?.status === 409) {
+        this._handleSupersededConnection();
         return;
       }
       this._onError.forEach((cb) => cb("Failed to send message."));
@@ -317,8 +337,8 @@ export class ChatroomState {
         for (const evt of resp.events) this._processEvent(evt);
       }
 
-      if (resp.conversation_status === "ended") {
-        this.conversationStatus = "ended";
+      if (resp.conversation_status === "ended" || resp.conversation_status === "inactive") {
+        this.conversationStatus = resp.conversation_status;
         const waitingForHistory = Boolean(resp.has_more || resp.next_pending_at);
         if (!waitingForHistory && !this._endNotified) {
           this._endNotified = true;
@@ -342,6 +362,10 @@ export class ChatroomState {
       if (err?.status === 410) {
         this.stopPolling();
         this._onLobbyAborted.forEach((cb) => cb());
+        return;
+      }
+      if (err?.status === 409) {
+        this._handleSupersededConnection();
         return;
       }
 
@@ -378,6 +402,14 @@ export class ChatroomState {
     return true;
   }
 
+  private _handleSupersededConnection(): void {
+    this.stopPolling();
+    this.stopTimer();
+    this._onError.forEach((cb) => cb(
+      "This conversation is open in another browser. This view is now read-only."
+    ));
+  }
+
   private _eventKey(evt: ConversationEvent): string {
     return evt.event_id || this._dedupeKey(evt.sender, evt.content, evt.timestamp, evt.role);
   }
@@ -411,6 +443,7 @@ export class ChatroomState {
       ai_participant_id: evt.ai_participant_id,
       internal_name: evt.internal_name ?? null,
       avatar: evt.avatar,
+      episode_number: evt.episode_number,
     };
   }
 
@@ -431,6 +464,7 @@ export class ChatroomState {
         content,
         role: "system",
         timestamp: evt.timestamp,
+        episode_number: evt.episode_number,
       });
       this._onSystemEvent.forEach((cb) => cb(displayContent));
     } else if (evt.type === "error") {
@@ -442,6 +476,7 @@ export class ChatroomState {
         content: evt.content,
         role: "system",
         timestamp: evt.timestamp,
+        episode_number: evt.episode_number,
       });
       this._onError.forEach((cb) => cb(evt.content));
     } else {
@@ -461,16 +496,17 @@ export class ChatroomState {
         ai_participant_id: evt.ai_participant_id,
         internal_name: evt.internal_name ?? null,
         avatar: evt.avatar,
+        episode_number: evt.episode_number,
       };
       this.chatHistory.push(msg);
-      this._onMessage.forEach((cb) => cb(msg, false));
+      this._onMessage.forEach((cb) => cb(msg, this.isSelfMessage(msg)));
     }
   }
 
   // --- Timer ---
   startTimer(minMinutes?: number, maxMinutes?: number): void {
     if (!minMinutes && !maxMinutes) return;
-    this._chatStartTime = Date.now();
+    if (!this._chatStartTime) this._chatStartTime = Date.now();
 
     this._timerInterval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - this._chatStartTime) / 60000);
@@ -504,8 +540,29 @@ export class ChatroomState {
     return [...this.chatHistory];
   }
 
+  isSelfMessage(message: Pick<ChatMessage, "session_id" | "participant_id">): boolean {
+    return this.participantId
+      ? message.participant_id === this.participantId
+      : message.session_id === this.sessionId;
+  }
+
+  getCurrentEpisodeHistory(): ChatMessage[] {
+    if (this.episodeNumber === null) return this.getHistory();
+    return this.chatHistory.filter(
+      (message) => message.episode_number === this.episodeNumber
+    );
+  }
+
+  getCurrentEpisodeHistoryText(): string {
+    return this._formatHistory(this.getCurrentEpisodeHistory());
+  }
+
   getHistoryText(): string {
-    return this.chatHistory
+    return this._formatHistory(this.chatHistory);
+  }
+
+  private _formatHistory(history: ChatMessage[]): string {
+    return history
       .map((m) => {
         if (m.role === "system") return `[SYS] ${m.content}`;
         if (m.role === "ai") {

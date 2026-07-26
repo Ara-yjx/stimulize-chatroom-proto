@@ -117,8 +117,10 @@ def normalize_history_events(
 def _metadata_update_action(
     conversation_id: str,
     metadata_updates: Optional[dict],
+    metadata_remove: Optional[list[str]],
     expected_status: Optional[str],
     expected_active_tick_id: Optional[str],
+    expected_metadata: Optional[dict],
     *,
     refresh_history: bool,
 ) -> dict:
@@ -137,6 +139,12 @@ def _metadata_update_action(
         values[value_key] = value
         sets.append(f"{name_key} = {value_key}")
 
+    removes = []
+    for index, key in enumerate(metadata_remove or []):
+        name_key = f"#r{index}"
+        names[name_key] = key
+        removes.append(name_key)
+
     condition = "attribute_exists(conversation_id)"
     if expected_status is not None:
         names["#status"] = "status"
@@ -146,12 +154,22 @@ def _metadata_update_action(
         names["#active_tick_id"] = "active_tick_id"
         values[":expected_active_tick_id"] = expected_active_tick_id
         condition += " AND #active_tick_id = :expected_active_tick_id"
+    for index, (key, value) in enumerate((expected_metadata or {}).items()):
+        name_key = f"#e{index}"
+        value_key = f":e{index}"
+        names[name_key] = key
+        values[value_key] = value
+        condition += f" AND {name_key} = {value_key}"
+
+    update_expression = "SET " + ", ".join(sets)
+    if removes:
+        update_expression += " REMOVE " + ", ".join(removes)
 
     return {
         "Update": {
             "TableName": config.DYNAMODB_TABLE,
             "Key": _serialize_item({"conversation_id": conversation_id}),
-            "UpdateExpression": "SET " + ", ".join(sets),
+            "UpdateExpression": update_expression,
             "ConditionExpression": condition,
             "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": _serialize_item(values),
@@ -248,8 +266,10 @@ def append_history_batch(
     history_events: list[dict],
     batch_id: str,
     metadata_updates: Optional[dict] = None,
+    metadata_remove: Optional[list[str]] = None,
     expected_status: Optional[str] = None,
     expected_active_tick_id: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
 ) -> list[dict]:
     items = normalize_history_events(conversation_id, history_events, batch_id)
     if not items:
@@ -258,8 +278,10 @@ def append_history_batch(
         _metadata_update_action(
             conversation_id,
             metadata_updates,
+            metadata_remove,
             expected_status,
             expected_active_tick_id,
+            expected_metadata,
             refresh_history=True,
         ),
         *_event_put_actions(items),
@@ -277,12 +299,39 @@ def append_history_batch(
     return items
 
 
+def update_metadata(
+    conversation_id: str,
+    metadata_updates: Optional[dict] = None,
+    metadata_remove: Optional[list[str]] = None,
+    expected_status: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
+) -> bool:
+    """Conditionally update conversation metadata without writing history."""
+    action = _metadata_update_action(
+        conversation_id,
+        metadata_updates,
+        metadata_remove,
+        expected_status,
+        None,
+        expected_metadata,
+        refresh_history=True,
+    )["Update"]
+    try:
+        _get_client().update_item(**action)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
 def update_tick_projection(
     conversation_id: str,
     ai_participant_id: str,
     tick_state: dict,
     expected_status: Optional[str] = None,
     expected_active_tick_id: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
     next_actionable_tick_at: Optional[int] = None,
 ) -> bool:
     table = _get_metadata_table()
@@ -308,6 +357,12 @@ def update_tick_projection(
         names["#active_tick_id"] = "active_tick_id"
         values[":expected_active_tick_id"] = expected_active_tick_id
         condition += " AND #active_tick_id = :expected_active_tick_id"
+    for index, (key, value) in enumerate((expected_metadata or {}).items()):
+        name_key = f"#e{index}"
+        value_key = f":e{index}"
+        names[name_key] = key
+        values[value_key] = value
+        condition += f" AND {name_key} = {value_key}"
     try:
         table.update_item(
             Key={"conversation_id": conversation_id},

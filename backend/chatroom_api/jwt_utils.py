@@ -39,6 +39,10 @@ def create_token(
     session_id: str,
     conversation_id: str,
     chatroom_id: str,
+    *,
+    participant_id: str | None = None,
+    connection_id: str | None = None,
+    episode_number: int | None = None,
 ) -> str:
     """Sign a JWT with HS256 containing session/conversation/chatroom claims."""
     now = int(time.time())
@@ -49,6 +53,12 @@ def create_token(
         "iat": now,
         "exp": now + _TTL_SECONDS,
     }
+    if participant_id is not None:
+        payload["participant_id"] = participant_id
+    if connection_id is not None:
+        payload["connection_id"] = connection_id
+    if episode_number is not None:
+        payload["episode_number"] = int(episode_number)
     return jwt.encode(payload, _get_secret(), algorithm=_ALGORITHM)
 
 
