@@ -53,6 +53,8 @@ export interface ChatroomSetting {
   ai_personas: AiPersonaSetting[]
   model_id: string
   mimic_human: boolean
+  /** Reuse one conversation per case-sensitive participant ID. Beta: 1H1AI assistant only. */
+  resumable: boolean
   /** Optional room-level AI display-name fallback for the non-mimic 1H1AI preset. */
   ai_nickname: string
   show_avatars: boolean
@@ -163,6 +165,13 @@ export function validateChatroomSetting(setting: ChatroomSetting): ValidationRes
 
   if (isReservedParticipantNickname(setting.ai_nickname)) {
     errors.ai_nickname = 'AI nickname cannot be You or Participant'
+  }
+
+  if (
+    setting.resumable &&
+    (setting.human_count !== 1 || setting.ai_count !== 1 || setting.mimic_human)
+  ) {
+    errors.resumable = 'Resumable conversations require one human, one AI, and Mimic human off'
   }
 
   // Always validate max_duration_seconds (applies to both modes).
@@ -285,6 +294,7 @@ export function defaultChatroomSetting(): ChatroomSetting {
     ai_personas: [],
     model_id: 'global.anthropic.claude-sonnet-4-6',
     mimic_human: true,
+    resumable: false,
     ai_nickname: '',
     show_avatars: true,
     temperature: 0.7,

@@ -8,13 +8,17 @@ import { _$ } from "../lib/jquery";
 
 export async function exchangeToken(
   apiBaseUrl: string,
-  chatroomId: string
+  chatroomId: string,
+  participantId?: string
 ): Promise<ExchangeTokenResponse> {
   return _$.ajax({
     url: `${apiBaseUrl}/auth/token`,
     method: "POST",
     contentType: "application/json",
-    data: JSON.stringify({ chatroom_id: chatroomId }),
+    data: JSON.stringify({
+      chatroom_id: chatroomId,
+      ...(participantId ? { participant_id: participantId } : {}),
+    }),
   });
 }
 

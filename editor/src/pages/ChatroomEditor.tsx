@@ -319,6 +319,7 @@ function normalizeLoadedSetting(setting: Partial<ChatroomSetting> | undefined): 
     ...setting,
     ai_personas: normalizeAiPersonas(setting?.ai_personas),
     mimic_human: typeof setting?.mimic_human === 'boolean' ? setting.mimic_human : defaults.mimic_human,
+    resumable: typeof setting?.resumable === 'boolean' ? setting.resumable : defaults.resumable,
     ai_nickname: typeof setting?.ai_nickname === 'string' ? setting.ai_nickname : defaults.ai_nickname,
     show_avatars: typeof setting?.show_avatars === 'boolean' ? setting.show_avatars : defaults.show_avatars,
     temperature: typeof setting?.temperature === 'number' ? setting.temperature : defaults.temperature,
@@ -340,6 +341,7 @@ export default function ChatroomEditor() {
   const watchedHumanCount = Form.useWatch('human_count', form) as number | undefined
   const watchedAiCount = Form.useWatch('ai_count', form) as number | undefined
   const watchedMimicHuman = Form.useWatch('mimic_human', form) as boolean | undefined
+  const watchedResumable = Form.useWatch('resumable', form) as boolean | undefined
   const watchedAiNickname = Form.useWatch('ai_nickname', form) as string | undefined
   const watchedTimerMaxMinutes = Form.useWatch('timer_max_minutes', form) as number | null | undefined
 
@@ -358,6 +360,17 @@ export default function ChatroomEditor() {
     if (watchedHumanCount === 1 && watchedMimicHuman === true) return
     form.setFieldValue('simulate_pairing_seconds', 0)
   }, [form, watchedHumanCount, watchedMimicHuman])
+
+  const enableResumable = (
+    (watchedHumanCount ?? 1) === 1 &&
+    (watchedAiCount ?? 1) === 1 &&
+    watchedMimicHuman === false
+  )
+
+  useEffect(() => {
+    if (enableResumable) return
+    form.setFieldValue('resumable', false)
+  }, [enableResumable, form])
 
   const showSessionExpiredModal = useCallback(() => {
     if (sessionExpiredModalShownRef.current) return
@@ -422,6 +435,7 @@ export default function ChatroomEditor() {
       ai_personas: normalizeAiPersonas(values.ai_personas),
       model_id: values.model_id,
       mimic_human: values.mimic_human,
+      resumable: values.resumable,
       ai_nickname: values.ai_nickname,
       show_avatars: values.show_avatars,
       temperature: values.temperature,
@@ -633,6 +647,21 @@ export default function ChatroomEditor() {
             <Switch checkedText="On" uncheckedText="Off" />
           </FormItem>
 
+          <FormItem
+            label="Resume conversation"
+            field="resumable"
+            triggerPropName="checked"
+            extra={enableResumable
+              ? 'Use one persistent conversation per case-sensitive participant ID. Settings are locked when that conversation is first created.'
+              : 'Currently available only for one human, one AI, with Mimic human off.'}
+          >
+            <Switch
+              checkedText="On"
+              uncheckedText="Off"
+              disabled={!enableResumable}
+            />
+          </FormItem>
+
           {/* ─── Model and Prompt ──────────────────────────────────── */}
           <SectionHeader>⚙️ Model and Prompt</SectionHeader>
 
@@ -802,11 +831,15 @@ avoid talking about politics; keep messages under 12 words.
         </Form>
 
         <div style={{ borderTop: '1px solid #e5e6eb', margin: '24px 0' }} />
-        <ScriptGenerator chatroomId={chatroom.id} />
+        <ScriptGenerator chatroomId={chatroom.id} resumable={Boolean(watchedResumable)} />
       </div>
 
       <div style={{ borderTop: '1px solid #e5e6eb', margin: '24px 0' }} />
-      <WidgetPreview chatroomId={chatroom.id} onSaveBeforeLaunch={handleSaveAndActivate} />
+      <WidgetPreview
+        chatroomId={chatroom.id}
+        resumable={Boolean(watchedResumable)}
+        onSaveBeforeLaunch={handleSaveAndActivate}
+      />
     </div>
   )
 }

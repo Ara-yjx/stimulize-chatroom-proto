@@ -62,8 +62,10 @@ def append_history_batch(
     history_events: list[dict],
     batch_id: str,
     metadata_updates: Optional[dict] = None,
+    metadata_remove: Optional[list[str]] = None,
     expected_status: Optional[str] = None,
     expected_active_tick_id: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
 ) -> list[dict]:
     items = normalize_history_events(conversation_id, history_events, batch_id)
     if not items:
@@ -92,6 +94,11 @@ def append_history_batch(
         names[name] = key
         values[token] = dynamo._to_dynamodb_safe(value)
         sets.append(f"{name} = {token}")
+    removes = []
+    for index, key in enumerate(metadata_remove or []):
+        name = f"#r{index}"
+        names[name] = key
+        removes.append(name)
 
     condition = (
         "attribute_exists(conversation_id) AND "
@@ -105,12 +112,21 @@ def append_history_batch(
         names["#active_tick_id"] = "active_tick_id"
         values[":active_tick_id"] = expected_active_tick_id
         condition += " AND #active_tick_id = :active_tick_id"
+    for index, (key, value) in enumerate((expected_metadata or {}).items()):
+        name = f"#e{index}"
+        token = f":e{index}"
+        names[name] = key
+        values[token] = dynamo._to_dynamodb_safe(value)
+        condition += f" AND {name} = {token}"
 
     table = dynamo._get_table()
     try:
         table.update_item(
             Key={"conversation_id": conversation_id},
-            UpdateExpression="SET " + ", ".join(sets),
+            UpdateExpression=(
+                "SET " + ", ".join(sets)
+                + ((" REMOVE " + ", ".join(removes)) if removes else "")
+            ),
             ConditionExpression=condition,
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
@@ -122,12 +138,62 @@ def append_history_batch(
     return items
 
 
+def update_metadata(
+    conversation_id: str,
+    metadata_updates: Optional[dict] = None,
+    metadata_remove: Optional[list[str]] = None,
+    expected_status: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
+) -> bool:
+    names = {"#updated": "updated_at", "#ttl": "ttl"}
+    values = {
+        ":updated": _now_iso(),
+        ":ttl": int(time.time()) + dynamo.TTL_SECONDS,
+    }
+    sets = ["#updated = :updated", "#ttl = :ttl"]
+    removes = []
+    for index, (key, value) in enumerate((metadata_updates or {}).items()):
+        name, token = f"#u{index}", f":u{index}"
+        names[name] = key
+        values[token] = dynamo._to_dynamodb_safe(value)
+        sets.append(f"{name} = {token}")
+    for index, key in enumerate(metadata_remove or []):
+        name = f"#r{index}"
+        names[name] = key
+        removes.append(name)
+    condition = "attribute_exists(conversation_id)"
+    if expected_status is not None:
+        names["#status"] = "status"
+        values[":status"] = expected_status
+        condition += " AND #status = :status"
+    for index, (key, value) in enumerate((expected_metadata or {}).items()):
+        name, token = f"#e{index}", f":e{index}"
+        names[name] = key
+        values[token] = dynamo._to_dynamodb_safe(value)
+        condition += f" AND {name} = {token}"
+    try:
+        dynamo._get_table().update_item(
+            Key={"conversation_id": conversation_id},
+            UpdateExpression=(
+                "SET " + ", ".join(sets)
+                + ((" REMOVE " + ", ".join(removes)) if removes else "")
+            ),
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except dynamo._get_table().meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
 def update_tick_projection(
     conversation_id: str,
     ai_participant_id: str,
     tick_state: dict,
     expected_status: Optional[str] = None,
     expected_active_tick_id: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
     next_actionable_tick_at: Optional[int] = None,
 ) -> bool:
     conversation = dynamo.get_conversation(conversation_id)
@@ -153,6 +219,11 @@ def update_tick_projection(
         names["#active_tick_id"] = "active_tick_id"
         values[":active_tick_id"] = expected_active_tick_id
         condition += " AND #active_tick_id = :active_tick_id"
+    for index, (key, value) in enumerate((expected_metadata or {}).items()):
+        name, token = f"#e{index}", f":e{index}"
+        names[name] = key
+        values[token] = dynamo._to_dynamodb_safe(value)
+        condition += f" AND {name} = {token}"
     table = dynamo._get_table()
     try:
         table.update_item(

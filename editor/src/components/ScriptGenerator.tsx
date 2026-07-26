@@ -8,6 +8,7 @@ const Text = Typography.Text
 
 interface Props {
   chatroomId: string
+  resumable?: boolean
 }
 
 /**
@@ -15,7 +16,7 @@ interface Props {
  * During beta we always force the runtime API hostname explicitly so the
  * widget does not fall back to `chatroom.stimulize.org` before DNS is live.
  */
-export default function ScriptGenerator({ chatroomId }: Props) {
+export default function ScriptGenerator({ chatroomId, resumable = false }: Props) {
   // const [apiBaseUrl, setApiBaseUrl] = useState(CHATROOM_API_URL)
   const [snippet, setSnippet] = useState('')
 
@@ -25,7 +26,7 @@ export default function ScriptGenerator({ chatroomId }: Props) {
       elementStyle: { height: "500px" },
       qualtricsQuestion: qualtricsQuestion,
       chatroomId: "${chatroomId}",
-    });`
+${resumable ? '      participantId: "REPLACE_WITH_PARTICIPANT_ID",\n' : ''}    });`
 
     const widgetScriptUrl = CHATROOM_WIDGET_URL
 

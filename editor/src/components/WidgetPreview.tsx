@@ -4,6 +4,7 @@ import { CHATROOM_API_URL, CHATROOM_WIDGET_URL } from '../config'
 
 interface Props {
   chatroomId: string
+  resumable?: boolean
   /**
    * Called before the preview launches so unsaved form changes don't get
    * lost. Should resolve only on successful save (or reject to abort the
@@ -23,12 +24,13 @@ interface PreviewInstance {
   history: string
 }
 
-export default function WidgetPreview({ chatroomId, onSaveBeforeLaunch }: Props) {
+export default function WidgetPreview({ chatroomId, resumable = false, onSaveBeforeLaunch }: Props) {
   const isDev = import.meta.env.DEV
   const [previews, setPreviews] = useState<PreviewInstance[]>([])
   const [launching, setLaunching] = useState(false)
   /** Dev-only override for the chatroom backend hostname. Hidden in prod. */
   const [hostnameOverride, setHostnameOverride] = useState(CHATROOM_API_URL)
+  const [participantId, setParticipantId] = useState('editor-preview-1')
   /** id → iframe element. Populated by the iframe ref callback. */
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
   /** Monotonic counter for preview ids; ensures stable React keys + ordering. */
@@ -71,6 +73,7 @@ export default function WidgetPreview({ chatroomId, onSaveBeforeLaunch }: Props)
     const initOptions = {
       element: '#chatroom-container',
       chatroomId,
+      ...(resumable ? { participantId: participantId.trim() } : {}),
       beta: true,
       apiBaseUrl: isDev ? (hostnameOverride || CHATROOM_API_URL) : CHATROOM_API_URL,
     }
@@ -173,8 +176,28 @@ export default function WidgetPreview({ chatroomId, onSaveBeforeLaunch }: Props)
         </div>
       )}
 
+      {resumable && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 4, fontSize: 13, fontWeight: 500 }}>
+            Participant ID
+          </div>
+          <Input
+            value={participantId}
+            onChange={setParticipantId}
+            disabled={previews.length > 0}
+            placeholder="case-sensitive participant ID"
+            style={{ maxWidth: 500 }}
+          />
+        </div>
+      )}
+
       <Space style={{ marginBottom: 12 }}>
-        <Button type="primary" loading={launching} onClick={() => launch()}>
+        <Button
+          type="primary"
+          loading={launching}
+          disabled={resumable && !participantId.trim()}
+          onClick={() => launch()}
+        >
           {launchLabel}
         </Button>
       </Space>

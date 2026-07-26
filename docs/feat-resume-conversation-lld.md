@@ -89,7 +89,7 @@ The tick handler measures resumable duration from
 - appends an episode-end system event;
 - changes `status` to `inactive`;
 - closes the current `episodes[]` entry and records its end cursor;
-- removes active episode timing/cursor fields.
+- removes the active connection and episode timing/cursor fields.
 
 Resume first captures the latest history cursor, then conditionally appends a
 `Conversation resumed` boundary while changing `inactive -> active`,
