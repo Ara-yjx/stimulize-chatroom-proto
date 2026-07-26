@@ -206,6 +206,12 @@ output is dropped with a structured CloudWatch diagnostic. Usage is still
 recorded because inference already incurred cost. Resumable paths do not
 pre-persist future-timestamp messages.
 
+This truncation keeps episode cursor ranges unambiguous. Otherwise, a delayed
+message authored in episode N could be appended after episode N+1 starts and
+would fall inside N+1's continuous-history cursor range; extending N's end
+cursor instead would make the two ranges overlap. Reject the stale output
+rather than making the core messaging store/query path episode-aware.
+
 ## Connection Supersession
 
 The combined Phase 1 API JWT may carry `conversation_id`, `episode_number`, and
