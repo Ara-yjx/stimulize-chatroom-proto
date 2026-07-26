@@ -16,28 +16,28 @@ Two API surfaces:
 ## Chatroom API (Widget → Lambda)
 
 ### POST /auth/token
-Start a new chat session. Lambda validates the fixed beta client access key, validates the chatroom ID against RDS, creates or joins the lobby/conversation, assigns nickname + avatar, and returns a JWT.
+Start or reconnect a chat session. Lambda validates the chatroom against RDS, creates or joins the lobby/conversation, assigns nickname + avatar, and returns a JWT. A resumable room requires a case-sensitive `participant_id` and reuses its stable conversation.
 
-Request: `{ chatroom_id, access_key }`
-Response: `{ token, session_id, conversation_id, nickname, avatar, chatroom_setting, lobby? }`
+Request: `{ chatroom_id, participant_id? }`
+Response: `{ token, session_id, conversation_id, nickname, avatar, chatroom_setting, lobby?, participant_id?, connection_id?, episode_number?, episode_started_at?, history_start_cursor?, resumed? }`
 
 ### POST /chat/send
 Send a human message. Lambda appends the human message event and returns currently visible events. It does **not** call Bedrock; AI replies are produced later by the tick handler and fetched through `/chat/messages`.
 
 Headers: `Authorization: Bearer <jwt>`
 Request: `{ message, after? }`
-Response: `{ events: [{ type, session_id, sender, role, content, timestamp, visible_at, avatar }] }`
+Response: `{ events: [{ event_id, type, session_id?, participant_id?, ai_participant_id?, episode_number?, sender, role, content, timestamp, authored_at?, avatar }] }`
 
-### GET /chat/messages?after={timestamp}
-Poll for visible events since a timestamp (epoch ms). Pending AI messages with `visible_at > now` and internal `tick` / `lobby_created` events are filtered out. Admin/debug mode can include audit events when called with the separate admin token.
+### GET /chat/messages?after={cursor}
+Poll participant-visible events after an opaque cursor. Numeric timestamps remain temporary cached-widget compatibility.
 
 Headers: `Authorization: Bearer <jwt>`
 Response:
 ```json
 {
-  "events": [{ "type", "session_id", "sender", "role", "content", "timestamp", "visible_at", "avatar" }],
+  "events": [{ "event_id", "type", "session_id?", "participant_id?", "ai_participant_id?", "episode_number?", "sender", "role", "content", "timestamp", "authored_at?", "avatar" }],
   "lobby": { "status", "actual_human_count", "target_human_count", "deadline_at" },  // only during lobby phase
-  "conversation_status": "active" | "ended"
+  "conversation_status": "active" | "inactive" | "ended"
 }
 ```
 
@@ -45,6 +45,10 @@ Status codes:
 - `200` — success
 - `401` — JWT expired or invalid
 - `410 Gone` — lobby was aborted (no humans remained at deadline)
+- `409 Conflict` — a newer resumable login superseded this connection
+
+### GET /chat/history?before={cursor}&limit=50
+Fetch the newest history page or page backward with an opaque cursor. The stream includes all episodes; episode is optional event metadata, never a query or key dimension.
 
 ---
 
@@ -77,7 +81,7 @@ Usage endpoints are implemented for aggregate reads. Future cache-bucket columns
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
 The create request is the first persisted save, so any editor-provided default `setting` values are stored immediately at creation time.
 
-Request: `{ name, setting: { topic_instruction, additional_prompt?, mimic_human?, ai_nickname?, show_avatars?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count, ai_count, replace_human_with_ai?, max_wait_seconds? } }`
+Request: `{ name, setting: { topic_instruction, additional_prompt?, mimic_human?, resumable?, ai_nickname?, show_avatars?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count, ai_count, replace_human_with_ai?, max_wait_seconds? } }`
 
 For `human_count=1`, `ai_count=1`, and `mimic_human=false`, the canonical human nickname is `PARTICIPANT`. AI naming resolves as selected persona `nickname` > chatroom `ai_nickname` > `AI`. The widget displays the current human as `You` without changing exported history. `You` and `Participant` are reserved AI nicknames, case-insensitively.
 

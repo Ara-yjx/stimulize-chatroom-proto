@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
-from chatroom_api import config
+from chatroom_api import config, resumable
 from chatroom_api._providers import get_event_store_provider
 from chatroom_api.bedrock_client import (
     BedrockInferenceError,
@@ -38,6 +38,7 @@ from chatroom_api.constants import (
     TICK_DEDUPE_WINDOW_MS,
 )
 from chatroom_api.conversation import build_bedrock_messages
+from chatroom_api.cursors import decode_cursor, InvalidCursorError
 from chatroom_api.delays import pick_delays_ms
 from chatroom_api.gate import run_gate
 from chatroom_api.event_store import ConditionalWriteFailed
@@ -277,6 +278,39 @@ def _render_history_block(conv: dict, now_ms: int) -> str:
     return "\n".join(lines)
 
 
+def _render_stable_history_block(events: list[dict]) -> str:
+    """Render completed-episode history without a moving current-time line."""
+    lines: list[str] = []
+    for event in events:
+        if event.get("type") in {"tick", "lobby_created"}:
+            continue
+        timestamp = int(event.get("timestamp", 0) or 0)
+        sender = "System" if event.get("type") == "system" else (
+            event.get("sender") or "Participant"
+        )
+        lines.append(
+            f"> [{_utc_iso_from_ms(timestamp)}] {sender}: {event.get('content', '')}"
+        )
+    return "\n".join(lines) if lines else "(empty)"
+
+
+def _split_resumable_history(conv: dict) -> tuple[list[dict], list[dict]]:
+    """Split completed and current episode events at the opaque start cursor."""
+    cursor = conv.get("active_history_start_cursor")
+    events = list(conv.get("events") or [])
+    if not conv.get("resumable") or not cursor:
+        return [], events
+    try:
+        start_key = decode_cursor(cursor, conv["conversation_id"])["event_key"]
+    except (InvalidCursorError, KeyError):
+        logger.warning("invalid active_history_start_cursor", exc_info=True)
+        return [], events
+    return (
+        [event for event in events if event.get("event_key", "") <= start_key],
+        [event for event in events if event.get("event_key", "") > start_key],
+    )
+
+
 def _build_static_prefix_block(
     mode: str,
     *,
@@ -507,6 +541,7 @@ def _build_bedrock_cache_prefix_message(
     my_nickname: str,
     history_block: str,
     *,
+    completed_history_block: str | None = None,
     participant_nicknames: list[str] | None = None,
     require_response: bool = False,
 ) -> dict:
@@ -537,6 +572,14 @@ def _build_bedrock_cache_prefix_message(
     additional = str(blocks["additional_prompt"])
     if additional:
         content.append({"text": additional})
+    if completed_history_block is not None:
+        content.append({
+            "text": (
+                "<completed-conversation-history>\n"
+                f"{completed_history_block}\n"
+                "</completed-conversation-history>"
+            )
+        })
     content.append({"cachePoint": {"type": "default"}})
     content.append({"text": str(blocks["dynamic_context"])})
     return {"role": "user", "content": content}
@@ -660,15 +703,28 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
     # If the conversation already ended, do not tick further. This guards
     # against a slow heartbeat that's still seeing the row in ``status-index``
     # right after another tick flipped it to ``ended``.
-    if conv.get("status") == "ended":
+    if conv.get("status") != "active":
         return {"status": "already_ended"}
 
     # --- Step 2: max-duration check. ---------------------------------------
     max_duration = chatroom_setting.get("max_duration_seconds")
-    started_at = conv.get("started_at")
+    started_at = (
+        conv.get("active_episode_started_at")
+        if conv.get("resumable")
+        else conv.get("started_at")
+    )
+    episode_number = conv.get("active_episode_number")
+    episode_fence = resumable.episode_fence(conv)
     if max_duration and started_at:
         started_ms = _iso_to_ms(started_at)
         if started_ms and now_ms > started_ms + int(max_duration) * 1000:
+            if conv.get("resumable"):
+                ended = resumable.end_episode(
+                    conv,
+                    now_ms=now_ms,
+                    expected_active_tick_id=tick_id,
+                )
+                return {"status": "inactive" if ended else "already_ended"}
             try:
                 history_store.append_history_batch(
                     conversation_id,
@@ -680,11 +736,13 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                     "content": "This conversation has ended.",
                     "timestamp": now_ms,
                     "created_at": _now_iso(),
+                    **({"episode_number": episode_number} if episode_number else {}),
                     }],
                     uuid4().hex,
                     metadata_updates={"status": "ended"},
                     expected_status="active",
                     expected_active_tick_id=tick_id,
+                    expected_metadata=episode_fence,
                 )
             except ConditionalWriteFailed:
                 return {"status": "already_ended"}
@@ -734,9 +792,8 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
         now_ms,
     )
 
-    bedrock_messages = build_bedrock_messages(
-        runtime_conv, candidate_session_id, now_ms
-    )
+    completed_events, current_episode_events = _split_resumable_history(runtime_conv)
+    bedrock_runtime_conv = runtime_conv
     model_id = (
         (candidate_participant or {}).get("model_id")
         or chatroom_setting.get("model_id")
@@ -746,6 +803,14 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
         (candidate_participant or {}).get("temperature"),
         default=normalize_temperature(chatroom_setting.get("temperature"), default=0.7),
     ) or 0.7
+    completed_history_block = None
+    if _supports_bedrock_prompt_cache(model_id) and completed_events:
+        bedrock_runtime_conv = {**runtime_conv, "events": current_episode_events}
+        history_block = _render_history_block(bedrock_runtime_conv, now_ms)
+        completed_history_block = _render_stable_history_block(completed_events)
+    bedrock_messages = build_bedrock_messages(
+        bedrock_runtime_conv, candidate_session_id, now_ms
+    )
     system_prompt = _build_bedrock_system_blocks(
         mode,
         chatroom_setting,
@@ -763,6 +828,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
             persona,
             candidate_nickname,
             history_block,
+            completed_history_block=completed_history_block,
             participant_nicknames=participant_nicknames,
             require_response=require_response,
         )
@@ -816,6 +882,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                     "content": f"Chatroom server error: {err.error_type}",
                     "timestamp": now_ms,
                     "created_at": _now_iso(),
+                    **({"episode_number": episode_number} if episode_number else {}),
                 }],
                 uuid4().hex,
                 metadata_updates={
@@ -826,6 +893,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                 },
                 expected_status="active",
                 expected_active_tick_id=tick_id,
+                expected_metadata=episode_fence,
             )
         except ConditionalWriteFailed:
             _log_tick(
@@ -958,6 +1026,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
             "created_at": _now_iso(),
             **({"message_kind": "idle_follow_up"} if idle_follow_up else {}),
             **({"avatar": avatar} if avatar else {}),
+            **({"episode_number": episode_number} if episode_number else {}),
         }
         try:
             persisted_events.extend(history_store.append_history_batch(
@@ -966,6 +1035,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                 uuid4().hex,
                 expected_status="active",
                 expected_active_tick_id=tick_id,
+                expected_metadata=episode_fence,
             ))
         except ConditionalWriteFailed:
             _log_tick(
@@ -979,6 +1049,19 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
 
     if duration_elapsed:
         ended_at_ms = _now_ms()
+        if conv.get("resumable"):
+            ended = resumable.end_episode(
+                conv,
+                now_ms=ended_at_ms,
+                expected_active_tick_id=tick_id,
+            )
+            return {
+                "status": "inactive" if ended else (
+                    "partially_spoke" if persisted_events else "dropped_stale_tick"
+                ),
+                "messages_persisted": len(persisted_events),
+                "messages_dropped": len(messages) - len(persisted_events),
+            }
         try:
             history_store.append_history_batch(
                 conversation_id,
@@ -990,11 +1073,13 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                     "content": "This conversation has ended.",
                     "timestamp": ended_at_ms,
                     "created_at": _now_iso(),
+                    **({"episode_number": episode_number} if episode_number else {}),
                 }],
                 uuid4().hex,
                 metadata_updates={"status": "ended"},
                 expected_status="active",
                 expected_active_tick_id=tick_id,
+                expected_metadata=episode_fence,
             )
         except ConditionalWriteFailed:
             return {
@@ -1036,6 +1121,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
         tick_state,
         expected_status="active",
         expected_active_tick_id=tick_id,
+        expected_metadata=episode_fence,
         next_actionable_tick_at=_next_actionable_from_states(states, now_ms),
     )
     if not projection_updated:

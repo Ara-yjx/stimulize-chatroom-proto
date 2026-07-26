@@ -18,22 +18,23 @@ paths:
       summary: Start a chat session
       description: |
         Validates chatroom ID against RDS, creates conversation + participant in DynamoDB,
-        assigns nickname + avatar, returns JWT. Beta also requires a fixed client
-        access key in the request body before a session token is issued.
+        assigns nickname + avatar, and returns a JWT. Resumable rooms require a
+        researcher-managed participant_id and reuse its stable conversation.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [chatroom_id, access_key]
+              required: [chatroom_id]
               properties:
                 chatroom_id:
                   type: string
                   example: scid_550e8400-e29b-41d4-a716-446655440000
-                access_key:
+                participant_id:
                   type: string
-                  description: Fixed beta client access key baked into generated beta scripts.
+                  pattern: '^[A-Za-z0-9_.-]{1,63}$'
+                  description: Required only for resumable rooms. Trimmed, then case-sensitive.
       responses:
         "200":
           description: Session created
@@ -56,6 +57,25 @@ paths:
                     $ref: "#/components/schemas/Avatar"
                   chatroom_setting:
                     $ref: "#/components/schemas/ChatroomSetting"
+                  participant_id:
+                    type: string
+                    nullable: true
+                  connection_id:
+                    type: string
+                    nullable: true
+                  episode_number:
+                    type: integer
+                    nullable: true
+                  episode_started_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  history_start_cursor:
+                    type: string
+                    nullable: true
+                  resumed:
+                    type: boolean
+                    nullable: true
                   lobby:
                     type: object
                     nullable: true
@@ -84,8 +104,7 @@ paths:
         `/chat/messages` poll, driven by the tick handler.
 
         Returns the same shape as `/chat/messages`: events visible to this
-        client at the moment of the call (filtered by `visible_at <= now`,
-        excluding `tick` events). This lets the client refresh its view in
+        client at the moment of the call. This lets the client refresh its view in
         the same round trip.
       security:
         - bearerAuth: []
@@ -123,17 +142,16 @@ paths:
     get:
       summary: Poll for new events
       description: |
-        Returns events the client is allowed to see right now.
-        Filters: `visible_at <= now` AND `type != tick`.
-        Pending AI messages with `visible_at > now` are NOT included.
+        Returns participant-visible events after an opaque cursor. Numeric
+        timestamp cursors remain temporarily compatible with cached widgets.
       security:
         - bearerAuth: []
       parameters:
         - name: after
           in: query
           schema:
-            type: integer
-          description: Epoch ms timestamp. Returns events with `visible_at` after this time.
+            type: string
+          description: Opaque event cursor; numeric epoch ms remains migration compatibility only.
       responses:
         "200":
           description: Events since timestamp
@@ -148,8 +166,8 @@ paths:
                       $ref: "#/components/schemas/ConversationEvent"
                   conversation_status:
                     type: string
-                    enum: [active, ended]
-                    description: Once `ended`, client should disable the input and show "This conversation has ended".
+                    enum: [active, inactive, ended]
+                    description: inactive is resumable; ended is the legacy terminal state.
                   lobby:
                     type: object
                     nullable: true
@@ -166,6 +184,31 @@ paths:
                         type: integer
         "401":
           description: Invalid or expired token
+        "409":
+          description: Resumable connection was superseded by a newer login
+
+  /chat/history:
+    get:
+      summary: Page backward through participant-visible history
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: before
+          in: query
+          schema:
+            type: string
+          description: Opaque cursor. Omit for the newest page.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: One backward history page
+        "409":
+          description: Resumable connection was superseded by a newer login
 
 components:
   securitySchemes:
@@ -205,6 +248,10 @@ components:
         mimic_human:
           type: boolean
           default: true
+        resumable:
+          type: boolean
+          default: false
+          description: Phase 1 requires human_count=1, ai_count=1, and mimic_human=false.
         temperature:
           type: number
           minimum: 0
@@ -262,16 +309,22 @@ components:
     ConversationEvent:
       type: object
       description: |
-        Server stores three event types: `message`, `system`, and `tick`.
-        `tick` events record gate decisions and per-tick metadata for audit (server-internal).
-        `/chat/messages` filters out `tick` events before returning to clients.
-        Clients only ever see `message` and `system` events.
+        Participant-visible event-store rows. Empty AI ticks are CloudWatch-only.
       properties:
         type:
           type: string
-          enum: [message, system, tick]
+          enum: [message, system]
         session_id:
           type: string
+        participant_id:
+          type: string
+          description: Stable human author for resumable conversations.
+        ai_participant_id:
+          type: string
+          description: Stable AI author identity.
+        episode_number:
+          type: integer
+          description: Optional opaque lifecycle metadata; not part of the event key/query.
         sender:
           type: string
         role:
@@ -282,16 +335,11 @@ components:
         timestamp:
           type: integer
           description: |
-            Epoch ms. Authoring time — when the event was generated.
-            Human messages and system events are visible immediately.
-            AI messages may be deferred (see visible_at).
-        visible_at:
+            Epoch ms used for server-clock history ordering. Delayed AI output is
+            persisted only after its simulated delay.
+        authored_at:
           type: integer
           description: |
-            Epoch ms. When this event becomes visible to participants.
-            For AI messages, includes a simulated typing delay (2-8s,
-            stacked across a multi-message turn). Equals `timestamp`
-            for human messages and system events. Clients render each
-            message at `visible_at`, not `timestamp`.
+            Optional pre-delay generation timestamp for an AI message.
         avatar:
           $ref: "#/components/schemas/Avatar"

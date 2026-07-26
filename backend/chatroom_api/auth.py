@@ -18,6 +18,7 @@ from chatroom_api.settings import (
     is_single_human_single_ai_assistant_room,
     resolve_runtime_setting,
 )
+from chatroom_api import resumable
 
 # Hard cap on the lobby join retry loop. Each iteration either advances
 # (joins or creates+joins) or moves a stale lobby toward closing/closed via
@@ -71,7 +72,7 @@ def _pick_avatar(exclude=None) -> dict:
 def handle_auth_token(body: dict) -> tuple[int, dict]:
     """Exchange a chatroom_id for a signed JWT + session info.
 
-    Request body: { "chatroom_id": "scid_..." }
+    Request body: { "chatroom_id": "scid_...", "participant_id"?: "..." }
 
     Returns (status_code, response_body).
     """
@@ -92,7 +93,19 @@ def handle_auth_token(body: dict) -> tuple[int, dict]:
 
     chatroom_setting = resolve_runtime_setting(chatroom["setting"])
 
-    # 3. All chatrooms use the lobby path. For one-human rooms the lobby
+    if chatroom_setting.get("resumable"):
+        if not resumable.is_supported_setting(chatroom_setting):
+            return (400, {
+                "error": "resumable chatrooms currently require one human, one AI, and mimic_human=false"
+            })
+        participant_id = resumable.normalize_participant_id(body.get("participant_id"))
+        if participant_id is None:
+            return (400, {
+                "error": "participant_id must be 1-63 case-sensitive letters, numbers, '.', '_' or '-'"
+            })
+        return resumable.create_or_resume(chatroom, participant_id)
+
+    # 3. Non-resumable chatrooms use the lobby path. For one-human rooms the lobby
     # closes immediately unless mimic-human simulated pairing is enabled.
     return _handle_lobby_auth(chatroom, chatroom_id, chatroom_setting)
 

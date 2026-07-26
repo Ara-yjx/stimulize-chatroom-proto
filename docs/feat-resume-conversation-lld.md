@@ -83,7 +83,7 @@ The tick handler measures resumable duration from
 - appends an episode-end system event;
 - changes `status` to `inactive`;
 - closes the current `episodes[]` entry and records its end cursor;
-- removes active episode timing/cursor fields.
+- removes the active connection and episode timing/cursor fields.
 
 Resume first captures the latest history cursor, then conditionally appends a
 `Conversation resumed` boundary while changing `inactive -> active`,
@@ -161,7 +161,7 @@ the existing full-history prompt.
 
 ## Implementation Map
 
-- `backend/chatroom_api/resume.py`: validation, deterministic identity,
+- `backend/chatroom_api/resumable.py`: validation, deterministic identity,
   first-create, connection refresh, episode start/end.
 - `auth.py`, `jwt_utils.py`: resumable bootstrap and claims.
 - `chat.py`, `tick_handler.py`: connection/episode fencing and inactive status.

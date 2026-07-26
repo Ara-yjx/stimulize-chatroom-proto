@@ -32,6 +32,7 @@ from chatroom_api.cursors import InvalidCursorError
 from chatroom_api.errors import LobbyAbortedException
 from chatroom_api.event_store import ConditionalWriteFailed
 from chatroom_api.settings import is_single_human_single_ai_assistant_room
+from chatroom_api import resumable
 
 logger = logging.getLogger(__name__)
 _lambda_client = None
@@ -126,6 +127,7 @@ def _decorate_with_avatar(events: list[dict], avatar_map: dict) -> list[dict]:
             "ai_participant_id": e.get("ai_participant_id"),
             "avatar": e.get("avatar") or (avatar_map.get(sender) if sender else None),
             "internal_name": e.get("internal_name"),
+            "episode_number": e.get("episode_number"),
         }
         decorated.append({key: value for key, value in item.items() if value is not None})
     return decorated
@@ -177,15 +179,25 @@ def handle_chat_send(body: dict, claims: dict) -> tuple[int, dict]:
         # is accepted — the front-end is supposed to keep showing the lobby UI.
         return (409, {"error": "conversation not started yet"})
 
+    connection_error = resumable.validate_connection(conv, claims)
+    if connection_error:
+        return (409, {"error": connection_error, "code": "connection_superseded"})
     if conv.get("status") == "ended":
         return (409, {"error": "conversation has ended"})
+    if conv.get("status") == "inactive":
+        return (409, {"error": "conversation episode is inactive"})
 
     # Resolve the human's nickname from the conversation participants.
     participants = conv.get("participants") or []
-    me = next(
-        (p for p in participants if p.get("session_id") == session_id),
-        None,
-    )
+    participant_id = claims.get("participant_id")
+    me = next((
+        p for p in participants
+        if (
+            p.get("participant_id") == participant_id
+            if participant_id is not None
+            else p.get("session_id") == session_id
+        )
+    ), None)
     if me is None:
         return (403, {"error": "session not in conversation"})
     nickname = me.get("nickname", "Participant")
@@ -195,11 +207,15 @@ def handle_chat_send(body: dict, claims: dict) -> tuple[int, dict]:
     user_event = {
         "type": "message",
         "session_id": session_id,
+        **({"participant_id": participant_id} if participant_id is not None else {}),
         "sender": nickname,
         "role": "human",
         "content": message,
         "timestamp": now_ms,
         "created_at": now_iso,
+        **({
+            "episode_number": int(claims["episode_number"]),
+        } if claims.get("episode_number") is not None else {}),
     }
     try:
         history_store.append_history_batch(
@@ -207,6 +223,7 @@ def handle_chat_send(body: dict, claims: dict) -> tuple[int, dict]:
             [user_event],
             uuid4().hex,
             expected_status="active",
+            expected_metadata=resumable.episode_fence(conv),
         )
     except ConditionalWriteFailed:
         return (409, {"error": "conversation has ended"})
@@ -266,6 +283,9 @@ def handle_chat_messages(
 
     conv = db.get_conversation(conversation_id)
     if conv is not None:
+        connection_error = resumable.validate_connection(conv, claims)
+        if connection_error:
+            return (409, {"error": connection_error, "code": "connection_superseded"})
         try:
             if after_raw.isdigit():
                 page = history_store.query_live_after_timestamp(
@@ -280,7 +300,7 @@ def handle_chat_messages(
         except InvalidCursorError:
             return (400, {"error": "invalid_cursor"})
         next_pending_at = None
-        if conv.get("status") == "ended" and not page["has_more"]:
+        if conv.get("status") in {"ended", "inactive"} and not page["has_more"]:
             try:
                 next_pending_at = history_store.query_next_pending(
                     conversation_id, cursor_for_pending, now_ms
@@ -362,6 +382,9 @@ def handle_chat_history(
     conv = _get_db().get_conversation(conversation_id)
     if conv is None:
         return (404, {"error": "conversation not found"})
+    connection_error = resumable.validate_connection(conv, claims)
+    if connection_error:
+        return (409, {"error": connection_error, "code": "connection_superseded"})
     try:
         page = _get_event_store().query_history_before(
             conversation_id, before, _now_ms(), limit

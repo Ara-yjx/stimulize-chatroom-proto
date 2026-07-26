@@ -123,24 +123,24 @@ export async function init(options: InitOptions): Promise<void> {
       ? undefined
       : msg.avatar?.emojiText;
     appendBubble(state!.getDisplaySender(msg.sender, isSelf), msg.content, isSelf, emojiText);
-    writeToED(state!.getHistory(), state!.getHistoryText());
+    writeToED(state!.getCurrentEpisodeHistory(), state!.getCurrentEpisodeHistoryText());
   });
 
   state.onSystemEvent((content: string) => {
     appendSystemBubble(content);
-    writeToED(state!.getHistory(), state!.getHistoryText());
+    writeToED(state!.getCurrentEpisodeHistory(), state!.getCurrentEpisodeHistoryText());
   });
 
   state.onError((content: string) => {
     appendErrorBubble(content);
-    writeToED(state!.getHistory(), state!.getHistoryText());
+    writeToED(state!.getCurrentEpisodeHistory(), state!.getCurrentEpisodeHistoryText());
   });
 
   state.onConversationEnded(() => {
     // The backend emits the terminal system event. This callback only applies
     // local UI state; rendering here would duplicate the final system bubble.
     showConversationEnded(element);
-    writeToED(state!.getHistory(), state!.getHistoryText());
+    writeToED(state!.getCurrentEpisodeHistory(), state!.getCurrentEpisodeHistoryText());
   });
 
   state.onLobbyAborted(() => {
@@ -204,13 +204,13 @@ export async function init(options: InitOptions): Promise<void> {
     },
     async () => {
       const messages = await state!.loadOlderHistory();
-      writeToED(state!.getHistory(), state!.getHistoryText());
+      writeToED(state!.getCurrentEpisodeHistory(), state!.getCurrentEpisodeHistoryText());
       return messages.map((message) => ({
         ...message,
-        isSelf: message.session_id === state!.sessionId,
+        isSelf: state!.isSelfMessage(message),
         sender: state!.getDisplaySender(
           message.sender,
-          message.session_id === state!.sessionId
+          state!.isSelfMessage(message)
         ),
         avatar: state!.chatroomSetting?.show_avatars === false
           ? undefined
@@ -221,6 +221,12 @@ export async function init(options: InitOptions): Promise<void> {
 
   // 6. Replay prefetched events into the UI
   state.replayPrefetchedEvents();
+
+  if (state.conversationStatus === "inactive" || state.conversationStatus === "ended") {
+    showConversationEnded(element);
+    writeToED(state.getCurrentEpisodeHistory(), state.getCurrentEpisodeHistoryText());
+    return;
+  }
 
   // 7. Start polling
   state.startPolling();

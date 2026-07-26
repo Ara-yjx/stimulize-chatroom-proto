@@ -234,6 +234,10 @@ components:
         mimic_human:
           type: boolean
           default: true
+        resumable:
+          type: boolean
+          default: false
+          description: Phase 1 requires human_count=1, ai_count=1, and mimic_human=false.
         ai_nickname:
           type: string
           nullable: true
