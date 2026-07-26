@@ -74,6 +74,9 @@ export interface InitOptions {
     showNextButton?: () => void;
   };
   chatroomId: string;
+  /** Temporary launch hint until the backend exposes two-stage bootstrap auth. */
+  resumable?: boolean;
+  /** Optional prefill for the widget's resumable participant-ID prompt. */
   participantId?: string;
   apiBaseUrl?: string;
   beta?: boolean;

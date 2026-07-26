@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Input, Button, Message, Typography } from '@arco-design/web-react'
-import { CHATROOM_WIDGET_URL } from '../config'
+import { CHATROOM_API_URL, CHATROOM_WIDGET_URL } from '../config'
 import { IconCopy } from '@arco-design/web-react/icon'
 
 const TextArea = Input.TextArea
@@ -26,7 +26,8 @@ export default function ScriptGenerator({ chatroomId, resumable = false }: Props
       elementStyle: { height: "500px" },
       qualtricsQuestion: qualtricsQuestion,
       chatroomId: "${chatroomId}",
-${resumable ? '      participantId: "REPLACE_WITH_PARTICIPANT_ID",\n' : ''}    });`
+      apiBaseUrl: "${CHATROOM_API_URL}",
+${resumable ? '      resumable: true,\n' : ''}    });`
 
     const widgetScriptUrl = CHATROOM_WIDGET_URL
 

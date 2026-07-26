@@ -70,22 +70,53 @@ function injectStyles(): void {
   }
 }
 
-function showBetaUrlInput(element: string | HTMLElement, options: InitOptions): Promise<string> {
+interface LaunchConfig {
+  apiBaseUrl: string;
+  participantId?: string;
+}
+
+function showLaunchConfig(
+  element: string | HTMLElement,
+  options: InitOptions
+): Promise<LaunchConfig> {
   const $el = _$(element as any) as JQuery;
   const defaultUrl = options.apiBaseUrl || DEFAULT_API_BASE_URL;
+  const needsParticipantId = options.resumable === true;
   $el.html(`
     <div class="stim-chatroom">
-      <div class="stim-beta-config">
-        <label class="stim-beta-label">API Base URL (Beta)</label>
-        <input type="text" class="stim-beta-input" value="${defaultUrl}" />
-        <button class="stim-beta-start">Start Chat</button>
+      <div class="stim-launch-config">
+        ${options.beta ? `
+          <label class="stim-launch-label" for="stim-api-base-url">API Base URL (Beta)</label>
+          <input id="stim-api-base-url" type="text" class="stim-launch-input stim-api-base-url" />
+        ` : ""}
+        ${needsParticipantId ? `
+          <label class="stim-launch-label" for="stim-participant-id">Please enter your participant ID</label>
+          <input id="stim-participant-id" type="text" class="stim-launch-input stim-participant-id" autocomplete="off" />
+        ` : ""}
+        <button class="stim-launch-start">Start Chat</button>
       </div>
     </div>
   `);
+
+  $el.find(".stim-api-base-url").val(defaultUrl);
+  $el.find(".stim-participant-id").val(options.participantId || "");
+
+  const $start = $el.find(".stim-launch-start");
+  const updateStartState = () => {
+    const participantId = ($el.find(".stim-participant-id").val() as string || "").trim();
+    $start.prop("disabled", needsParticipantId && !participantId);
+  };
+  $el.find(".stim-participant-id").on("input", updateStartState);
+  updateStartState();
+
   return new Promise((resolve) => {
-    $el.find(".stim-beta-start").on("click", () => {
-      const url = ($el.find(".stim-beta-input").val() as string || "").trim();
-      resolve(url || defaultUrl);
+    $start.on("click", () => {
+      const apiBaseUrl = ($el.find(".stim-api-base-url").val() as string || "").trim();
+      const participantId = ($el.find(".stim-participant-id").val() as string || "").trim();
+      resolve({
+        apiBaseUrl: apiBaseUrl || defaultUrl,
+        ...(participantId ? { participantId } : {}),
+      });
     });
   });
 }
@@ -109,10 +140,12 @@ export async function init(options: InitOptions): Promise<void> {
     return;
   }
 
-  // 2. Beta mode: show URL input before anything else
-  if (options.beta) {
-    const url = await showBetaUrlInput(element, options);
-    options = { ...resolvedOptions, apiBaseUrl: url };
+  // 2. Collect launch-only inputs before exchanging the conversation token.
+  // `resumable` is a temporary host-provided hint. Two-stage bootstrap auth
+  // will eventually return this setting before the participant ID is needed.
+  if (options.beta || options.resumable) {
+    const launchConfig = await showLaunchConfig(element, resolvedOptions);
+    options = { ...resolvedOptions, ...launchConfig };
   } else {
     options = resolvedOptions;
   }

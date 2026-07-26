@@ -155,7 +155,7 @@
 .stim-reconnect-btn:hover {
   background: #006fdb;
 }
-.stim-beta-config {
+.stim-launch-config {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -164,11 +164,11 @@
   gap: 8px;
   padding: 24px;
 }
-.stim-beta-label {
+.stim-launch-label {
   font-size: 13px;
   color: #555;
 }
-.stim-beta-input {
+.stim-launch-input {
   width: 100%;
   max-width: 320px;
   padding: 8px 12px;
@@ -177,7 +177,7 @@
   font-size: 14px;
   text-align: center;
 }
-.stim-beta-start {
+.stim-launch-start {
   padding: 8px 20px;
   background: #0084ff;
   color: #fff;
@@ -186,6 +186,10 @@
   cursor: pointer;
   font-size: 14px;
 }
-.stim-beta-start:hover {
+.stim-launch-start:hover {
   background: #006fdb;
+}
+.stim-launch-start:disabled {
+  background: #b8c0cc;
+  cursor: not-allowed;
 }
