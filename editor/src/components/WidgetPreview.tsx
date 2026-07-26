@@ -30,7 +30,6 @@ export default function WidgetPreview({ chatroomId, resumable = false, onSaveBef
   const [launching, setLaunching] = useState(false)
   /** Dev-only override for the chatroom backend hostname. Hidden in prod. */
   const [hostnameOverride, setHostnameOverride] = useState(CHATROOM_API_URL)
-  const [participantId, setParticipantId] = useState('editor-preview-1')
   /** id → iframe element. Populated by the iframe ref callback. */
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
   /** Monotonic counter for preview ids; ensures stable React keys + ordering. */
@@ -68,12 +67,12 @@ export default function WidgetPreview({ chatroomId, resumable = false, onSaveBef
 
   const buildHtml = (): string => {
     // Editor preview should always hit the explicitly configured runtime API.
-    // The widget only honors `apiBaseUrl` when `beta: true`, so we pass both
-    // in all environments. In dev, the hostname can still be overridden.
+    // `beta` additionally exposes the dev-only URL input. In dev, the hostname
+    // can still be overridden before any preview is launched.
     const initOptions = {
       element: '#chatroom-container',
       chatroomId,
-      ...(resumable ? { participantId: participantId.trim() } : {}),
+      ...(resumable ? { resumable: true } : {}),
       beta: true,
       apiBaseUrl: isDev ? (hostnameOverride || CHATROOM_API_URL) : CHATROOM_API_URL,
     }
@@ -176,26 +175,10 @@ export default function WidgetPreview({ chatroomId, resumable = false, onSaveBef
         </div>
       )}
 
-      {resumable && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ marginBottom: 4, fontSize: 13, fontWeight: 500 }}>
-            Participant ID
-          </div>
-          <Input
-            value={participantId}
-            onChange={setParticipantId}
-            disabled={previews.length > 0}
-            placeholder="case-sensitive participant ID"
-            style={{ maxWidth: 500 }}
-          />
-        </div>
-      )}
-
       <Space style={{ marginBottom: 12 }}>
         <Button
           type="primary"
           loading={launching}
-          disabled={resumable && !participantId.trim()}
           onClick={() => launch()}
         >
           {launchLabel}

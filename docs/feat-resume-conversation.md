@@ -38,11 +38,10 @@ term; the system uses `conversation` and `conversation_id` consistently.
 
 ## Participant Identity and Access Boundary
 
-The researcher supplies `participant_id`, for example from an earlier survey
-question, survey link, or researcher-chosen Embedded Data field. The widget
-does not prescribe a fixed Qualtrics field name: the host passes the resolved
-value through `init({ participantId })`. The value must exist before the
-chatroom launches.
+The participant supplies the case-sensitive `participant_id` in the widget's
+launch prompt. Phase 1 relies on the generated script's `resumable: true` hint;
+a later two-stage bootstrap exchange will read this setting from the backend
+before showing the prompt.
 
 Phase 1 resolves a conversation by:
 
