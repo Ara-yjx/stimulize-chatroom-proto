@@ -51,6 +51,24 @@ the migration and runtime switch. The write freeze lasted about 41 minutes.
 - API, tick, heartbeat, and cleanup Lambda errors during the window: 0
 - Final targeted API/tick CDK diff: none
 
-The final backup, rehearsal resources, migration markers, and untouched legacy
-lists are retained. Keep numeric `after` compatibility through at least the
-initial 24-hour soak. Cleanup requires a separate review.
+## Resource Cleanup Inventory
+
+- **Keep - shared beta:** production Pages, shared RDS, live API/tick/heartbeat,
+  live metadata/event/lobby tables, and event-cleanup resources.
+- **Delete now - rehearsal:** the three
+  `stimulize-chatroom-event-rehearsal-20260815t070936z-yjx-*` tables and their
+  rehearsal backup. They have no live dependency.
+- **Keep until resume E2E - resume dev:** `stimulize-chatroom-proto-resume`
+  Pages plus the seven `StimulizeChatroomEventDevYjx20260725*` stacks. This
+  environment has independent conversation/event/lobby DDB tables and runtime
+  Lambdas; only chatroom settings and usage share RDS. Disable its heartbeat
+  while idle. After deletion, also remove any implicit Lambda log groups.
+- **Keep through soak:** the final cutover backup, migration markers, untouched
+  legacy lists, numeric `after` compatibility, and local raw cutover evidence.
+- **Never include in this cleanup:** shared RDS, live event-storage stacks, or
+  the shared CDK bootstrap stack. Keep the resume source branch even after its
+  build-artifact repo is removed.
+
+Cleanup remains separately reviewed. Rehearsal resources may be removed now;
+the final backup and rollback evidence remain through at least the initial
+24-hour soak.
