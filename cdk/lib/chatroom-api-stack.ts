@@ -21,6 +21,7 @@ export interface ChatroomApiStackProps extends StackProps {
   adminToken: secretsmanager.ISecret;
   tickHandler: lambda.IFunction;
   eventTable?: dynamodb.ITable;
+  eventTableName?: string;
   serviceMode?: ChatroomServiceMode;
   useMockRds?: boolean;
   apiName?: string;
@@ -34,8 +35,17 @@ export class ChatroomApiStack extends Stack {
   constructor(scope: Construct, id: string, props: ChatroomApiStackProps) {
     super(scope, id, props);
 
-    const { table, lobbyTable, jwtSecret, adminToken, tickHandler, eventTable } = props;
+    const { table, lobbyTable, jwtSecret, adminToken, tickHandler } = props;
     const useMockRds = props.useMockRds ?? false;
+    const eventTable = props.eventTable ?? (
+      props.eventTableName
+        ? dynamodb.Table.fromTableName(
+            this,
+            "RuntimeEventTable",
+            props.eventTableName,
+          )
+        : undefined
+    );
 
     // --------------- Context params ---------------
     const rdsHost = this.node.tryGetContext("rdsHost") as string;

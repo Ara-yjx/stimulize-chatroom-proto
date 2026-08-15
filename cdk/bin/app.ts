@@ -21,6 +21,7 @@ const enableEventStorageRuntime =
 const chatroomServiceMode = parseChatroomServiceMode(
   app.node.tryGetContext("chatroomServiceMode"),
 );
+const eventTableName = "chatroom-conversation-events";
 
 const conversationStack = new ConversationTableStack(app, "ConversationTableStack", {
   env,
@@ -31,10 +32,10 @@ const conversationStack = new ConversationTableStack(app, "ConversationTableStac
 });
 const lobbyStack = new LobbyTableStack(app, "LobbyTableStack", { env });
 const secretsStack = new SecretsStack(app, "SecretsStack", { env });
-const eventStack = new ConversationEventStack(app, "ConversationEventStack", {
+new ConversationEventStack(app, "ConversationEventStack", {
   env,
   metadataTable: conversationStack.table,
-  eventTableName: "chatroom-conversation-events",
+  eventTableName,
   cleanupFunctionName: "chatroom-event-cleanup",
   removalPolicy: cdk.RemovalPolicy.RETAIN,
   deletionProtection: true,
@@ -46,7 +47,7 @@ const tickHandlerStack = new TickHandlerStack(app, "TickHandlerStack", {
   lobbyTable: lobbyStack.table,
   jwtSecret: secretsStack.jwtSecret,
   adminToken: secretsStack.adminToken,
-  eventTable: enableEventStorageRuntime ? eventStack.eventTable : undefined,
+  eventTableName: enableEventStorageRuntime ? eventTableName : undefined,
   serviceMode: chatroomServiceMode,
 });
 
@@ -57,7 +58,7 @@ new ChatroomApiStack(app, "ChatroomApiStack", {
   jwtSecret: secretsStack.jwtSecret,
   adminToken: secretsStack.adminToken,
   tickHandler: tickHandlerStack.lambdaFunction,
-  eventTable: enableEventStorageRuntime ? eventStack.eventTable : undefined,
+  eventTableName: enableEventStorageRuntime ? eventTableName : undefined,
   serviceMode: chatroomServiceMode,
 });
 

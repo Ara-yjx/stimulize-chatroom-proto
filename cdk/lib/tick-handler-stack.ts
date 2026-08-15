@@ -17,6 +17,7 @@ export interface TickHandlerStackProps extends StackProps {
   jwtSecret: secretsmanager.ISecret;
   adminToken: secretsmanager.ISecret;
   eventTable?: dynamodb.ITable;
+  eventTableName?: string;
   serviceMode?: ChatroomServiceMode;
   functionName?: string;
   useMockRds?: boolean;
@@ -41,8 +42,17 @@ export class TickHandlerStack extends Stack {
   constructor(scope: Construct, id: string, props: TickHandlerStackProps) {
     super(scope, id, props);
 
-    const { conversationTable, lobbyTable, jwtSecret, adminToken, eventTable } = props;
+    const { conversationTable, lobbyTable, jwtSecret, adminToken } = props;
     const useMockRds = props.useMockRds ?? false;
+    const eventTable = props.eventTable ?? (
+      props.eventTableName
+        ? dynamodb.Table.fromTableName(
+            this,
+            "RuntimeEventTable",
+            props.eventTableName,
+          )
+        : undefined
+    );
     const rdsHost = this.node.tryGetContext("rdsHost") as string;
     const rdsPort = this.node.tryGetContext("rdsPort") as string || "5432";
     const rdsDatabase = this.node.tryGetContext("rdsDatabase") as string || "postgres";
