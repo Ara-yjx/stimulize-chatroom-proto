@@ -330,6 +330,14 @@ an eight-second interval. Keep it disabled for storage-only development.
 
 ## Migration Tool
 
+### Service modes
+
+`CHATROOM_SERVICE_MODE` defaults to `normal`. During a future cutover,
+`drain` rejects new `/auth/token` requests while existing conversations keep
+running. `maintenance` rejects auth, send, live polling, and ticks before any
+storage access; CORS and read-only `/chat/history` remain available. Invalid
+values fail fast at process startup.
+
 The CLI defaults to read-only `--dry-run` and requires explicit source/target
 table names and AWS region. `--apply` requires `--confirm-plan <full-hash>`.
 Known beta table names are refused by default.

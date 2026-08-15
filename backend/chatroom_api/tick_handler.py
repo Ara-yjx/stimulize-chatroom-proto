@@ -1080,6 +1080,10 @@ def handle_tick(event: dict, context=None) -> Optional[dict]:
         logger.warning("tick handler called without conversation_id")
         return None
 
+    if config.CHATROOM_SERVICE_MODE == "maintenance":
+        logger.info("tick skipped during maintenance: %s", conversation_id)
+        return {"status": "maintenance"}
+
     db = _get_db()
     now_ms = _now_ms()
     tick_id = getattr(context, "aws_request_id", None) or uuid4().hex

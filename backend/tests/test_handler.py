@@ -42,6 +42,77 @@ class TestOptionsPreflight:
         assert "Access-Control-Allow-Origin" in resp["headers"]
 
 
+class TestServiceModes:
+    def test_drain_rejects_new_auth_but_allows_existing_routes(self, monkeypatch):
+        monkeypatch.setattr(config, "CHATROOM_SERVICE_MODE", "drain")
+
+        auth_resp = lambda_handler(
+            _event("POST", "/auth/token", body={"chatroom_id": "scid_abc"}),
+            None,
+        )
+        assert auth_resp["statusCode"] == 503
+        assert json.loads(auth_resp["body"])["code"] == "service_draining"
+        assert auth_resp["headers"]["Retry-After"] == "60"
+
+        token = _make_token()
+        with patch(
+            "chatroom_api.handler.chat.handle_chat_send",
+            return_value=(200, {"ok": True}),
+        ) as send:
+            send_resp = lambda_handler(
+                _event(
+                    "POST",
+                    "/chat/send",
+                    body={"message": "hi"},
+                    headers={"Authorization": f"Bearer {token}"},
+                ),
+                None,
+            )
+        assert send_resp["statusCode"] == 200
+        send.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("POST", "/auth/token"),
+            ("POST", "/chat/send"),
+            ("GET", "/chat/messages"),
+        ],
+    )
+    def test_maintenance_rejects_runtime_write_paths(
+        self, monkeypatch, method, path
+    ):
+        monkeypatch.setattr(config, "CHATROOM_SERVICE_MODE", "maintenance")
+        headers = {}
+        if path.startswith("/chat/"):
+            headers["Authorization"] = f"Bearer {_make_token()}"
+        resp = lambda_handler(
+            _event(method, path, body={"chatroom_id": "scid_abc"}, headers=headers),
+            None,
+        )
+        assert resp["statusCode"] == 503
+        assert json.loads(resp["body"])["code"] == "service_maintenance"
+
+    def test_maintenance_keeps_history_and_options_readable(self, monkeypatch):
+        monkeypatch.setattr(config, "CHATROOM_SERVICE_MODE", "maintenance")
+        token = _make_token()
+        with patch(
+            "chatroom_api.handler.chat.handle_chat_history",
+            return_value=(200, {"events": []}),
+        ) as history:
+            history_resp = lambda_handler(
+                _event(
+                    "GET",
+                    "/chat/history",
+                    headers={"Authorization": f"Bearer {token}"},
+                ),
+                None,
+            )
+        assert history_resp["statusCode"] == 200
+        history.assert_called_once()
+        assert lambda_handler(_event("OPTIONS", "/auth/token"), None)["statusCode"] == 200
+
+
 class TestResponseSerialization:
     def test_decimal_values_are_serialized(self):
         resp = _response(200, {"value": Decimal("1"), "fraction": Decimal("1.5")})

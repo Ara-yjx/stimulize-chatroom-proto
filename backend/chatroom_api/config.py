@@ -5,6 +5,11 @@ DYNAMODB_EVENT_TABLE = os.environ.get(
     "DYNAMODB_EVENT_TABLE", "chatroom-conversation-events"
 )
 EVENT_STORAGE_ENABLED = os.environ.get("EVENT_STORAGE_ENABLED", "false").lower() == "true"
+CHATROOM_SERVICE_MODE = os.environ.get("CHATROOM_SERVICE_MODE", "normal").lower()
+if CHATROOM_SERVICE_MODE not in {"normal", "drain", "maintenance"}:
+    raise RuntimeError(
+        "CHATROOM_SERVICE_MODE must be normal, drain, or maintenance"
+    )
 LOBBY_TABLE = os.environ.get("LOBBY_TABLE", "chatroom-lobbies")
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
 JWT_SECRET_ARN = os.environ.get("JWT_SECRET_ARN", "")

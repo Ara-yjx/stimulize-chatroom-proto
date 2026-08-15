@@ -9,7 +9,7 @@ from typing import Optional
 
 import jwt
 
-from chatroom_api import auth, chat, jwt_utils
+from chatroom_api import auth, chat, config, jwt_utils
 from chatroom_api.errors import LobbyAbortedException
 
 logger = logging.getLogger(__name__)
@@ -32,13 +32,21 @@ def _json_default(value):
     raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
-def _response(status_code: int, body: dict) -> dict:
+def _response(status_code: int, body: dict, headers: Optional[dict] = None) -> dict:
     """Build an API Gateway proxy response."""
     return {
         "statusCode": status_code,
-        "headers": _CORS_HEADERS,
+        "headers": {**_CORS_HEADERS, **(headers or {})},
         "body": json.dumps(body, default=_json_default),
     }
+
+
+def _service_unavailable(code: str) -> dict:
+    return _response(
+        503,
+        {"error": code.replace("_", " "), "code": code},
+        {"Retry-After": "60"},
+    )
 
 
 def _get_bearer_token(headers: dict) -> Optional[str]:
@@ -65,12 +73,18 @@ def lambda_handler(event: dict, context) -> dict:
         if http_method == "OPTIONS":
             return _response(200, {})
 
+        service_mode = config.CHATROOM_SERVICE_MODE
+
         body = json.loads(event.get("body") or "{}")
         query_params = event.get("queryStringParameters") or {}
         headers = event.get("headers") or {}
 
         # --- public route ---
         if http_method == "POST" and path == "/auth/token":
+            if service_mode == "drain":
+                return _service_unavailable("service_draining")
+            if service_mode == "maintenance":
+                return _service_unavailable("service_maintenance")
             status, resp = auth.handle_auth_token(body)
             return _response(status, resp)
 
@@ -88,10 +102,14 @@ def lambda_handler(event: dict, context) -> dict:
                 return _response(401, {"error": "invalid token"})
 
             if http_method == "POST" and path == "/chat/send":
+                if service_mode == "maintenance":
+                    return _service_unavailable("service_maintenance")
                 status, resp = chat.handle_chat_send(body, claims)
                 return _response(status, resp)
 
             if http_method == "GET" and path == "/chat/messages":
+                if service_mode == "maintenance":
+                    return _service_unavailable("service_maintenance")
                 try:
                     status, resp = chat.handle_chat_messages(
                         query_params, claims, headers=headers
