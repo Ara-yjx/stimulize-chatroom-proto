@@ -339,8 +339,15 @@ storage access; CORS and read-only `/chat/history` remain available. Invalid
 values fail fast at process startup.
 
 The CLI defaults to read-only `--dry-run` and requires explicit source/target
-table names and AWS region. `--apply` requires `--confirm-plan <full-hash>`.
-Known beta table names are refused by default.
+table names, AWS region, and `--cutover-at-ms`. Both `--apply` and standalone
+read-only `--verify` require `--confirm-plan <full-hash>`. The fixed cutover
+timestamp is part of the plan hash and becomes every migrated AI projection's
+`next_actionable_at`. Known beta table names are refused by default.
+
+Dry-run collects malformed rows into a local `--report-json` and returns
+nonzero; apply refuses any plan containing issues. Verify scans both targets
+for missing, conflicting, or extra data, checks projections, and proves the
+legacy embedded list is unchanged.
 
 For each legacy conversation:
 

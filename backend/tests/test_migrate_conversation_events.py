@@ -1,5 +1,8 @@
 import importlib.util
+import json
 from pathlib import Path
+
+import pytest
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "migrate_conversation_events.py"
@@ -75,11 +78,102 @@ def test_migration_is_deterministic_and_derives_tick_projection():
     second, _ = migration.migrate_history(_conversation())
     assert first == second
 
-    metadata = migration.migrate_metadata(_conversation())
+    metadata = migration.migrate_metadata(_conversation(), 500)
     assert metadata["participants"][1]["ai_participant_id"] == "ai_old"
     assert metadata["ai_tick_state_by_participant_id"]["ai_old"]["last_result"] == "silent"
+    assert metadata["ai_tick_state_by_participant_id"]["ai_old"]["next_actionable_at"] == 500
+    assert metadata["next_actionable_tick_at"] == 500
     assert metadata["event_storage_version"] == 1
     assert metadata["events"] == _conversation()["events"]
+
+
+class ScanTable:
+    def __init__(self, items):
+        self.items = items
+        self.get_calls = 0
+
+    def scan(self, **_kwargs):
+        return {"Items": self.items}
+
+    def get_item(self, Key, ConsistentRead=False):
+        assert ConsistentRead is True
+        self.get_calls += 1
+        item = next(
+            (
+                row for row in self.items
+                if row.get("conversation_id") == Key["conversation_id"]
+            ),
+            None,
+        )
+        return {"Item": item} if item else {}
+
+
+def test_plan_hash_includes_cutover_and_malformed_rows_block_apply(tmp_path):
+    source = ScanTable([
+        _conversation(),
+        {
+            "conversation_id": "conv_bad",
+            "participants": [],
+            "events": [{"type": "message", "timestamp": "not-a-number"}],
+        },
+    ])
+
+    first = migration.build_plan(source, 500)
+    second = migration.build_plan(source, 600)
+
+    assert first["plan_hash"] != second["plan_hash"]
+    assert first["source_row_count"] == 2
+    assert first["issues"] == [{
+        "conversation_id": "conv_bad",
+        "error": "events[0] has invalid timestamp",
+    }]
+    with pytest.raises(RuntimeError, match="malformed"):
+        migration.apply_plan(first, object(), object(), tmp_path / "checkpoint.json")
+
+
+def test_verify_checks_events_metadata_and_preserves_legacy_list():
+    plan = migration.build_plan(ScanTable([_conversation()]), 500)
+    metadata = ScanTable([plan["conversations"][0]["metadata"]])
+    events = ScanTable(plan["conversations"][0]["events"])
+
+    result = migration.verify_plan(plan, metadata, events)
+
+    assert result == {
+        "conversation_count": 1,
+        "event_count": 3,
+        "legacy_events_preserved": True,
+    }
+    assert metadata.get_calls == 1
+
+
+def test_verify_rejects_extra_event_partition():
+    plan = migration.build_plan(ScanTable([_conversation()]), 500)
+    metadata = ScanTable([plan["conversations"][0]["metadata"]])
+    events = ScanTable([
+        *plan["conversations"][0]["events"],
+        {
+            "conversation_id": "conv_extra",
+            "event_key": "H#extra",
+            "timestamp": 1,
+        },
+    ])
+
+    with pytest.raises(RuntimeError, match="extra event partitions"):
+        migration.verify_plan(plan, metadata, events)
+
+
+def test_report_contains_aggregate_and_raw_issues(tmp_path):
+    plan = migration.build_plan(
+        ScanTable([{"conversation_id": "bad", "events": "wrong"}]),
+        500,
+    )
+    report = tmp_path / "report.json"
+
+    migration._write_report(str(report), plan, "dry-run")
+
+    payload = json.loads(report.read_text())
+    assert payload["issue_count"] == 1
+    assert payload["issues"][0]["conversation_id"] == "bad"
 
 
 def test_protected_beta_tables_are_rejected_before_aws_access(capsys):
@@ -88,6 +182,7 @@ def test_protected_beta_tables_are_rejected_before_aws_access(capsys):
         "--target-metadata-table", "safe-dev-metadata",
         "--target-event-table", "safe-dev-events",
         "--region", "us-east-2",
+        "--cutover-at-ms", "500",
     ])
     assert result == 2
     assert "refusing protected table" in capsys.readouterr().err

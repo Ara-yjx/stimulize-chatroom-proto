@@ -381,10 +381,14 @@ The tool must support:
 --apply
 --verify
 --confirm-plan <full-hash>
+--cutover-at-ms <fixed timestamp>
+--report-json <local path>
 ```
 
 It must be deterministic, checkpointed, idempotent, and unable to mutate
-without the exact plan hash.
+without the exact plan hash. The fixed cutover timestamp participates in that
+hash. Malformed source rows block apply; standalone verify is read-only and
+also rejects missing, conflicting, or extra target partitions.
 
 Legacy mapping:
 

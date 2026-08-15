@@ -34,6 +34,10 @@ EVENT_FIELDS = {
 }
 
 
+class MigrationValidationError(ValueError):
+    pass
+
+
 def _plain(value):
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral() else str(value)
@@ -83,16 +87,33 @@ def _canonical_history_event(event: dict) -> dict:
     return migrated
 
 
+def _conversation_id(conversation: dict) -> str:
+    conversation_id = conversation.get("conversation_id")
+    if not isinstance(conversation_id, str) or not conversation_id:
+        raise MigrationValidationError("conversation_id must be a non-empty string")
+    return conversation_id
+
+
 def migrate_history(conversation: dict) -> tuple[list[dict], dict]:
-    conversation_id = str(conversation["conversation_id"])
+    conversation_id = _conversation_id(conversation)
+    legacy_events = conversation.get("events", []) or []
+    if not isinstance(legacy_events, list):
+        raise MigrationValidationError("events must be a list")
     grouped: dict[int, list[dict]] = defaultdict(list)
     dropped = defaultdict(int)
-    for event in conversation.get("events", []) or []:
+    for index, event in enumerate(legacy_events):
+        if not isinstance(event, dict):
+            raise MigrationValidationError(f"events[{index}] must be an object")
         event_type = event.get("type")
         if event_type not in VISIBLE_TYPES:
             dropped[str(event_type or "unknown")] += 1
             continue
-        migrated = _canonical_history_event(event)
+        try:
+            migrated = _canonical_history_event(event)
+        except (TypeError, ValueError) as exc:
+            raise MigrationValidationError(
+                f"events[{index}] has invalid timestamp"
+            ) from exc
         grouped[int(migrated["timestamp"])].append(migrated)
 
     items: list[dict] = []
@@ -109,22 +130,40 @@ def migrate_history(conversation: dict) -> tuple[list[dict], dict]:
     return items, dict(sorted(dropped.items()))
 
 
-def migrate_metadata(conversation: dict) -> dict:
+def migrate_metadata(conversation: dict, cutover_at_ms: int) -> dict:
+    if cutover_at_ms <= 0:
+        raise MigrationValidationError("cutover_at_ms must be positive")
+    _conversation_id(conversation)
     migrated = _plain(conversation)
+    participants = migrated.get("participants", []) or []
+    if not isinstance(participants, list):
+        raise MigrationValidationError("participants must be a list")
     states: dict[str, dict] = {}
-    for participant in migrated.get("participants", []) or []:
+    for index, participant in enumerate(participants):
+        if not isinstance(participant, dict):
+            raise MigrationValidationError(f"participants[{index}] must be an object")
         if participant.get("role") == "ai":
             ai_id = participant.get("ai_participant_id") or participant.get("session_id")
             if ai_id:
                 participant["ai_participant_id"] = ai_id
 
-    for event in migrated.get("events", []) or []:
+    legacy_events = migrated.get("events", []) or []
+    if not isinstance(legacy_events, list):
+        raise MigrationValidationError("events must be a list")
+    for index, event in enumerate(legacy_events):
+        if not isinstance(event, dict):
+            raise MigrationValidationError(f"events[{index}] must be an object")
         if event.get("type") != "tick":
             continue
         ai_id = event.get("ai_participant_id") or event.get("session_id")
         if not ai_id:
             continue
-        timestamp = int(event.get("timestamp", 0) or 0)
+        try:
+            timestamp = int(event.get("timestamp", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise MigrationValidationError(
+                f"events[{index}] has invalid tick timestamp"
+            ) from exc
         previous = states.get(ai_id)
         if previous and int(previous["last_evaluated_at"]) > timestamp:
             continue
@@ -137,7 +176,7 @@ def migrate_metadata(conversation: dict) -> dict:
             ),
             "last_evaluated_at": timestamp,
             "last_result": result,
-            "next_actionable_at": int(event.get("visible_at", timestamp) or timestamp),
+            "next_actionable_at": cutover_at_ms,
         }
 
     migrated["event_storage_version"] = 1
@@ -161,27 +200,58 @@ def _scan_all(table) -> list[dict]:
         kwargs["ExclusiveStartKey"] = last_key
 
 
-def build_plan(source_table) -> dict:
+def build_plan(source_table, cutover_at_ms: int) -> dict:
+    if cutover_at_ms <= 0:
+        raise MigrationValidationError("cutover_at_ms must be positive")
     conversations = []
-    for source in sorted(_scan_all(source_table), key=lambda item: item["conversation_id"]):
-        events, dropped = migrate_history(source)
-        metadata = migrate_metadata(source)
+    issues = []
+    source_rows = _scan_all(source_table)
+    for source in sorted(
+        source_rows,
+        key=lambda item: str(item.get("conversation_id", "")) if isinstance(item, dict) else "",
+    ):
+        conversation_id = (
+            str(source.get("conversation_id", "<missing>"))
+            if isinstance(source, dict)
+            else "<invalid-row>"
+        )
+        try:
+            if not isinstance(source, dict):
+                raise MigrationValidationError("conversation row must be an object")
+            events, dropped = migrate_history(source)
+            metadata = migrate_metadata(source, cutover_at_ms)
+        except (MigrationValidationError, TypeError, ValueError) as exc:
+            issues.append({
+                "conversation_id": conversation_id,
+                "error": str(exc),
+            })
+            continue
         conversations.append({
-            "conversation_id": str(source["conversation_id"]),
+            "conversation_id": _conversation_id(source),
             "source": _plain(source),
             "metadata": metadata,
             "events": events,
             "event_hash": _hash(events),
             "dropped": dropped,
         })
-    digest_input = [{
-        "conversation_id": item["conversation_id"],
-        "metadata_hash": _hash(item["metadata"]),
-        "event_hash": item["event_hash"],
-        "event_count": len(item["events"]),
-        "dropped": item["dropped"],
-    } for item in conversations]
-    return {"plan_hash": _hash(digest_input), "conversations": conversations}
+    digest_input = {
+        "cutover_at_ms": cutover_at_ms,
+        "issues": issues,
+        "conversations": [{
+            "conversation_id": item["conversation_id"],
+            "metadata_hash": _hash(item["metadata"]),
+            "event_hash": item["event_hash"],
+            "event_count": len(item["events"]),
+            "dropped": item["dropped"],
+        } for item in conversations],
+    }
+    return {
+        "plan_hash": _hash(digest_input),
+        "cutover_at_ms": cutover_at_ms,
+        "conversations": conversations,
+        "issues": issues,
+        "source_row_count": len(source_rows),
+    }
 
 
 def _put_metadata(target, item: dict) -> None:
@@ -233,7 +303,81 @@ def _target_events(target, conversation_id: str) -> list[dict]:
         kwargs["ExclusiveStartKey"] = last_key
 
 
+def verify_plan(plan: dict, metadata_table, event_table) -> dict:
+    if plan.get("issues"):
+        raise RuntimeError("plan contains malformed source rows")
+
+    expected_by_id = {
+        item["conversation_id"]: item for item in plan["conversations"]
+    }
+    actual_event_rows = _scan_all(event_table)
+    actual_event_ids = {
+        str(item.get("conversation_id", "")) for item in actual_event_rows
+    }
+    expected_ids = set(expected_by_id)
+    extra_ids = sorted(actual_event_ids - expected_ids)
+    if extra_ids:
+        raise RuntimeError(
+            f"verification found extra event partitions: {', '.join(extra_ids)}"
+        )
+
+    verified_events = 0
+    for conversation_id, item in expected_by_id.items():
+        actual_events = sorted(
+            (
+                event for event in actual_event_rows
+                if str(event.get("conversation_id", "")) == conversation_id
+            ),
+            key=lambda event: str(event.get("event_key", "")),
+        )
+        if _hash(actual_events) != item["event_hash"]:
+            raise RuntimeError(f"event verification failed for {conversation_id}")
+        verified_events += len(actual_events)
+
+        actual_metadata = metadata_table.get_item(
+            Key={"conversation_id": conversation_id},
+            ConsistentRead=True,
+        ).get("Item")
+        if actual_metadata is None:
+            raise RuntimeError(f"metadata missing for {conversation_id}")
+        for field in (
+            "event_storage_version",
+            "ai_tick_state_by_participant_id",
+            "next_actionable_tick_at",
+            "participants",
+        ):
+            if _hash(actual_metadata.get(field)) != _hash(item["metadata"].get(field)):
+                raise RuntimeError(
+                    f"metadata verification failed for {conversation_id}: {field}"
+                )
+        if _hash(actual_metadata.get("events", [])) != _hash(
+            item["source"].get("events", [])
+        ):
+            raise RuntimeError(
+                f"metadata verification failed for {conversation_id}: legacy events"
+            )
+
+    metadata_ids = {
+        str(item.get("conversation_id", "")) for item in _scan_all(metadata_table)
+    }
+    if metadata_ids != expected_ids:
+        missing = sorted(expected_ids - metadata_ids)
+        extra = sorted(metadata_ids - expected_ids)
+        raise RuntimeError(
+            "metadata ID verification failed: "
+            f"missing={missing}, extra={extra}"
+        )
+
+    return {
+        "conversation_count": len(expected_ids),
+        "event_count": verified_events,
+        "legacy_events_preserved": True,
+    }
+
+
 def apply_plan(plan: dict, metadata_table, event_table, checkpoint: Path) -> None:
+    if plan.get("issues"):
+        raise RuntimeError("plan contains malformed source rows")
     completed = set()
     if checkpoint.exists():
         saved = json.loads(checkpoint.read_text())
@@ -298,13 +442,28 @@ def _summary(plan: dict, mode: str) -> dict:
     return {
         "mode": mode,
         "plan_hash": plan["plan_hash"],
+        "cutover_at_ms": plan["cutover_at_ms"],
+        "source_row_count": plan["source_row_count"],
         "conversation_count": len(plan["conversations"]),
         "event_count": sum(len(item["events"]) for item in plan["conversations"]),
         "dropped": {
             key: sum(item["dropped"].get(key, 0) for item in plan["conversations"])
             for key in sorted({key for item in plan["conversations"] for key in item["dropped"]})
         },
+        "issue_count": len(plan.get("issues", [])),
     }
+
+
+def _write_report(path: str | None, plan: dict, mode: str, verification=None) -> None:
+    if not path:
+        return
+    report_path = Path(path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(_canonical_json({
+        **_summary(plan, mode),
+        "issues": plan.get("issues", []),
+        **({"verification": verification} if verification else {}),
+    }) + "\n")
 
 
 def parse_args(argv=None):
@@ -313,8 +472,13 @@ def parse_args(argv=None):
     parser.add_argument("--target-metadata-table", required=True)
     parser.add_argument("--target-event-table", required=True)
     parser.add_argument("--region", required=True)
-    parser.add_argument("--apply", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--verify", action="store_true")
+    parser.add_argument("--cutover-at-ms", required=True, type=int)
     parser.add_argument("--confirm-plan")
+    parser.add_argument("--report-json")
     parser.add_argument("--checkpoint", default=".conversation-event-migration.json")
     parser.add_argument("--allow-protected-table", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -333,15 +497,26 @@ def main(argv=None) -> int:
     metadata = dynamodb.Table(args.target_metadata_table)
     events = dynamodb.Table(args.target_event_table)
     try:
-        plan = build_plan(source)
-        print(_canonical_json(_summary(plan, "apply" if args.apply else "dry-run")))
-        if not args.apply:
+        plan = build_plan(source, args.cutover_at_ms)
+        mode = "verify" if args.verify else ("apply" if args.apply else "dry-run")
+        print(_canonical_json(_summary(plan, mode)))
+        _write_report(args.report_json, plan, mode)
+        if plan.get("issues"):
+            print("migration plan contains malformed source rows", file=sys.stderr)
+            return 1
+        if not args.apply and not args.verify:
             return 0
         if args.confirm_plan != plan["plan_hash"]:
             print("--confirm-plan must equal the full dry-run plan_hash", file=sys.stderr)
             return 2
-        apply_plan(plan, metadata, events, Path(args.checkpoint))
-        print(_canonical_json(_summary(plan, "verified")))
+        if args.apply:
+            apply_plan(plan, metadata, events, Path(args.checkpoint))
+        verification = verify_plan(plan, metadata, events)
+        _write_report(args.report_json, plan, "verified", verification)
+        print(_canonical_json({
+            **_summary(plan, "verified"),
+            "verification": verification,
+        }))
         return 0
     except (ClientError, RuntimeError, ValueError) as exc:
         print(f"migration failed: {exc}", file=sys.stderr)

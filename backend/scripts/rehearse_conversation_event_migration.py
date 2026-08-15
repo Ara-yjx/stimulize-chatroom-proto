@@ -126,10 +126,12 @@ def main(argv=None) -> int:
             for row in _legacy_rows():
                 batch.put_item(Item=row)
 
-        plan = migration.build_plan(source)
+        plan = migration.build_plan(source, cutover_at_ms=3000)
         migration.apply_plan(plan, metadata, events, checkpoint)
+        migration.verify_plan(plan, metadata, events)
         checkpoint.unlink(missing_ok=True)
         migration.apply_plan(plan, metadata, events, checkpoint)
+        migration.verify_plan(plan, metadata, events)
         verified = all(
             migration._hash(migration._target_events(events, item["conversation_id"]))
             == item["event_hash"]
