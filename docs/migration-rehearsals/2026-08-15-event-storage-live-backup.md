@@ -20,14 +20,15 @@ updated.
 - Apply, verify, checkpoint reset, and idempotent rerun: 1,621.646 seconds
 - Standalone verify duration: 240.299 seconds
 
-Retained resources:
+Rehearsal resources created for the run:
 
 - Backup: `stimulize-chatroom-event-rehearsal-20260815t070936z-yjx-backup`
 - Metadata: `stimulize-chatroom-event-rehearsal-20260815t070936z-yjx-metadata`
 - Events: `stimulize-chatroom-event-rehearsal-20260815t070936z-yjx-events`
 - Lobbies: `stimulize-chatroom-event-rehearsal-20260815t070936z-yjx-lobbies`
 
-The backup is `AVAILABLE` and is 35,642,446 bytes. Cleanup was not run.
+The backup was 35,642,446 bytes. The three rehearsal tables and rehearsal
+backup were deleted on 2026-08-15 after the live cutover passed acceptance.
 
 ## Migration Checks
 
@@ -90,19 +91,9 @@ before writing metadata/checkpoints. The same plan hash resumed successfully.
 Known non-blocking output: existing short test-JWT warnings, CDK deprecation
 warnings, editor bundle-size warning, and existing npm dependency audit items.
 
-## Future Cleanup
+## Cleanup
 
-Review the retained resources first. To delete only this run, execute from
-`backend/` with the exact manifest confirmation:
-
-```bash
-python scripts/rehearse_live_conversation_event_migration.py \
-  --stage cleanup \
-  --source-table chatroom-conversations \
-  --region us-east-2 \
-  --run-id 20260815t070936z-yjx \
-  --cutover-at-ms 1786777776579 \
-  --work-dir ../.local/migration-rehearsals/20260815t070936z-yjx \
-  --confirm-source-table chatroom-conversations \
-  --confirm-manifest 3eb3f3ffba1c6d18ccc4a98a474ad0127372ab69d7f926914730aabd4ae8efbe
-```
+Cleanup completed on 2026-08-15 using the exact source-table and manifest-hash
+guards. AWS verification found none of the three rehearsal tables or the
+rehearsal backup afterward. The final live-cutover backup and local migration
+evidence remain retained through soak.

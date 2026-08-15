@@ -128,11 +128,12 @@ backend/chatroom_api/event_cleanup.py       # TTL stream consumer
 backend/scripts/migrate_conversation_events.py
 ```
 
-Update `config.py` with `DYNAMODB_EVENT_TABLE` and
-`EVENT_STORAGE_ENABLED`. `get_event_store_provider()` selects the new table only
-when a real stack explicitly enables it; existing stacks remain on the legacy
-adapter until cutover. Keep `dynamo.py` focused on metadata reads, tick guards,
-and projection updates; remove embedded-list operations only after soak cleanup.
+`config.py` exposes `DYNAMODB_EVENT_TABLE` and the transitional
+`EVENT_STORAGE_ENABLED` adapter switch. The shared beta CDK app always injects
+the event table and `EVENT_STORAGE_ENABLED=true`; synth fails if API or tick is
+constructed without an event table. The legacy adapter remains only for the
+documented compatibility/soak window. Keep `dynamo.py` focused on metadata
+reads, tick guards, and projection updates.
 
 The real and mock adapters expose:
 
@@ -302,11 +303,10 @@ Production cutover will update:
 - `cdk/bin/app.ts`: stack wiring
 - `cdk/test/snapshot.test.ts`: tables, stream, Lambda, IAM, route, alarms
 
-The normal CDK app creates the protected event infrastructure independently of
-runtime cutover. `enableEventStorageRuntime` defaults to `false`; only a future
-explicit `true` passes the event table to API/tick and enables the provider.
-The preparation deploy is limited to `ConversationTableStack` and
-`ConversationEventStack`, so API, tick, and heartbeat code remain untouched.
+The normal CDK app creates the protected event infrastructure and always passes
+the fixed event table to API/tick. The temporary `enableEventStorageRuntime`
+cutover flag was removed after the first event-runtime write: reverting to the
+legacy writer would split history and is no longer a valid rollback.
 
 Set event cleanup and tick diagnostic logs to 30-day retention. Cleanup must
 never delete conversation metadata.
@@ -337,8 +337,8 @@ an eight-second interval. Keep it disabled for storage-only development.
 
 ## Migration Tool
 
-The shared beta operation follows
-[`event-storage-beta-migration-runbook.md`](event-storage-beta-migration-runbook.md).
+The completed shared beta operation is preserved as the historical
+[`2026-08-15 event-storage beta runbook`](migration-cutovers/2026-08-15-event-storage-beta-runbook.md).
 
 ### Service modes
 
@@ -389,16 +389,12 @@ cd backend
 The harness seeds legacy-shaped synthetic data, applies twice, verifies, and
 deletes all three temporary tables unless `--keep` is supplied.
 
-Live-backup rehearsal uses
-`scripts/rehearse_live_conversation_event_migration.py`. Its default `plan`
-stage only prints a deterministic manifest. `prepare`, `apply`, `verify`, and
-`cleanup` require both the exact live source name and manifest hash; apply and
-verify additionally require the dry-run migration plan hash. `prepare` waits
-for an on-demand backup, restores metadata, creates isolated event/lobby
-tables, and writes raw details under gitignored `.local/`. Apply verifies,
-removes its checkpoint, and repeats apply/verify to prove idempotency. Resources
-are retained after rehearsal; cleanup is a separate confirmed command and is
-not part of the rehearsal run.
+The one-off live-backup rehearsal restored an on-demand backup into isolated
+metadata/event/lobby tables, then ran apply, standalone verify, and an
+idempotent rerun. Its source-table and manifest-hash guards and aggregate
+results are preserved in the rehearsal report. The dedicated orchestration
+script and AWS resources were retired after cutover; the generic synthetic
+rehearsal and migration CLI remain.
 
 ## Verification
 
@@ -444,10 +440,11 @@ Completed acceptance sequence:
 3. **Widget cutover - complete**
    - cursor state, event-ID dedupe, scrollback, soft-end polling
    - local browser E2E
-4. **Migration and beta - cutover complete, cleanup pending**
+4. **Migration and beta - complete; compatibility soak active**
    - restored-table rehearsal
    - reviewed maintenance plan and beta cutover
-   - soak, then compatibility/legacy cleanup
+   - rehearsal infrastructure cleanup
+   - soak, then separately review numeric-cursor and legacy-list cleanup
 
 CDK/event-store work and widget work can proceed in parallel once the item,
 cursor, and response fixtures are checked in. Keep `chat.py` and

@@ -1,8 +1,12 @@
-# Event Storage Beta Migration Runbook
+# Event Storage Beta Migration Runbook - 2026-08-15
 
-This runbook is the only approved path for migrating the shared beta tables.
-Run it from a clean, tested `main` checkout in AWS account `487957693199` and
-region `us-east-2`. Keep one operator for the entire window.
+> Historical record. The cutover is complete; do not execute this runbook.
+> Event storage is now mandatory, and returning to the legacy writer is not a
+> valid rollback.
+
+This was the approved path used to migrate the shared beta tables. It was run
+from a clean, tested `main` checkout in AWS account `487957693199` and region
+`us-east-2`, with one operator for the entire window.
 
 ## Fixed Resources
 

@@ -55,9 +55,10 @@ the migration and runtime switch. The write freeze lasted about 41 minutes.
 
 - **Keep - shared beta:** production Pages, shared RDS, live API/tick/heartbeat,
   live metadata/event/lobby tables, and event-cleanup resources.
-- **Delete now - rehearsal:** the three
+- **Deleted 2026-08-15 - rehearsal:** the three
   `stimulize-chatroom-event-rehearsal-20260815t070936z-yjx-*` tables and their
-  rehearsal backup. They have no live dependency.
+  rehearsal backup were removed after manifest-hash-guarded cleanup and AWS
+  verification. They had no live dependency.
 - **Keep until resume E2E - resume dev:** `stimulize-chatroom-proto-resume`
   Pages plus the seven `StimulizeChatroomEventDevYjx20260725*` stacks. This
   environment has independent conversation/event/lobby DDB tables and runtime
@@ -69,6 +70,5 @@ the migration and runtime switch. The write freeze lasted about 41 minutes.
   the shared CDK bootstrap stack. Keep the resume source branch even after its
   build-artifact repo is removed.
 
-Cleanup remains separately reviewed. Rehearsal resources may be removed now;
-the final backup and rollback evidence remain through at least the initial
-24-hour soak.
+The rehearsal cleanup is complete. The final backup and rollback evidence
+remain through at least the initial 24-hour soak.
