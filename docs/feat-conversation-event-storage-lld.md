@@ -14,7 +14,7 @@ Implemented first on the isolated prefix
 2026-08-15 after a live-backup rehearsal. The beta API and tick Lambda now use
 the event table, the heartbeat is enabled, and the cursor widget is deployed.
 Legacy lists and numeric `after` compatibility remain during soak. See the
-[cutover report](./migration-cutovers/2026-08-15-event-storage-beta.md).
+[cutover worklog](./migration-cutovers/2026-08-15-event-storage-beta-cutover-worklog.md).
 
 ## Target Flow
 

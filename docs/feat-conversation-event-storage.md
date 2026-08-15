@@ -35,7 +35,7 @@ The shared beta cutover completed on 2026-08-15. The API and tick Lambdas now
 read and write `chatroom-conversation-events`; legacy embedded lists remain
 unchanged for rollback evidence but receive no new events. Numeric `after`
 compatibility remains enabled during soak. See the
-[cutover report](./migration-cutovers/2026-08-15-event-storage-beta.md).
+[cutover worklog](./migration-cutovers/2026-08-15-event-storage-beta-cutover-worklog.md).
 
 Resume behavior is still isolated and was not released with this migration.
 
