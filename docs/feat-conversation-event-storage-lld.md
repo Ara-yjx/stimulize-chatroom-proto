@@ -336,6 +336,9 @@ an eight-second interval. Keep it disabled for storage-only development.
 
 ## Migration Tool
 
+The shared beta operation follows
+[`event-storage-beta-migration-runbook.md`](event-storage-beta-migration-runbook.md).
+
 ### Service modes
 
 `CHATROOM_SERVICE_MODE` defaults to `normal`. During a future cutover,

@@ -274,6 +274,7 @@ describe("TickHandlerStack", () => {
       lobbyTable: lobby.table,
       jwtSecret: secrets.jwtSecret,
       adminToken: secrets.adminToken,
+      serviceMode: "maintenance",
     });
     const t = Template.fromStack(stack);
 
@@ -287,6 +288,7 @@ describe("TickHandlerStack", () => {
         Variables: Match.objectLike({
           // Tables — values are CFN Refs that resolve cross-stack, just check keys.
           DYNAMODB_TABLE: Match.anyValue(),
+          CHATROOM_SERVICE_MODE: "maintenance",
           LOBBY_TABLE: Match.anyValue(),
           JWT_SECRET_ARN: Match.anyValue(),
           ADMIN_TOKEN_SECRET_ARN: Match.anyValue(),
@@ -398,6 +400,7 @@ describe("ChatroomApiStack", () => {
       adminToken: secrets.adminToken,
       tickHandler: tickHandler.lambdaFunction,
       eventTable: conv.table,
+      serviceMode: "maintenance",
     });
     const t = Template.fromStack(stack);
 
@@ -409,6 +412,7 @@ describe("ChatroomApiStack", () => {
           DYNAMODB_TABLE: Match.anyValue(),
           DYNAMODB_EVENT_TABLE: Match.anyValue(),
           EVENT_STORAGE_ENABLED: "true",
+          CHATROOM_SERVICE_MODE: "maintenance",
           LOBBY_TABLE: Match.anyValue(),
           JWT_SECRET_ARN: Match.anyValue(),
           ADMIN_TOKEN_SECRET_ARN: Match.anyValue(),

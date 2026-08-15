@@ -9,6 +9,7 @@ import {
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { backendPythonCode } from "./backend-code";
+import { ChatroomServiceMode } from "./chatroom-service-mode";
 
 export interface TickHandlerStackProps extends StackProps {
   conversationTable: dynamodb.ITable;
@@ -16,6 +17,7 @@ export interface TickHandlerStackProps extends StackProps {
   jwtSecret: secretsmanager.ISecret;
   adminToken: secretsmanager.ISecret;
   eventTable?: dynamodb.ITable;
+  serviceMode?: ChatroomServiceMode;
   functionName?: string;
   useMockRds?: boolean;
 }
@@ -66,6 +68,7 @@ export class TickHandlerStack extends Stack {
         DYNAMODB_TABLE: conversationTable.tableName,
         ...(eventTable ? { DYNAMODB_EVENT_TABLE: eventTable.tableName } : {}),
         EVENT_STORAGE_ENABLED: String(Boolean(eventTable)),
+        CHATROOM_SERVICE_MODE: props.serviceMode ?? "normal",
         LOBBY_TABLE: lobbyTable.tableName,
         JWT_SECRET_ARN: jwtSecret.secretArn,
         ADMIN_TOKEN_SECRET_ARN: adminToken.secretArn,

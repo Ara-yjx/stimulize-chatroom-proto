@@ -8,6 +8,7 @@ import { ChatroomApiStack } from "../lib/chatroom-api-stack";
 import { TickHandlerStack } from "../lib/tick-handler-stack";
 import { TickHeartbeatStack } from "../lib/tick-heartbeat-stack";
 import { ConversationEventStack } from "../lib/conversation-event-stack";
+import { parseChatroomServiceMode } from "../lib/chatroom-service-mode";
 
 const app = new cdk.App();
 
@@ -17,6 +18,9 @@ const env: cdk.Environment = {
 };
 const enableEventStorageRuntime =
   app.node.tryGetContext("enableEventStorageRuntime") === "true";
+const chatroomServiceMode = parseChatroomServiceMode(
+  app.node.tryGetContext("chatroomServiceMode"),
+);
 
 const conversationStack = new ConversationTableStack(app, "ConversationTableStack", {
   env,
@@ -43,6 +47,7 @@ const tickHandlerStack = new TickHandlerStack(app, "TickHandlerStack", {
   jwtSecret: secretsStack.jwtSecret,
   adminToken: secretsStack.adminToken,
   eventTable: enableEventStorageRuntime ? eventStack.eventTable : undefined,
+  serviceMode: chatroomServiceMode,
 });
 
 new ChatroomApiStack(app, "ChatroomApiStack", {
@@ -53,6 +58,7 @@ new ChatroomApiStack(app, "ChatroomApiStack", {
   adminToken: secretsStack.adminToken,
   tickHandler: tickHandlerStack.lambdaFunction,
   eventTable: enableEventStorageRuntime ? eventStack.eventTable : undefined,
+  serviceMode: chatroomServiceMode,
 });
 
 new TickHeartbeatStack(app, "TickHeartbeatStack", {

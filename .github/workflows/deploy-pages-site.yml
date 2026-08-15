@@ -1,14 +1,6 @@
 name: Deploy Pages Site
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/deploy-pages-site.yml'
-      - 'editor/**'
-      - 'frontend/**'
-      - 'scripts/build_pages_site.sh'
   workflow_dispatch:
 
 permissions:
