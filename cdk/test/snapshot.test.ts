@@ -115,6 +115,28 @@ describe("ConversationTableStack", () => {
       ]),
     });
   });
+
+  it("supports retained protected live metadata with PITR and a keys-only stream", () => {
+    const app = makeApp();
+    const stack = new ConversationTableStack(app, "ConvTable", {
+      env: TEST_ENV,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      pointInTimeRecovery: true,
+      stream: cdk.aws_dynamodb.StreamViewType.KEYS_ONLY,
+      deletionProtection: true,
+    });
+    const t = Template.fromStack(stack);
+
+    t.hasResource("AWS::DynamoDB::Table", {
+      DeletionPolicy: "Retain",
+      UpdateReplacePolicy: "Retain",
+      Properties: Match.objectLike({
+        DeletionProtectionEnabled: true,
+        PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+        StreamSpecification: { StreamViewType: "KEYS_ONLY" },
+      }),
+    });
+  });
 });
 
 describe("ConversationEventStack", () => {
@@ -150,6 +172,33 @@ describe("ConversationEventStack", () => {
     t.resourceCountIs("AWS::Lambda::EventSourceMapping", 1);
     t.resourceCountIs("AWS::SQS::Queue", 1);
     t.resourceCountIs("AWS::CloudWatch::Alarm", 1);
+  });
+
+  it("supports deletion protection for the live event table", () => {
+    const app = makeApp();
+    const conv = new ConversationTableStack(app, "ConvTable", {
+      env: TEST_ENV,
+      stream: cdk.aws_dynamodb.StreamViewType.KEYS_ONLY,
+    });
+    const stack = new ConversationEventStack(app, "EventTable", {
+      env: TEST_ENV,
+      metadataTable: conv.table,
+      eventTableName: "chatroom-conversation-events",
+      cleanupFunctionName: "chatroom-event-cleanup",
+      deletionProtection: true,
+    });
+    const t = Template.fromStack(stack);
+
+    t.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "chatroom-conversation-events",
+      DeletionProtectionEnabled: true,
+    });
+    t.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "chatroom-event-cleanup-dlq",
+    });
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "chatroom-event-cleanup-failures",
+    });
   });
 });
 
@@ -359,6 +408,7 @@ describe("ChatroomApiStack", () => {
         Variables: Match.objectLike({
           DYNAMODB_TABLE: Match.anyValue(),
           DYNAMODB_EVENT_TABLE: Match.anyValue(),
+          EVENT_STORAGE_ENABLED: "true",
           LOBBY_TABLE: Match.anyValue(),
           JWT_SECRET_ARN: Match.anyValue(),
           ADMIN_TOKEN_SECRET_ARN: Match.anyValue(),

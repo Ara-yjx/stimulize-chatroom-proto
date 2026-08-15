@@ -25,6 +25,7 @@
     "rdsSecretArn": "arn:aws:secretsmanager:us-east-2:487957693199:secret:rds-db-credentials/cluster-RKF7HOO6TF2Y27CWBE6RUIZH3I/stimulus/1743214978855-gcMlTG",
     "domainName": "",
     "enableCustomDomain": "false",
-    "useVpcEndpoints": "false"
+    "useVpcEndpoints": "false",
+    "enableEventStorageRuntime": "false"
   }
 }

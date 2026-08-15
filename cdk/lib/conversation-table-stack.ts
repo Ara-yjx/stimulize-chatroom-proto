@@ -6,6 +6,7 @@ export interface ConversationTableStackProps extends StackProps {
   removalPolicy?: RemovalPolicy;
   pointInTimeRecovery?: boolean;
   stream?: dynamodb.StreamViewType;
+  deletionProtection?: boolean;
 }
 
 export class ConversationTableStack extends Stack {
@@ -29,6 +30,7 @@ export class ConversationTableStack extends Stack {
         },
       }),
       stream: props?.stream,
+      deletionProtection: props?.deletionProtection ?? false,
     });
 
     // GSI used by the heartbeat container to enumerate tickable conversations.

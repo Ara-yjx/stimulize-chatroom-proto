@@ -301,6 +301,12 @@ Production cutover will update:
 - `cdk/bin/app.ts`: stack wiring
 - `cdk/test/snapshot.test.ts`: tables, stream, Lambda, IAM, route, alarms
 
+The normal CDK app creates the protected event infrastructure independently of
+runtime cutover. `enableEventStorageRuntime` defaults to `false`; only a future
+explicit `true` passes the event table to API/tick and enables the provider.
+The preparation deploy is limited to `ConversationTableStack` and
+`ConversationEventStack`, so API, tick, and heartbeat code remain untouched.
+
 Set event cleanup and tick diagnostic logs to 30-day retention. Cleanup must
 never delete conversation metadata.
 

@@ -7,6 +7,7 @@ import { SecretsStack } from "../lib/secrets-stack";
 import { ChatroomApiStack } from "../lib/chatroom-api-stack";
 import { TickHandlerStack } from "../lib/tick-handler-stack";
 import { TickHeartbeatStack } from "../lib/tick-heartbeat-stack";
+import { ConversationEventStack } from "../lib/conversation-event-stack";
 
 const app = new cdk.App();
 
@@ -14,10 +15,26 @@ const env: cdk.Environment = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
   region: process.env.CDK_DEFAULT_REGION,
 };
+const enableEventStorageRuntime =
+  app.node.tryGetContext("enableEventStorageRuntime") === "true";
 
-const conversationStack = new ConversationTableStack(app, "ConversationTableStack", { env });
+const conversationStack = new ConversationTableStack(app, "ConversationTableStack", {
+  env,
+  removalPolicy: cdk.RemovalPolicy.RETAIN,
+  pointInTimeRecovery: true,
+  stream: cdk.aws_dynamodb.StreamViewType.KEYS_ONLY,
+  deletionProtection: true,
+});
 const lobbyStack = new LobbyTableStack(app, "LobbyTableStack", { env });
 const secretsStack = new SecretsStack(app, "SecretsStack", { env });
+const eventStack = new ConversationEventStack(app, "ConversationEventStack", {
+  env,
+  metadataTable: conversationStack.table,
+  eventTableName: "chatroom-conversation-events",
+  cleanupFunctionName: "chatroom-event-cleanup",
+  removalPolicy: cdk.RemovalPolicy.RETAIN,
+  deletionProtection: true,
+});
 
 const tickHandlerStack = new TickHandlerStack(app, "TickHandlerStack", {
   env,
@@ -25,6 +42,7 @@ const tickHandlerStack = new TickHandlerStack(app, "TickHandlerStack", {
   lobbyTable: lobbyStack.table,
   jwtSecret: secretsStack.jwtSecret,
   adminToken: secretsStack.adminToken,
+  eventTable: enableEventStorageRuntime ? eventStack.eventTable : undefined,
 });
 
 new ChatroomApiStack(app, "ChatroomApiStack", {
@@ -34,6 +52,7 @@ new ChatroomApiStack(app, "ChatroomApiStack", {
   jwtSecret: secretsStack.jwtSecret,
   adminToken: secretsStack.adminToken,
   tickHandler: tickHandlerStack.lambdaFunction,
+  eventTable: enableEventStorageRuntime ? eventStack.eventTable : undefined,
 });
 
 new TickHeartbeatStack(app, "TickHeartbeatStack", {

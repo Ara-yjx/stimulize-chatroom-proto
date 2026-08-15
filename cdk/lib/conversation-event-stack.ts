@@ -18,6 +18,7 @@ export interface ConversationEventStackProps extends StackProps {
   eventTableName: string;
   cleanupFunctionName: string;
   removalPolicy?: RemovalPolicy;
+  deletionProtection?: boolean;
 }
 
 export class ConversationEventStack extends Stack {
@@ -41,9 +42,11 @@ export class ConversationEventStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: props.removalPolicy ?? RemovalPolicy.RETAIN,
+      deletionProtection: props.deletionProtection ?? false,
     });
 
     this.failureQueue = new sqs.Queue(this, "CleanupFailureQueue", {
+      queueName: `${props.cleanupFunctionName}-dlq`,
       retentionPeriod: Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
@@ -74,6 +77,7 @@ export class ConversationEventStack extends Stack {
     ));
 
     new cloudwatch.Alarm(this, "CleanupFailureAlarm", {
+      alarmName: `${props.cleanupFunctionName}-failures`,
       metric: this.failureQueue.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
