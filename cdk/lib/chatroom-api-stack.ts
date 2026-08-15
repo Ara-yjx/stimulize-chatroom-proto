@@ -46,6 +46,12 @@ export class ChatroomApiStack extends Stack {
           )
         : undefined
     );
+    if (!eventTable) {
+      throw new Error(
+        "ChatroomApiStack requires eventTable or eventTableName; " +
+        "the post-cutover runtime cannot use legacy event storage.",
+      );
+    }
 
     // --------------- Context params ---------------
     const rdsHost = this.node.tryGetContext("rdsHost") as string;
@@ -73,8 +79,8 @@ export class ChatroomApiStack extends Stack {
       timeout: Duration.seconds(30),
       environment: {
         DYNAMODB_TABLE: table.tableName,
-        ...(eventTable ? { DYNAMODB_EVENT_TABLE: eventTable.tableName } : {}),
-        EVENT_STORAGE_ENABLED: String(Boolean(eventTable)),
+        DYNAMODB_EVENT_TABLE: eventTable.tableName,
+        EVENT_STORAGE_ENABLED: "true",
         CHATROOM_SERVICE_MODE: props.serviceMode ?? "normal",
         LOBBY_TABLE: lobbyTable.tableName,
         JWT_SECRET_ARN: jwtSecret.secretArn,
@@ -102,7 +108,7 @@ export class ChatroomApiStack extends Stack {
 
     // DynamoDB read/write — conversation table
     table.grantReadWriteData(this.lambdaFunction);
-    eventTable?.grantReadWriteData(this.lambdaFunction);
+    eventTable.grantReadWriteData(this.lambdaFunction);
 
     // DynamoDB read/write — lobby table (open lobby query, atomic join,
     // close_lobby, last_seen_at heartbeat updates).

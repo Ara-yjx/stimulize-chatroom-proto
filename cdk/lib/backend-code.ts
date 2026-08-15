@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync } from "child_process";
-import { aws_lambda as lambda } from "aws-cdk-lib";
+import { AssetHashType, aws_lambda as lambda } from "aws-cdk-lib";
 
 const backendDir = path.join(__dirname, "..", "..", "backend");
 const runtimeRequirements = path.join(backendDir, "requirements-lambda.txt");
@@ -48,6 +48,9 @@ function tryLocalBundle(outputDir: string): boolean {
 
 export function backendPythonCode(): lambda.Code {
   return lambda.Code.fromAsset(backendDir, {
+    // Only deployed files should affect the Lambda asset. The source directory
+    // also contains tests, migration scripts, and ignored Python caches.
+    assetHashType: AssetHashType.OUTPUT,
     bundling: {
       image: lambda.Runtime.PYTHON_3_12.bundlingImage,
       local: { tryBundle: tryLocalBundle },

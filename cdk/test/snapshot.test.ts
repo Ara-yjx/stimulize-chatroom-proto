@@ -263,6 +263,21 @@ describe("SecretsStack", () => {
 // -----------------------------------------------------------------------------
 
 describe("TickHandlerStack", () => {
+  it("refuses to synthesize the retired legacy storage path", () => {
+    const app = makeApp();
+    const conv = new ConversationTableStack(app, "ConvTable", { env: TEST_ENV });
+    const lobby = new LobbyTableStack(app, "LobbyTable", { env: TEST_ENV });
+    const secrets = new SecretsStack(app, "Secrets", { env: TEST_ENV });
+
+    expect(() => new TickHandlerStack(app, "TickHandler", {
+      env: TEST_ENV,
+      conversationTable: conv.table,
+      lobbyTable: lobby.table,
+      jwtSecret: secrets.jwtSecret,
+      adminToken: secrets.adminToken,
+    })).toThrow("post-cutover runtime cannot use legacy event storage");
+  });
+
   it("creates tick handler Lambda with required env vars and Bedrock IAM", () => {
     const app = makeApp();
     const conv = new ConversationTableStack(app, "ConvTable", { env: TEST_ENV });
@@ -330,6 +345,7 @@ describe("TickHeartbeatStack", () => {
       lobbyTable: lobby.table,
       jwtSecret: secrets.jwtSecret,
       adminToken: secrets.adminToken,
+      eventTableName: "chatroom-conversation-events",
     });
     const stack = new TickHeartbeatStack(app, "TickHeartbeat", {
       env: TEST_ENV,
@@ -383,6 +399,30 @@ describe("TickHeartbeatStack", () => {
 // -----------------------------------------------------------------------------
 
 describe("ChatroomApiStack", () => {
+  it("refuses to synthesize the retired legacy storage path", () => {
+    const app = makeApp();
+    const conv = new ConversationTableStack(app, "ConvTable", { env: TEST_ENV });
+    const lobby = new LobbyTableStack(app, "LobbyTable", { env: TEST_ENV });
+    const secrets = new SecretsStack(app, "Secrets", { env: TEST_ENV });
+    const tickHandler = new TickHandlerStack(app, "TickHandler", {
+      env: TEST_ENV,
+      conversationTable: conv.table,
+      lobbyTable: lobby.table,
+      jwtSecret: secrets.jwtSecret,
+      adminToken: secrets.adminToken,
+      eventTableName: "chatroom-conversation-events",
+    });
+
+    expect(() => new ChatroomApiStack(app, "ChatroomApi", {
+      env: TEST_ENV,
+      table: conv.table,
+      lobbyTable: lobby.table,
+      jwtSecret: secrets.jwtSecret,
+      adminToken: secrets.adminToken,
+      tickHandler: tickHandler.lambdaFunction,
+    })).toThrow("post-cutover runtime cannot use legacy event storage");
+  });
+
   it("creates API lambda with direct-RDS env vars and no custom domain by default", () => {
     const app = makeApp();
     const conv = new ConversationTableStack(app, "ConvTable", { env: TEST_ENV });
@@ -394,6 +434,7 @@ describe("ChatroomApiStack", () => {
       lobbyTable: lobby.table,
       jwtSecret: secrets.jwtSecret,
       adminToken: secrets.adminToken,
+      eventTableName: "chatroom-conversation-events",
     });
     const stack = new ChatroomApiStack(app, "ChatroomApi", {
       env: TEST_ENV,

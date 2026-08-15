@@ -53,6 +53,12 @@ export class TickHandlerStack extends Stack {
           )
         : undefined
     );
+    if (!eventTable) {
+      throw new Error(
+        "TickHandlerStack requires eventTable or eventTableName; " +
+        "the post-cutover runtime cannot use legacy event storage.",
+      );
+    }
     const rdsHost = this.node.tryGetContext("rdsHost") as string;
     const rdsPort = this.node.tryGetContext("rdsPort") as string || "5432";
     const rdsDatabase = this.node.tryGetContext("rdsDatabase") as string || "postgres";
@@ -76,8 +82,8 @@ export class TickHandlerStack extends Stack {
       timeout: Duration.seconds(120),
       environment: {
         DYNAMODB_TABLE: conversationTable.tableName,
-        ...(eventTable ? { DYNAMODB_EVENT_TABLE: eventTable.tableName } : {}),
-        EVENT_STORAGE_ENABLED: String(Boolean(eventTable)),
+        DYNAMODB_EVENT_TABLE: eventTable.tableName,
+        EVENT_STORAGE_ENABLED: "true",
         CHATROOM_SERVICE_MODE: props.serviceMode ?? "normal",
         LOBBY_TABLE: lobbyTable.tableName,
         JWT_SECRET_ARN: jwtSecret.secretArn,
@@ -101,7 +107,7 @@ export class TickHandlerStack extends Stack {
     // DynamoDB R/W on the conversation table (idempotency guard, status
     // flip, append events, last_speak_at_by_session updates).
     conversationTable.grantReadWriteData(this.lambdaFunction);
-    eventTable?.grantReadWriteData(this.lambdaFunction);
+    eventTable.grantReadWriteData(this.lambdaFunction);
 
     // The handler doesn't write to lobby rows during tick processing, but
     // grant read so debugging utilities and shared helpers stay working.

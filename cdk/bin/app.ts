@@ -16,8 +16,6 @@ const env: cdk.Environment = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
   region: process.env.CDK_DEFAULT_REGION,
 };
-const enableEventStorageRuntime =
-  app.node.tryGetContext("enableEventStorageRuntime") === "true";
 const chatroomServiceMode = parseChatroomServiceMode(
   app.node.tryGetContext("chatroomServiceMode"),
 );
@@ -47,7 +45,7 @@ const tickHandlerStack = new TickHandlerStack(app, "TickHandlerStack", {
   lobbyTable: lobbyStack.table,
   jwtSecret: secretsStack.jwtSecret,
   adminToken: secretsStack.adminToken,
-  eventTableName: enableEventStorageRuntime ? eventTableName : undefined,
+  eventTableName,
   serviceMode: chatroomServiceMode,
 });
 
@@ -58,7 +56,7 @@ new ChatroomApiStack(app, "ChatroomApiStack", {
   jwtSecret: secretsStack.jwtSecret,
   adminToken: secretsStack.adminToken,
   tickHandler: tickHandlerStack.lambdaFunction,
-  eventTableName: enableEventStorageRuntime ? eventTableName : undefined,
+  eventTableName,
   serviceMode: chatroomServiceMode,
 });
 

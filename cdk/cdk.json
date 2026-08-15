@@ -26,7 +26,6 @@
     "domainName": "",
     "enableCustomDomain": "false",
     "useVpcEndpoints": "false",
-    "enableEventStorageRuntime": "false",
     "chatroomServiceMode": "normal"
   }
 }
