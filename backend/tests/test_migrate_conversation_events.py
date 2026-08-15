@@ -108,6 +108,29 @@ class ScanTable:
         return {"Item": item} if item else {}
 
 
+class EventWriteTable:
+    def __init__(self, items=None):
+        self.items = list(items or [])
+
+    def query(self, **_kwargs):
+        return {"Items": list(self.items)}
+
+    def batch_writer(self):
+        table = self
+
+        class Writer:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def put_item(self, Item):
+                table.items.append(Item)
+
+        return Writer()
+
+
 def test_plan_hash_includes_cutover_and_malformed_rows_block_apply(tmp_path):
     source = ScanTable([
         _conversation(),
@@ -144,6 +167,22 @@ def test_verify_checks_events_metadata_and_preserves_legacy_list():
         "legacy_events_preserved": True,
     }
     assert metadata.get_calls == 1
+
+
+def test_batch_event_write_is_idempotent_and_rejects_conflicts():
+    plan = migration.build_plan(ScanTable([_conversation()]), 500)
+    expected = plan["conversations"][0]["events"]
+    table = EventWriteTable(expected[:1])
+
+    migration._put_events_idempotently(table, "conv_one", expected)
+    assert table.items == expected
+
+    migration._put_events_idempotently(table, "conv_one", expected)
+    assert table.items == expected
+
+    table.items[0] = {**table.items[0], "content": "conflict"}
+    with pytest.raises(RuntimeError, match="event payload conflict"):
+        migration._put_events_idempotently(table, "conv_one", expected)
 
 
 def test_verify_rejects_extra_event_partition():

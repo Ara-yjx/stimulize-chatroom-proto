@@ -264,27 +264,29 @@ def _put_metadata(target, item: dict) -> None:
         pass
 
 
-def _put_event(target, expected: dict) -> None:
-    try:
-        target.put_item(
-            Item=expected,
-            ConditionExpression=(
-                "attribute_not_exists(conversation_id) AND "
-                "attribute_not_exists(event_key)"
-            ),
-        )
-    except target.meta.client.exceptions.ConditionalCheckFailedException:
-        existing = target.get_item(
-            Key={
-                "conversation_id": expected["conversation_id"],
-                "event_key": expected["event_key"],
-            },
-            ConsistentRead=True,
-        ).get("Item")
-        if _hash(existing) != _hash(expected):
+def _put_events_idempotently(target, conversation_id: str, expected: list[dict]) -> None:
+    """Validate existing items, then batch-write only missing migration events.
+
+    Migration runs with an exclusive target writer. The pre-read preserves
+    conflict detection and interrupted-run recovery while BatchWriteItem keeps
+    a live-backup rehearsal practical for histories with tens of thousands of
+    events. The caller still verifies the full partition hash before writing
+    the metadata version marker or checkpoint.
+    """
+    expected_by_key = {item["event_key"]: item for item in expected}
+    for actual in _target_events(target, conversation_id):
+        event_key = actual.get("event_key")
+        wanted = expected_by_key.pop(event_key, None)
+        if wanted is None or _hash(actual) != _hash(wanted):
             raise RuntimeError(
-                f"event payload conflict: {expected['conversation_id']} {expected['event_key']}"
+                f"event payload conflict: {conversation_id} {event_key}"
             )
+
+    if not expected_by_key:
+        return
+    with target.batch_writer() as batch:
+        for item in expected_by_key.values():
+            batch.put_item(Item=item)
 
 
 def _target_events(target, conversation_id: str) -> list[dict]:
@@ -392,8 +394,7 @@ def apply_plan(plan: dict, metadata_table, event_table, checkpoint: Path) -> Non
         # For separate rehearsal tables, first copy the untouched legacy row.
         # The version marker is written only after all event items verify.
         _put_metadata(metadata_table, item["source"])
-        for event in item["events"]:
-            _put_event(event_table, event)
+        _put_events_idempotently(event_table, conversation_id, item["events"])
         actual = _target_events(event_table, conversation_id)
         if _hash(actual) != item["event_hash"]:
             raise RuntimeError(f"verification failed for {conversation_id}")

@@ -385,6 +385,17 @@ cd backend
 The harness seeds legacy-shaped synthetic data, applies twice, verifies, and
 deletes all three temporary tables unless `--keep` is supplied.
 
+Live-backup rehearsal uses
+`scripts/rehearse_live_conversation_event_migration.py`. Its default `plan`
+stage only prints a deterministic manifest. `prepare`, `apply`, `verify`, and
+`cleanup` require both the exact live source name and manifest hash; apply and
+verify additionally require the dry-run migration plan hash. `prepare` waits
+for an on-demand backup, restores metadata, creates isolated event/lobby
+tables, and writes raw details under gitignored `.local/`. Apply verifies,
+removes its checkpoint, and repeats apply/verify to prove idempotency. Resources
+are retained after rehearsal; cleanup is a separate confirmed command and is
+not part of the rehearsal run.
+
 ## Verification
 
 Backend tests:

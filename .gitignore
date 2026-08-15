@@ -67,3 +67,4 @@ backend/dev_dumps/
 .hypothesis/
 
 .obsidian/
+.local/
