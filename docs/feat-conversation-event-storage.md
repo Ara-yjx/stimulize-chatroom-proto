@@ -31,10 +31,13 @@ The following decisions are locked for implementation:
 - Rehearse on restored tables, then use a short beta write freeze for cutover.
   Keep the legacy `events` list through initial soak.
 
-The implementation is complete on an isolated development stack. Beta cutover
-and live-data migration remain pending. Until cutover, `design.md`,
-`low-level-design.md`, and `api-reference.md` continue to describe the deployed
-embedded-list/`visible_at` contract.
+The shared beta cutover completed on 2026-08-15. The API and tick Lambdas now
+read and write `chatroom-conversation-events`; legacy embedded lists remain
+unchanged for rollback evidence but receive no new events. Numeric `after`
+compatibility remains enabled during soak. See the
+[cutover report](./migration-cutovers/2026-08-15-event-storage-beta.md).
+
+Resume behavior is still isolated and was not released with this migration.
 
 ## Scope
 

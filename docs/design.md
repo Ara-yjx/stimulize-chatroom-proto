@@ -26,7 +26,7 @@
   - Conversation recorded in Qualtrics ED
   - Lobby-based pairing (`target_human_count`, `ai_join_strategy`, `max_wait_seconds`)
   - `max_duration_seconds` cap per chatroom; beta hard cap is 15 minutes
-  - Researcher-facing audit via debug endpoint (`include_ticks=true`)
+  - Participant-visible history in the event table; tick diagnostics in CloudWatch Logs
   - Editor and widget hosted through GitHub Pages for beta
 
 - **Prod (v2)**
@@ -79,6 +79,7 @@ Current beta implementation:
 - Runtime API: beta API Gateway URL `https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod`; `chatroom.stimulize.org` is future DNS.
 - Management API: real `Stimulize-backend` beta API using POST/action routes and shared RDS.
 - Tick loop: EventBridge-scheduled heartbeat Lambda loops over active conversations and async-invokes `chatroom-tick-handler`.
+- History: participant-visible events are separate items in `chatroom-conversation-events`; conversation rows hold runtime metadata only.
 - Usage: runtime writes one RDS row per billable model invocation; management API aggregates reads.
 - Prompt cache: Bedrock cache is implemented for supported Claude and Nova model IDs.
 
@@ -269,7 +270,7 @@ Why async Lambda invoke over SQS: built-in retry (2x), built-in throttling buffe
 **Configurability and ops:**
 - `HEARTBEAT_INTERVAL_SEC` env var on the heartbeat Lambda (current source default: 5s).
 - `HEARTBEAT_WINDOW_SEC` bounds each heartbeat Lambda's loop duration.
-- `max_duration_seconds` chatroom setting: researcher caps total conversation duration. Tick handler stops ticking and flips `status="ended"` past this deadline. Beta hard cap: 900 seconds (15 minutes), primarily to bound Bedrock spend and keep embedded DynamoDB event history safely below item-size limits.
+- `max_duration_seconds` chatroom setting: researcher caps total conversation duration. Tick handler stops ticking and flips `status="ended"` past this deadline. Beta hard cap: 900 seconds (15 minutes), primarily to bound Bedrock spend.
 
 **Active tick race control**
 
@@ -277,9 +278,12 @@ The heartbeat may skip conversations whose `active_tick_until > now`, but that i
 
 **Beta vs production note:** The current scheduled heartbeat Lambda is acceptable for beta. Revisit before public launch for stronger scheduling/availability guarantees: multi-runner leader election, sharding, EventBridge fan-out, or SQS self-triggering.
 
-**Audit: all events recorded**
+**History and diagnostics**
 
-The conversation `events[]` records every tick — including skipped ticks, "asked but stayed silent" ticks, and token costs. The Bedrock-visible history filters to message + system events only. This gives full research auditability ("why didn't AI speak then?") without polluting the AI's context.
+`chatroom-conversation-events` persists participant-visible message, system,
+and error history only. Tick decisions are structured CloudWatch diagnostics;
+the latest per-AI scheduling result stays as a compact projection on the
+conversation row. Billable model usage is written separately to RDS.
 
 **Stateless ticks: full message history per tick**
 
@@ -291,7 +295,12 @@ Each AI sees other participants only by nickname — there is no role marker (`h
 
 **Simulated typing delay**
 
-AI messages don't appear instantly. Each message gets a `visible_at` timestamp = authoring time + 2-8s random delay (delays stack across a multi-message turn). UI rendering, the gate, and the history sent to the next AI all filter events by `visible_at <= now`. This mimics real typing tempo and keeps AIs reasoning about the conversation as users perceive it. Human and system events become visible immediately. See LLD for details.
+AI messages don't appear instantly. The tick handler waits 2-8 seconds before
+persisting each bubble; delays stack across a multi-message turn. The canonical
+`timestamp` is assigned when the event is appended, and optional `authored_at`
+records when model output was produced. If the conversation ends or the active
+tick lease is lost during the wait, remaining bubbles are dropped. Human and
+system events are written immediately. See LLD for details.
 
 Exception: when human mimicry is off and the room has one AI, that AI must
 answer the latest human message and its response is visible immediately without
@@ -299,7 +308,9 @@ the simulated typing delay.
 
 **No typing indicator in v1**
 
-While an AI message has `visible_at > now`, no "Mars is typing…" indicator is shown to the user. Backend `/chat/messages` filters events by `visible_at <= now`, so clients have no awareness of pending messages. This keeps the contract simple. A typing indicator is in the prod TODO list — it would require either a separate `typing` event type or exposing pending messages with content stripped.
+The server does not expose model output during the simulated delay, so clients
+have no pending-message signal. A future typing indicator needs a separate
+content-free event or state projection.
 
 **1-on-1 is derived from participant counts**
 
@@ -554,7 +565,7 @@ Items deferred during the internal-beta phase. Revisit before public launch.
 - Bundle CDN: beta uses GitHub Pages at `ara-yjx.github.io/stimulize-chatroom-proto`. Move to `cdn.stimulize.org` after DNS access, then CloudFront + S3 if we need cache invalidation, edge logs, or stricter WAF rules.
 - CORS is `*` for beta. Tighten to a Qualtrics-domain allowlist (or Cognito-style auth) before prod.
 - JWT TTL is fixed at 3h. Revisit if researchers want longer sessions (`max_duration_seconds > 3h` would expire mid-conversation).
-- Beta keeps events embedded in the conversation DynamoDB item and caps conversations at 15 minutes. Before prod, split historical events into an append-only `chatroom-events` table to avoid the 400KB item limit, reduce hot-row contention, and support pagination/export.
+- Event storage cut over on 2026-08-15. Keep numeric cursor compatibility and untouched legacy lists for at least the initial 24-hour soak; remove them only in a separately reviewed cleanup.
 
 **Cost guardrails**
 - No per-chatroom Bedrock spend cap. Add daily / per-conversation token caps.
@@ -566,10 +577,10 @@ Items deferred during the internal-beta phase. Revisit before public launch.
 
 **Data and privacy**
 - Conversation TTL is 2.5 years. Confirm with research compliance before prod.
-- Tick events stored verbatim include token counts and gate decisions — fine for audit, but expose via researcher-facing endpoints with care.
+- Tick diagnostics are retained in CloudWatch Logs for 30 days. Define a separate researcher-facing audit product before persisting or exposing them.
 
 **Widget polish**
-- Typing indicator (`Mars is typing…`) — currently no indicator while AI's `visible_at` is in the future.
+- Typing indicator (`Mars is typing...`) - currently no content-free pending state is exposed.
 - Reconnection UX is "reconnecting…" after 30s. Could be smarter (immediate retry feedback, jittered backoff).
 - Multi-mount support (more than one chatroom per Qualtrics page) — out of scope for v1.
 

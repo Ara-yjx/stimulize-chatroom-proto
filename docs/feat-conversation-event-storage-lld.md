@@ -9,11 +9,12 @@ to the current codebase. Resume behavior remains a later feature.
 
 ## Status
 
-Implemented and verified on the isolated prefix
-`stimulize-chatroom-event-dev-yjx-20260725`. No beta stack, table, API, or
-widget was updated. The deployed dev API passed a browser message/AI-response
-flow, and a disposable AWS migration rehearsal passed twice idempotently. Live
-migration and beta cutover remain pending.
+Implemented first on the isolated prefix
+`stimulize-chatroom-event-dev-yjx-20260725`, then migrated to shared beta on
+2026-08-15 after a live-backup rehearsal. The beta API and tick Lambda now use
+the event table, the heartbeat is enabled, and the cursor widget is deployed.
+Legacy lists and numeric `after` compatibility remain during soak. See the
+[cutover report](./migration-cutovers/2026-08-15-event-storage-beta.md).
 
 ## Target Flow
 
@@ -418,31 +419,32 @@ Frontend/CDK checks:
 - scrollback and soft-end polling browser flow
 - CDK Jest snapshots and `cdk synth`
 
-Acceptance sequence:
+Completed acceptance sequence:
 
 1. Run all local backend, frontend, and CDK tests.
 2. Run a local browser conversation under one minute with mock storage.
 3. Rehearse migration against restored temporary tables and record duration.
-4. Stop. Beta freeze, backup, migration, and cutover require a separately
-   reviewed operation; they are not part of development-stack verification.
-5. After that future cutover, keep numeric polling compatibility for the
-   documented cache/session/JWT window and soak before removing it or legacy
-   embedded lists.
+4. Freeze beta writes, create a final backup, migrate and independently verify
+   the live data.
+5. Deploy the event runtime and cursor widget, pass local and hosted browser
+   E2E, then restore the heartbeat.
+6. Keep numeric polling compatibility and legacy lists through soak before any
+   separately reviewed cleanup.
 
 ## Work Plan
 
-1. **Storage foundation**
+1. **Storage foundation - complete**
    - CDK event table/stream/cleanup and snapshots
    - cursor helpers plus real/mock event-store contract tests
    - migration CLI fixtures and dry-run format
-2. **Backend cutover**
+2. **Backend cutover - complete**
    - creation and human-send writes
    - tick/prompt/gate refactor and structured logs
    - live/history APIs with legacy polling compatibility
-3. **Widget cutover**
+3. **Widget cutover - complete**
    - cursor state, event-ID dedupe, scrollback, soft-end polling
    - local browser E2E
-4. **Migration and beta**
+4. **Migration and beta - cutover complete, cleanup pending**
    - restored-table rehearsal
    - reviewed maintenance plan and beta cutover
    - soak, then compatibility/legacy cleanup

@@ -19,8 +19,11 @@ backend/                     # Chatroom Lambda API (Python)
       speech_scaffold.py     # Platform-managed speech rules + tool spec + examples
     jwt_utils.py             # JWT sign/verify (HS256)
     bedrock_client.py        # Bedrock Converse API wrapper + retry + speak tool config
-    conversation.py          # History rendering, visible_at filter, multi-participant -> Bedrock mapping
-    dynamo.py                # Conversation DDB read/write (real)
+    conversation.py          # History rendering, multi-participant -> Bedrock mapping
+    dynamo.py                # Conversation metadata DDB read/write (real)
+    event_store.py           # Event-table writes and cursor queries
+    legacy_event_store.py    # Preserved pre-cutover adapter; inactive in beta
+    cursors.py               # Opaque forward/backward history cursors
     mock_dynamo.py           # In-memory mock
     rds.py                   # RDS chatroom setting + usage read/write
     mock_rds.py              # In-memory mock
@@ -49,7 +52,7 @@ frontend/                    # Chat widget (TypeScript + jQuery)
       state.ts               # Widget state (token, session, history, lobby state, callbacks)
       types.ts               # Shared interfaces (ChatMessage, InitOptions, etc.)
     ui/                      # UI layer (DOM rendering, subscribes to data layer)
-      renderer.ts            # Bubble rendering, styles injection, scroll, visible_at scheduling
+      renderer.ts            # Bubble rendering, styles injection, scroll
       timer.ts               # Timer bar logic
       pairing.ts             # Lobby/pairing screen with countdown
       reconnect.ts           # "Reconnecting..." banner after 30s of failures
@@ -127,34 +130,8 @@ Partition key: `conversation_id` (S)
       model_id: "global.anthropic.claude-sonnet-4-6"                // per-AI override resolved at conversation start
     }
   ],
-  events: [
-    {
-      type: "system" | "message" | "tick" | "lobby_created",
-      session_id: "sess-uuid4",
-      sender: "Participant1234",
-      role: "human" | "ai" | "system",
-      ai_participant_id: null | "ai_001",
-      content: "hello",
-      timestamp: 1711300000000,     // epoch ms — when the event was generated (authoring time)
-      visible_at: 1711300003000,    // epoch ms — when the event becomes visible to participants and AIs.
-                                    //            For human messages and system events: equals timestamp.
-                                    //            For AI messages: timestamp + simulated typing delay (2-8s,
-                                    //            stacked across multi-message turns) to mimic human typing.
-                                    //            Events with visible_at > now are filtered out everywhere
-                                    //            (UI render, gate input, history rendered to next AI tick).
-      created_at: "2026-04-18T...", // ISO 8601
-      // tick-only fields (omit for message/system):
-      chosen_session_id: "ai_001" | null,
-      gate_decision: "skip" | "consider",
-      skip_reason: "min_silence_not_elapsed" | "ai_just_spoke" | null,
-      ai_decision: "speak" | "silent" | null,
-      bedrock_invoked: true,
-      input_tokens: 320,
-      output_tokens: 18,
-      // optional link from message events:
-      triggered_by_tick_id: "tick-uuid"
-    }
-  ],
+  event_storage_version: 1,
+  ai_tick_state: { ... },            // compact latest per-AI scheduling projections
   created_at: "...",
   updated_at: "...",
   ttl: 1790000000                   // epoch seconds = created_at + 2.5 years
@@ -163,14 +140,31 @@ Partition key: `conversation_id` (S)
 
 GSI: `status-index` (PK: `status`). Sparse — only `status="active"` rows. Heartbeat queries this. `ended` rows fall out, keeping the GSI hot regardless of historical volume.
 
-Tick events (`type: "tick"`) are recorded for full audit (every gate skip, every "asked but silent" decision, token costs). `/chat/messages` filters them out before returning to clients; they are never exposed to AI history either.
-
-`lobby_created` events are written as the very first event when a lobby closes. They carry the lobby's `created_at` timestamp + pairing config (target_human_count, ai_join_strategy, ai_strategy_value, max_wait_seconds) so researchers can audit "how long did this cohort wait?". Filtered out of `/chat/messages` and AI history by the same audit-event rule as ticks; admin callers (`?include_ticks=true` with the admin bearer) see them.
-
-**Beta storage guardrail**: events remain embedded in the conversation item for beta to keep implementation small. To reduce the chance of hitting DynamoDB's 400KB item limit during beta, the editor and management API cap `max_duration_seconds` at 900 seconds (15 minutes). Before production, move events to an append-only `chatroom-events` table and keep only conversation metadata/state in `chatroom-conversations` (see Beta -> Prod TODO).
+Participant-visible history is not appended to this row. Tick diagnostics go to
+CloudWatch Logs, while latest scheduling state remains in compact metadata.
+Legacy `events` lists migrated on 2026-08-15 are retained byte-for-byte for
+soak evidence but are no longer written.
 
 TTL is set to `created_at + 2.5 years` to allow fetching conversation history from the editor website later. The TTL field is derived from `created_at`, so if the retention policy changes, existing items can be batch-updated by recalculating TTL from `created_at`.
+
+### DynamoDB: `chatroom-conversation-events`
+
+Partition key: `conversation_id` (S). Sort key: `event_key` (S).
+
+```text
+H#T{13-digit timestamp}#B{batch_id}#I{index}
 ```
+
+Each item is one participant-visible `message`, `system`, or `error` event. It
+includes `event_id`, `type`, `role`, `content`, canonical `timestamp`, author
+identity fields, `audience="conversation"`, and `schema_version=1`. AI events
+may include `authored_at` and `turn_id`. Opaque cursors encode the partition and
+sort key; `/chat/messages` pages forward and `/chat/history` pages backward.
+Numeric `after` remains a temporary compatibility input during migration soak.
+
+The table has PAY_PER_REQUEST billing, PITR, deletion protection, and RETAIN.
+Conversation metadata TTL stream removal invokes the cleanup Lambda to delete
+the matching event partition.
 
 ### DynamoDB: `chatroom-lobbies`
 
@@ -280,7 +274,7 @@ The tick handler call site (illustrative):
 ```python
 response = bedrock.converse(
     modelId=chosen_ai.model_id or setting["model_id"],
-    messages=bedrock_messages,           # built from filtered events (visible_at <= now)
+    messages=bedrock_messages,           # built from event-table history through now
     system=[{"text": full_system_prompt}],   # SCAFFOLD + TOPIC + PERSONA + CONTEXT
     toolConfig=SPEAK_TOOL_CONFIG,        # forced tool use
     inferenceConfig={"maxTokens": 512, "temperature": 0.7},
@@ -291,7 +285,7 @@ Token usage: Bedrock `response["usage"]` is recorded into the corresponding `tic
 
 ### Conversation History Mapping
 
-Each AI's `messages` array is built per tick from events filtered to `visible_at <= now`:
+Each AI's `messages` array is built per tick from persisted event-table history through the current server time:
 - The current AI's own messages → `assistant` role.
 - Everything else (humans + other AIs) → `user` role, with content prefixed by the participant's nickname only (e.g. `[Mars] hi there`). The prefix is just a display name — no `human`/`ai` marker leaks. From this AI's perspective, every other participant is indistinguishable from a human.
 - `system` events are skipped.
@@ -561,16 +555,12 @@ Bedrock retry/error classification reuses existing `bedrock_client.py` logic. On
 
 The active tick is a timeout-based ownership marker, not a permanent lock. If a Lambda crashes or times out after setting `active_tick_id`, the conversation recovers when `active_tick_until` expires and the next heartbeat invokes a new handler. All final writes that mutate tick-owned state must condition on `active_tick_id = tick_id`; if that check fails, this handler lost ownership and must not append AI messages or update `last_speak_at_by_session`.
 
-### Tick admin endpoint (debugging)
+### Tick diagnostics
 
-Tick events are stored in the conversation row but filtered out of `/chat/messages` for clients. To debug "why didn't AI speak at t=120?" without raw DDB access, the chatroom Lambda exposes a debug query parameter:
-
-```
-GET /chat/messages?include_ticks=true
-Authorization: Bearer <admin-token>
-```
-
-When `include_ticks=true` is present AND the bearer is the admin token (separate secret from JWT), the response includes `tick` events alongside `message` and `system`. Without the admin token, the parameter is ignored. Saves a lot of debugging time once researchers start asking "why is Mars quiet".
+Tick decisions are emitted as structured, redacted CloudWatch Logs with 30-day
+retention. They are not written to participant history and there is no public
+`include_ticks` query. The latest per-AI result needed for scheduling remains a
+compact projection on the conversation metadata row.
 
 ### CORS
 
@@ -658,8 +648,8 @@ prevents another AI tick while Bedrock or typing delay is in progress. If the
 conversation ends or the lease is replaced before a write, remaining output is
 dropped while the already-recorded usage is retained.
 
-The legacy embedded-list runtime still uses `visible_at` until its migration;
-the migration maps that field into canonical `timestamp`.
+The migration preserved old availability order by mapping
+`timestamp = visible_at ?? timestamp`; runtime writes never emit `visible_at`.
 
 Future polish: scale delay by message length (~30-50 wpm). Out of scope for v1.
 
@@ -890,7 +880,7 @@ Editor talks to the management API (real `Stimulize-backend` in beta/prod, mock 
 Stacks (one file per stack, see Project Structure):
 
 ### ConversationTableStack
-- DynamoDB table `chatroom-conversations`. PK: `conversation_id` (S). PAY_PER_REQUEST. TTL on `ttl`.
+- DynamoDB table `chatroom-conversations`. PK: `conversation_id` (S). PAY_PER_REQUEST. TTL on `ttl`, PITR, deletion protection, RETAIN, and a KEYS_ONLY stream for event cleanup.
 - GSI `status-index` (sparse on `status="active"`). Used by the heartbeat to find tickable conversations.
 - Fields `active_tick_id` and `active_tick_until` are used as the per-conversation active tick marker. The heartbeat may prefilter on `active_tick_until`, but the tick handler must conditionally acquire it before invoking Bedrock.
 
@@ -899,18 +889,22 @@ Stacks (one file per stack, see Project Structure):
 - GSI `chatroom_id-status-index` (sparse on `status="open"`).
 - GSI `conversation_id-index`.
 
+### ConversationEventStack
+- DynamoDB table `chatroom-conversation-events`. PK/SK: `conversation_id` / `event_key`. PAY_PER_REQUEST, PITR, deletion protection, and RETAIN.
+- Metadata TTL stream cleanup Lambda deletes an expired conversation's event partition. Failures go to a DLQ covered by a CloudWatch alarm.
+
 ### SecretsStack
 - JWT secret (HS256) — random value generated at first deploy.
 - Beta chatroom client access key — fixed beta value required by `/auth/token` before issuing a JWT.
-- Admin bearer token (for `?include_ticks=true` debugging).
+- Admin bearer token retained for internal operational tooling; it does not expose tick events through the participant API.
 
 ### ChatroomApiStack
 - Lambda `chatroom-api` (Python 3.12, 256MB, 30s timeout).
-- API Gateway HTTP API: `POST /auth/token`, `POST /chat/send`, `GET /chat/messages`.
+- API Gateway HTTP API: `POST /auth/token`, `POST /chat/send`, `GET /chat/messages`, `GET /chat/history`.
 - CORS: `Access-Control-Allow-Origin: *`, no credentials.
 - Beta URL: API Gateway execute-api URL. Future custom domain: `chatroom.stimulize.org`.
-- IAM: DynamoDB R/W on conversation + lobby tables; Bedrock InvokeModel; RDS read; Secrets Manager read.
-- Env vars: `CONVERSATION_TABLE`, `LOBBY_TABLE`, `JWT_SECRET_ARN`, `ADMIN_TOKEN_SECRET_ARN`, `RDS_*`, `BEDROCK_REGION`.
+- IAM: DynamoDB R/W on conversation, event, and lobby tables; RDS read; Secrets Manager read; invoke permission on the tick Lambda.
+- Env vars include `DYNAMODB_TABLE`, `DYNAMODB_EVENT_TABLE`, `DYNAMODB_LOBBY_TABLE`, `EVENT_STORAGE_ENABLED`, `CHATROOM_SERVICE_MODE`, secret ARNs, `RDS_*`, and `BEDROCK_REGION`.
 - Also reads `CHATROOM_CLIENT_ACCESS_KEY_SECRET_ARN` for the fixed beta widget access key used by `/auth/token`.
 
 ### TickHandlerStack
@@ -996,7 +990,7 @@ Env vars for local dev (set in shell or `.env.local`):
   TICK_HANDLER_LOCAL=true             # call tick handler in-process (no Lambda async invoke)
   MGMT_API_URL=http://localhost:5000
   MGMT_API_TOKEN=dev-mgmt-token       # bearer token shared with mock management
-  ADMIN_TOKEN=dev-admin-token         # for /chat/messages?include_ticks=true
+  ADMIN_TOKEN=dev-admin-token         # retained internal admin secret
 
 Editor (.env.local):
   VITE_MOCK_MGMT_URL=http://localhost:5000

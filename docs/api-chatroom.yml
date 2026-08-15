@@ -83,10 +83,8 @@ paths:
         NOT come back from this endpoint — they arrive via the next
         `/chat/messages` poll, driven by the tick handler.
 
-        Returns the same shape as `/chat/messages`: events visible to this
-        client at the moment of the call (filtered by `visible_at <= now`,
-        excluding `tick` events). This lets the client refresh its view in
-        the same round trip.
+        Returns the same event-page shape as `/chat/messages`. This lets the
+        client refresh its view in the same round trip.
       security:
         - bearerAuth: []
       requestBody:
@@ -101,7 +99,7 @@ paths:
                   type: string
                 after:
                   type: integer
-                  description: Epoch ms; only return events after this time. Same semantics as `/chat/messages?after`.
+                  description: Legacy epoch-ms compatibility cursor for the send response.
       responses:
         "200":
           description: Acknowledged; current visible events returned
@@ -114,6 +112,11 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/ConversationEvent"
+                  next_after:
+                    type: string
+                    nullable: true
+                  has_more:
+                    type: boolean
         "401":
           description: Invalid or expired token
         "409":
@@ -123,17 +126,18 @@ paths:
     get:
       summary: Poll for new events
       description: |
-        Returns events the client is allowed to see right now.
-        Filters: `visible_at <= now` AND `type != tick`.
-        Pending AI messages with `visible_at > now` are NOT included.
+        Returns participant-visible history events after an opaque cursor.
+        Numeric epoch-ms values remain accepted temporarily for cached widgets.
       security:
         - bearerAuth: []
       parameters:
         - name: after
           in: query
           schema:
-            type: integer
-          description: Epoch ms timestamp. Returns events with `visible_at` after this time.
+            oneOf:
+              - type: string
+              - type: integer
+          description: Opaque `next_after` cursor, or legacy epoch-ms compatibility value.
       responses:
         "200":
           description: Events since timestamp
@@ -146,6 +150,14 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/ConversationEvent"
+                  next_after:
+                    type: string
+                    nullable: true
+                  has_more:
+                    type: boolean
+                  next_pending_at:
+                    type: integer
+                    nullable: true
                   conversation_status:
                     type: string
                     enum: [active, ended]
@@ -164,6 +176,48 @@ paths:
                         type: integer
                       deadline_at:
                         type: integer
+        "401":
+          description: Invalid or expired token
+
+  /chat/history:
+    get:
+      summary: Read older history
+      description: Returns one backward page of participant-visible history.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: before
+          in: query
+          schema:
+            type: string
+          description: Opaque `next_before` cursor. Omit for the latest page.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Backward history page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ConversationEvent"
+                  next_before:
+                    type: string
+                    nullable: true
+                  latest_cursor:
+                    type: string
+                    nullable: true
+                  has_more:
+                    type: boolean
         "401":
           description: Invalid or expired token
 
@@ -262,14 +316,14 @@ components:
     ConversationEvent:
       type: object
       description: |
-        Server stores three event types: `message`, `system`, and `tick`.
-        `tick` events record gate decisions and per-tick metadata for audit (server-internal).
-        `/chat/messages` filters out `tick` events before returning to clients.
-        Clients only ever see `message` and `system` events.
+        Event storage persists participant-visible `message`, `system`, and
+        `error` history. Tick diagnostics are written to CloudWatch Logs.
       properties:
+        event_id:
+          type: string
         type:
           type: string
-          enum: [message, system, tick]
+          enum: [message, system, error]
         session_id:
           type: string
         sender:
@@ -281,17 +335,6 @@ components:
           type: string
         timestamp:
           type: integer
-          description: |
-            Epoch ms. Authoring time — when the event was generated.
-            Human messages and system events are visible immediately.
-            AI messages may be deferred (see visible_at).
-        visible_at:
-          type: integer
-          description: |
-            Epoch ms. When this event becomes visible to participants.
-            For AI messages, includes a simulated typing delay (2-8s,
-            stacked across a multi-message turn). Equals `timestamp`
-            for human messages and system events. Clients render each
-            message at `visible_at`, not `timestamp`.
+          description: Epoch ms assigned when the history event is appended.
         avatar:
           $ref: "#/components/schemas/Avatar"

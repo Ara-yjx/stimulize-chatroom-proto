@@ -26,20 +26,32 @@ Send a human message. Lambda appends the human message event and returns current
 
 Headers: `Authorization: Bearer <jwt>`
 Request: `{ message, after? }`
-Response: `{ events: [{ type, session_id, sender, role, content, timestamp, visible_at, avatar }] }`
+Response: `{ events, next_after, has_more }`
 
-### GET /chat/messages?after={timestamp}
-Poll for visible events since a timestamp (epoch ms). Pending AI messages with `visible_at > now` and internal `tick` / `lobby_created` events are filtered out. Admin/debug mode can include audit events when called with the separate admin token.
+### GET /chat/messages?after={cursor}
+Poll participant-visible events forward. `after` is normally the opaque
+`next_after` returned by the previous response. Numeric epoch-ms values remain
+temporarily accepted for cached pre-cutover widgets. Internal tick diagnostics
+are not stored as history events.
 
 Headers: `Authorization: Bearer <jwt>`
 Response:
 ```json
 {
-  "events": [{ "type", "session_id", "sender", "role", "content", "timestamp", "visible_at", "avatar" }],
+  "events": [{ "event_id", "type", "session_id", "sender", "role", "content", "timestamp", "avatar" }],
+  "next_after": "opaque cursor",
+  "has_more": false,
+  "next_pending_at": null,
   "lobby": { "status", "actual_human_count", "target_human_count", "deadline_at" },  // only during lobby phase
   "conversation_status": "active" | "ended"
 }
 ```
+
+### GET /chat/history?before={cursor}&limit={1..100}
+
+Read older participant-visible history in reverse pages. Omit `before` for the
+latest page, then pass `next_before` to continue scrolling backward. Response:
+`{ events, next_before, latest_cursor, has_more }`.
 
 Status codes:
 - `200` — success
