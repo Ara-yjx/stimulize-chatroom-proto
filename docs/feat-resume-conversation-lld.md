@@ -9,9 +9,9 @@ next episode. History remains one ordered event stream; episode is metadata and
 a write fence, never a message key/query dimension.
 
 Event storage is already live and is the only supported writer. Resume needs
-no new AWS table, index, or data migration. Development and E2E first update
-only the isolated resume-dev stacks; beta is updated later through a separate
-code-only release after all safety gates pass.
+no new AWS table, index, or data migration. The code-only beta release completed
+on 2026-08-17 after isolated resume-dev, non-resumable, two-episode, and hosted
+editor E2E gates passed.
 
 Non-resumable rooms are an explicit compatibility boundary: they keep the
 existing lobby path, random conversation IDs, JWT shape, `active -> ended`
