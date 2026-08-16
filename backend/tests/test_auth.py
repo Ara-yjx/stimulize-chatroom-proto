@@ -72,6 +72,33 @@ class TestHandleAuthTokenV2:
         assert b["chatroom_setting"]["human_count"] == 1
         assert b["chatroom_setting"]["ai_count"] == 1
 
+    def test_participant_id_is_ignored_when_resume_is_not_enabled(self):
+        """A participant hint must not alter the existing lobby/JWT contract."""
+        mock_lobby.reset()
+        mock_dynamo.reset()
+        rds, _db = _mocks()
+        with patch("chatroom_api.auth._get_rds", return_value=rds), \
+             patch("chatroom_api.auth.jwt_utils") as jwt_mock:
+            jwt_mock.create_token.return_value = "legacy-token"
+            status, body = handle_auth_token({
+                "chatroom_id": SAMPLE_CHATROOM["id"],
+                "participant_id": "must-not-enable-resume",
+            })
+
+        assert status == 200
+        assert body["token"] == "legacy-token"
+        assert body["lobby"]["status"] == "closed"
+        assert "participant_id" not in body
+        assert "connection_id" not in body
+        assert "episode_number" not in body
+        jwt_mock.create_token.assert_called_once_with(
+            body["session_id"], body["conversation_id"], SAMPLE_CHATROOM["id"]
+        )
+        conversation = mock_dynamo.get_conversation(body["conversation_id"])
+        assert conversation["status"] == "active"
+        assert "resumable" not in conversation
+        assert "active_episode_number" not in conversation
+
     def test_not_found_returns_404(self):
         rds = MagicMock()
         rds.get_chatroom.return_value = None

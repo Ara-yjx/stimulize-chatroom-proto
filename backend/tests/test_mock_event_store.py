@@ -137,6 +137,51 @@ def test_active_tick_condition_fences_history_and_projection():
     )
 
 
+def test_metadata_fence_and_remove_are_atomic_with_history_append():
+    _create()
+    room = mock_dynamo._rooms["conv_one"]
+    room.update({
+        "active_episode_number": 2,
+        "active_connection_id": "connection-two",
+    })
+
+    with pytest.raises(ConditionalWriteFailed):
+        mock_event_store.append_history_batch(
+            "conv_one",
+            [_event(200, "stale episode")],
+            "stale_episode_batch",
+            expected_status="active",
+            expected_metadata={"active_episode_number": 1},
+            metadata_updates={"status": "inactive"},
+            metadata_remove=["active_connection_id"],
+        )
+
+    unchanged = mock_dynamo.get_conversation("conv_one")
+    assert unchanged["status"] == "active"
+    assert unchanged["active_connection_id"] == "connection-two"
+    assert all(
+        event.get("content") != "stale episode"
+        for event in mock_dynamo._history["conv_one"]
+    )
+
+    mock_event_store.append_history_batch(
+        "conv_one",
+        [_event(210, "episode ended")],
+        "end_episode_batch",
+        expected_status="active",
+        expected_metadata={"active_episode_number": 2},
+        metadata_updates={"status": "inactive"},
+        metadata_remove=["active_connection_id"],
+    )
+    updated = mock_dynamo.get_conversation("conv_one")
+    assert updated["status"] == "inactive"
+    assert "active_connection_id" not in updated
+    assert any(
+        event.get("content") == "episode ended"
+        for event in mock_dynamo._history["conv_one"]
+    )
+
+
 def test_tick_projection_does_not_refresh_history_timestamps():
     _create()
     room = mock_dynamo.get_conversation("conv_one")

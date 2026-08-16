@@ -1,9 +1,11 @@
 """Lifecycle and identity tests for resumable conversations."""
 
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from chatroom_api import chat, mock_dynamo, mock_lobby, resumable
+from chatroom_api import chat, mock_dynamo, mock_lobby, mock_rds, resumable, tick_handler
 from chatroom_api.auth import handle_auth_token
 
 
@@ -92,6 +94,29 @@ def test_first_auth_creates_locked_conversation_without_lobby() -> None:
     assert mock_lobby.query_by_conversation_id(body["conversation_id"]) is None
 
 
+def test_concurrent_first_auth_converges_on_one_conversation() -> None:
+    with patch("chatroom_api.jwt_utils.create_token", return_value="token"):
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(
+                lambda _index: resumable.create_or_resume(
+                    deepcopy(CHATROOM), "Concurrent.User"
+                ),
+                range(4),
+            ))
+
+    assert {status for status, _body in results} == {200}
+    conversation_ids = {body["conversation_id"] for _status, body in results}
+    assert len(conversation_ids) == 1
+    conversation_id = conversation_ids.pop()
+    conversation = mock_dynamo.get_conversation(conversation_id)
+    assert conversation["episode_count"] == 1
+    assert len(conversation["episodes"]) == 1
+    assert len([
+        event for event in mock_dynamo._history[conversation_id]
+        if event.get("subtype") == "conversation_started"
+    ]) == 1
+
+
 def test_active_reauth_rotates_connection_and_supersedes_old_token() -> None:
     _, first = _auth()
     _, second = _auth()
@@ -147,3 +172,46 @@ def test_human_event_has_connection_and_stable_author_identity() -> None:
     assert status == 409
     assert response["code"] == "connection_superseded"
     assert replacement["connection_id"] != body["connection_id"]
+
+
+def test_delayed_ai_output_is_dropped_after_episode_ends() -> None:
+    _, body = _auth()
+    claims = _claims(body)
+    assert chat.handle_chat_send({"message": "hello"}, claims)[0] == 200
+    conversation_id = body["conversation_id"]
+    mock_rds._chatrooms[CHATROOM["id"]] = {
+        **deepcopy(CHATROOM),
+        "owner_id": "owner_resume_test",
+    }
+
+    def end_during_delay(_seconds: float) -> None:
+        conversation = mock_dynamo.get_conversation(conversation_id)
+        assert resumable.end_episode(conversation)
+
+    response = {
+        "messages": ["This must never become visible."],
+        "input_tokens": 1,
+        "output_tokens": 1,
+    }
+    with patch.object(tick_handler, "invoke_speak_tool", return_value=response), \
+         patch.object(tick_handler, "_requires_response_after_human", return_value=False), \
+         patch.object(tick_handler, "run_gate", return_value=SimpleNamespace(
+             skip=False,
+             candidate_session_id=next(
+                 participant["ai_participant_id"]
+                 for participant in mock_dynamo.get_conversation(conversation_id)["participants"]
+                 if participant["role"] == "ai"
+             ),
+             candidate_nickname="Alex",
+         )), \
+         patch.object(tick_handler, "pick_delays_ms", return_value=[1000]), \
+         patch.object(tick_handler.time, "sleep", side_effect=end_during_delay):
+        result = tick_handler.handle_tick({"conversation_id": conversation_id})
+
+    assert result["status"] == "dropped_stale_tick"
+    conversation = mock_dynamo.get_conversation(conversation_id)
+    assert conversation["status"] == "inactive"
+    assert all(
+        event.get("content") != "This must never become visible."
+        for event in mock_dynamo._history[conversation_id]
+    )
