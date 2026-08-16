@@ -16,10 +16,11 @@ Resuming and referencing are separate features. Resuming continues one logical
 conversation; future referencing may quote or branch from another conversation.
 
 Event storage cut over on 2026-08-15 and is now the only supported runtime
-writer. Resume development and E2E first update only the isolated resume-dev
-environment. The later beta release is code-only: it adds no table/index and
-does not migrate existing conversations. Non-resumable rooms must preserve
-their current lobby, token, lifecycle, history, and prompt behavior.
+writer. Resume was released to shared beta on 2026-08-17 after isolated-dev,
+non-resumable, two-episode, and hosted-editor E2E gates passed. The release was
+code-only: it added no table/index and migrated no existing conversation.
+Non-resumable rooms preserve their lobby, token, lifecycle, history, and prompt
+behavior.
 
 ## Terminology
 
