@@ -80,9 +80,12 @@ async function main() {
   const errors = [];
   let createdChatroom = null;
   let runtimeAuth = null;
-  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('pageerror', (error) => errors.push(error.stack || error.message));
   page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
+    if (message.type() !== 'error') return;
+    const location = message.location();
+    if (location.url?.endsWith('/favicon.ico')) return;
+    errors.push(`${message.text()} (${location.url || 'unknown source'}:${location.lineNumber || 0})`);
   });
   page.on('response', async (response) => {
     if (!response.url().endsWith('/auth/token') || !response.ok()) return;
@@ -168,6 +171,7 @@ async function main() {
     fs.writeFileSync(resultFile, JSON.stringify({
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      conversation_id: runtimeAuth?.conversation_id || null,
       browser_errors: errors,
     }, null, 2));
     throw error;
