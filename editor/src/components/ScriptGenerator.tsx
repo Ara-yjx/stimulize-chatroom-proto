@@ -11,17 +11,8 @@ interface Props {
   resumable?: boolean
 }
 
-/**
- * Generates the embed script that researchers paste into Qualtrics.
- * During beta we always force the runtime API hostname explicitly so the
- * widget does not fall back to `chatroom.stimulize.org` before DNS is live.
- */
-export default function ScriptGenerator({ chatroomId, resumable = false }: Props) {
-  // const [apiBaseUrl, setApiBaseUrl] = useState(CHATROOM_API_URL)
-  const [snippet, setSnippet] = useState('')
-
-  const generate = () => {
-    const initBlock = `    StimulizeChatroom.init({
+export function buildEmbedScript(chatroomId: string, resumable: boolean): string {
+  const initBlock = `    StimulizeChatroom.init({
       parentElement: qualtricsQuestion.questionContainer,
       elementStyle: { height: "500px" },
       qualtricsQuestion: qualtricsQuestion,
@@ -29,18 +20,29 @@ export default function ScriptGenerator({ chatroomId, resumable = false }: Props
       apiBaseUrl: "${CHATROOM_API_URL}",
 ${resumable ? '      resumable: true,\n' : ''}    });`
 
-    const widgetScriptUrl = CHATROOM_WIDGET_URL
-
-    const script = `Qualtrics.SurveyEngine.addOnload(function() {
+  return `Qualtrics.SurveyEngine.addOnload(function() {
   var qualtricsQuestion = this;
   var s = document.createElement("script");
-  s.src = "${widgetScriptUrl}";
+  s.src = "${CHATROOM_WIDGET_URL}";
   s.onload = function() {
 ${initBlock}
   };
   document.head.appendChild(s);
 });`
-    setSnippet(script)
+}
+
+/**
+ * Generates the embed script that researchers paste into Qualtrics.
+ * During beta we always force the runtime API hostname explicitly so the
+ * widget does not fall back to `chatroom.stimulize.org` before DNS is live.
+ */
+export default function ScriptGenerator({ chatroomId, resumable = false }: Props) {
+  // const [apiBaseUrl, setApiBaseUrl] = useState(CHATROOM_API_URL)
+  const [generated, setGenerated] = useState(false)
+  const snippet = generated ? buildEmbedScript(chatroomId, resumable) : ''
+
+  const generate = () => {
+    setGenerated(true)
   }
 
   const copySnippet = async () => {
