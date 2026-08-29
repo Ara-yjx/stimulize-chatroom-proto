@@ -16,6 +16,9 @@ CHATROOM_ID = "scid_pbt-tick-examples"
 def _skip_real_typing_delay(monkeypatch):
     """Keep existing examples fast; delay behavior has fake-clock tests below."""
     monkeypatch.setattr(tick_handler.time, "sleep", lambda _seconds: None)
+    # Local/dev default: no Stimulize credit HTTP unless a test opts in.
+    monkeypatch.setattr(config, "STIMULIZE_API_URL", "")
+    monkeypatch.setattr(config, "STIMULIZE_API_TOKEN", "")
 
 
 def _seed(*, max_duration_seconds=None, started_at_ms=None, setting_overrides=None):
@@ -448,3 +451,120 @@ def test_delayed_message_is_dropped_when_duration_elapses_during_wait(monkeypatc
         if event.get("subtype") == "conversation_ended"
     ]) == 1
     assert len(mock_rds._usage_records) == 1
+
+
+def test_insufficient_credits_skips_bedrock():
+    cid, _ = _seed()
+
+    with patch.object(config, "STIMULIZE_API_URL", "https://stimulize.example.com"), \
+         patch.object(tick_handler.credits_client, "check_credits", return_value=False) as check, \
+         patch.object(tick_handler.credits_client, "debit_usage") as debit, \
+         patch.object(tick_handler, "invoke_speak_tool") as mock_bedrock:
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result == {"status": "skipped", "reason": "insufficient_credits"}
+    check.assert_called_once_with("u")
+    mock_bedrock.assert_not_called()
+    debit.assert_not_called()
+    assert mock_rds._usage_records == []
+
+
+def test_allowed_credits_runs_bedrock_then_write_usage_and_debit():
+    cid, started_at_ms = _seed()
+    now_ms = started_at_ms + 60_000
+    order: list[str] = []
+
+    def _check(owner_id):
+        order.append("check")
+        assert owner_id == "u"
+        return True
+
+    def _invoke(*_args, **_kwargs):
+        order.append("bedrock")
+        return {
+            "messages": ["hello"],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    real_write = mock_rds.write_usage
+
+    def _write(**kwargs):
+        order.append("write")
+        return real_write(**kwargs)
+
+    def _debit(**kwargs):
+        order.append("debit")
+        assert kwargs["owner_id"] == "u"
+        assert kwargs["usage_event_id"] == mock_rds._usage_records[0]["usage_event_id"]
+        assert kwargs["chatroom_id"] == CHATROOM_ID
+        assert kwargs["conversation_id"] == cid
+
+    with patch.object(config, "STIMULIZE_API_URL", "https://stimulize.example.com"), \
+         patch.object(tick_handler.credits_client, "check_credits", side_effect=_check), \
+         patch.object(mock_rds, "write_usage", side_effect=_write), \
+         patch.object(tick_handler.credits_client, "debit_usage", side_effect=_debit), \
+         patch.object(tick_handler.time, "time", return_value=now_ms / 1000), \
+         patch.object(tick_handler, "invoke_speak_tool", side_effect=_invoke):
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "spoke"
+    assert order == ["check", "bedrock", "write", "debit"]
+    assert len(mock_rds._usage_records) == 1
+    usage = mock_rds._usage_records[0]
+    assert usage["usage_event_id"] == f"{cid}:{now_ms}:ai_001"
+
+
+def test_unset_stimulize_api_url_skips_credit_http():
+    cid, started_at_ms = _seed()
+    now_seconds = (started_at_ms / 1000) + 60
+
+    with patch.object(config, "STIMULIZE_API_URL", ""), \
+         patch.object(tick_handler.credits_client, "check_credits") as check, \
+         patch.object(tick_handler.credits_client, "debit_usage") as debit, \
+         patch.object(tick_handler.time, "time", return_value=now_seconds), \
+         patch.object(
+             tick_handler,
+             "invoke_speak_tool",
+             return_value={
+                 "messages": ["ok"],
+                 "input_tokens": 1,
+                 "output_tokens": 1,
+             },
+         ) as mock_bedrock:
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "spoke"
+    mock_bedrock.assert_called_once()
+    check.assert_not_called()
+    debit.assert_not_called()
+    assert len(mock_rds._usage_records) == 1
+
+
+def test_credit_debit_failure_does_not_fail_tick():
+    cid, started_at_ms = _seed()
+    now_seconds = (started_at_ms / 1000) + 60
+
+    with patch.object(config, "STIMULIZE_API_URL", "https://stimulize.example.com"), \
+         patch.object(tick_handler.credits_client, "check_credits", return_value=True), \
+         patch.object(
+             tick_handler.credits_client,
+             "debit_usage",
+             side_effect=RuntimeError("stimulize debit down"),
+         ) as debit, \
+         patch.object(tick_handler.time, "time", return_value=now_seconds), \
+         patch.object(
+             tick_handler,
+             "invoke_speak_tool",
+             return_value={
+                 "messages": ["still spoke"],
+                 "input_tokens": 1,
+                 "output_tokens": 1,
+             },
+         ):
+        result = tick_handler.handle_tick({"conversation_id": cid})
+
+    assert result["status"] == "spoke"
+    debit.assert_called_once()
+    assert len(mock_rds._usage_records) == 1
+    assert mock_rds._usage_records[0]["usage_event_id"] == debit.call_args.kwargs["usage_event_id"]
