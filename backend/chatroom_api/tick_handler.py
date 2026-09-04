@@ -27,6 +27,7 @@ from typing import Optional
 from uuid import uuid4
 
 from chatroom_api import config
+from chatroom_api import credits_client
 from chatroom_api._providers import get_event_store_provider
 from chatroom_api.bedrock_client import (
     BedrockInferenceError,
@@ -709,6 +710,32 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
         _log_tick(conversation_id, "skipped", reason=decision.reason)
         return {"status": "skipped", "reason": decision.reason}
 
+    # Resolve owner before inference so prepaid balance can gate Bedrock.
+    owner_id = None
+    if chatroom_id:
+        try:
+            chatroom = rds.get_chatroom(chatroom_id)
+            owner_id = (chatroom or {}).get("owner_id")
+        except Exception as lookup_exc:
+            logger.warning(
+                "tick: chatroom lookup failed for %s: %s",
+                chatroom_id,
+                lookup_exc,
+            )
+
+    if config.STIMULIZE_API_URL:
+        allowed = False
+        if owner_id is None:
+            logger.warning(
+                "tick: owner_id missing for chatroom %s; skipping inference",
+                chatroom_id,
+            )
+        else:
+            allowed = credits_client.check_credits(owner_id)
+        if not allowed:
+            _log_tick(conversation_id, "skipped", reason="insufficient_credits")
+            return {"status": "skipped", "reason": "insufficient_credits"}
+
     candidate_session_id = decision.candidate_session_id
     candidate_nickname = decision.candidate_nickname or "Participant"
 
@@ -858,9 +885,8 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
     resolved_model_id = result.get("resolved_model_id") or model_id
     provider = "bedrock"
 
+    usage_event_id = f"{conversation_id}:{now_ms}:{candidate_session_id}"
     try:
-        chatroom = rds.get_chatroom(chatroom_id) if chatroom_id else None
-        owner_id = (chatroom or {}).get("owner_id")
         if owner_id is None:
             logger.warning("tick: owner_id missing for chatroom %s; skipping usage write", chatroom_id)
         else:
@@ -881,7 +907,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                     resolved_model_id,
                 )
             rds.write_usage(
-                usage_event_id=f"{conversation_id}:{now_ms}:{candidate_session_id}",
+                usage_event_id=usage_event_id,
                 owner_id=owner_id,
                 chatroom_id=chatroom_id,
                 conversation_id=conversation_id,
@@ -902,6 +928,21 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                 "pricing_estimated": pricing_estimated,
             },
             )
+            if config.STIMULIZE_API_URL:
+                try:
+                    credits_client.debit_usage(
+                        owner_id=owner_id,
+                        usage_event_id=usage_event_id,
+                        estimated_cost_usd=estimated_cost_usd,
+                        chatroom_id=chatroom_id,
+                        conversation_id=conversation_id,
+                    )
+                except Exception as debit_exc:
+                    logger.warning(
+                        "tick: credit debit failed for conversation %s: %s",
+                        conversation_id,
+                        debit_exc,
+                    )
     except Exception as usage_exc:
         logger.warning("tick: usage write failed for conversation %s: %s", conversation_id, usage_exc)
 

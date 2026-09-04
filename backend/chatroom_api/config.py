@@ -36,3 +36,9 @@ RDS_SECRET_ARN = os.environ.get("RDS_SECRET_ARN", "")
 # unavailable. ``MGMT_API_TOKEN`` is the bearer the management API expects.
 MGMT_API_URL = os.environ.get("MGMT_API_URL", "")
 MGMT_API_TOKEN = os.environ.get("MGMT_API_TOKEN", "")
+
+# Stimulize EC2 prepaid-credit APIs. Empty URL skips the check so local
+# mock/dev ticks still run. Token falls back to MGMT_API_TOKEN for existing
+# Lambda env.
+STIMULIZE_API_URL = os.environ.get("STIMULIZE_API_URL", "")
+STIMULIZE_API_TOKEN = os.environ.get("STIMULIZE_API_TOKEN", "") or os.environ.get("MGMT_API_TOKEN", "")
