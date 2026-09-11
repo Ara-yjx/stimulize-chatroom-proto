@@ -32,8 +32,9 @@ The shuffled candidates are tried only until the next speaker is found.
 
 The forced instruction is not written as a participant-visible history event.
 It uses the required-message output contract already supported by inference.
-For `N` AIs, producing the next message therefore requires at most `N`
-inferences: at most `N - 1` optional attempts plus one forced attempt.
+For `N` AIs, normal speaker selection requires at most `N` inferences: at
+most `N - 1` optional attempts plus one forced attempt. An over-length output
+may add one corrective inference before that turn is accepted or failed.
 
 This feature does not store a random seed or promise exact replay. We will
 observe silence rate, forced-turn rate, speaker distribution, and conversation
@@ -377,10 +378,11 @@ duplicate work messages.
 
 Workers may begin while the Provisioner is still dispatching, so both
 `provisioning` and `running` are valid executable batch states. A duplicate
-Provisioner delivery that cannot acquire the lease is a no-op. Retryable
-failures update `last_error` and raise for SQS retry; on the configured final
-receive attempt, the handler marks undispatched conversations and the batch
-failed instead of leaving it permanently in `provisioning`.
+Provisioner delivery that cannot acquire the lease remains retryable until the
+lease expires. Retryable failures update `last_error`, release an owned lease,
+and raise for SQS retry; on the configured final receive attempt, the handler
+marks undispatched conversations and the batch failed instead of leaving it
+permanently in `provisioning`.
 
 ### Worker flow
 

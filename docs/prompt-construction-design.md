@@ -36,6 +36,13 @@ one `mimic_human` mode do not apply to the other mode.
 The required-response assistant scaffold also has distinct static content, so
 its prompt-cache entry is separate from the silence-capable assistant scaffold.
 
+AI-only batch inference derives its prompt mode from `human_count=0`. It omits
+wall-clock and relative-age text because speaker order is worker-managed rather
+than heartbeat-managed. With `mimic_human=true`, each AI plays its assigned
+human persona, but the prompt calls the others "participants" rather than
+falsely asserting that they are human. With `mimic_human=false`, AI-only
+variants refer to other AI participants and never to a latest human message.
+
 For one-human/one-AI rooms with `mimic_human=false`, a cached setup rule tells
 the AI to wait roughly 60 seconds after its unanswered message, then send at
 most one brief check-in. The backend still runs inference on every eligible

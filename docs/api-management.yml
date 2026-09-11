@@ -30,6 +30,8 @@ security:
 tags:
   - name: chatroom-crud
     description: Chatroom CRUD (editor UI)
+  - name: ai-batch
+    description: Asynchronous AI-only conversation batches
   - name: usage
     description: Usage queries (editor UI)
   - name: admin-usage
@@ -133,6 +135,73 @@ paths:
                     type: string
                     example: deactivated
 
+  /api/createAiConversationBatch:
+    post:
+      tags: [ai-batch]
+      summary: Start one or more AI-only conversations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chatroom_id, batch_count, client_request_id]
+              properties:
+                chatroom_id:
+                  type: string
+                batch_count:
+                  type: integer
+                  minimum: 1
+                  maximum: 1000
+                client_request_id:
+                  type: string
+                  maxLength: 100
+      responses:
+        "200":
+          description: Batch created or idempotently returned
+        "409":
+          description: The client request ID was reused with different input
+
+  /api/getAiConversationBatches:
+    post:
+      tags: [ai-batch]
+      summary: List batches owned by the authenticated user
+      responses:
+        "200":
+          description: Batch summaries, newest first
+
+  /api/getAiConversationBatch/{batch_job_id}:
+    post:
+      tags: [ai-batch]
+      summary: Poll batch state and conversation summaries
+      parameters:
+        - $ref: "#/components/parameters/BatchJobId"
+      responses:
+        "200":
+          description: Batch counters and one page of conversations
+
+  /api/getAiConversationHistory/{conversation_id}:
+    post:
+      tags: [ai-batch]
+      summary: Poll one AI-only conversation's event history
+      parameters:
+        - $ref: "#/components/parameters/ConversationId"
+      responses:
+        "200":
+          description: Event history and opaque forward cursor
+
+  /api/exportAiConversationBatch/{batch_job_id}:
+    post:
+      tags: [ai-batch]
+      summary: Build an asynchronous ZIP export of completed conversations
+      parameters:
+        - $ref: "#/components/parameters/BatchJobId"
+      responses:
+        "200":
+          description: Export requested, building, or ready
+        "409":
+          description: Batch is not terminal
+
   /api/getChatroomUsage/{id}:
     post:
       tags: [usage]
@@ -206,6 +275,18 @@ components:
       schema:
         type: string
       example: scid_550e8400-e29b-41d4-a716-446655440000
+    BatchJobId:
+      name: batch_job_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ConversationId:
+      name: conversation_id
+      in: path
+      required: true
+      schema:
+        type: string
 
   schemas:
     ChatroomSetting:
@@ -274,8 +355,9 @@ components:
             Beta maximum: 900 seconds (15 minutes).
         human_count:
           type: integer
+          minimum: 0
           nullable: true
-          description: Desired human participant count.
+          description: Desired human participant count. Zero selects AI-only batch mode.
         ai_count:
           type: integer
           nullable: true
@@ -303,6 +385,24 @@ components:
           nullable: true
           maximum: 600
           description: Multi-human lobby wait deadline. One-human mimic-human rooms use simulate_pairing_seconds instead.
+        max_message_chars:
+          type: integer
+          minimum: 1
+          maximum: 4000
+          default: 400
+          description: AI-only maximum characters in one accepted message.
+        max_total_chars:
+          type: integer
+          minimum: 1
+          maximum: 200000
+          default: 20000
+          description: AI-only target total characters. The final message may exceed it.
+        max_turns:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+          description: AI-only maximum accepted messages per conversation.
 
     Chatroom:
       type: object

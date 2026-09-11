@@ -93,7 +93,7 @@ Usage endpoints are implemented for aggregate reads. Future cache-bucket columns
 Create a new chatroom. Generates `scid_` + UUIDv4 as the chatroom ID.
 The create request is the first persisted save, so any editor-provided default `setting` values are stored immediately at creation time.
 
-Request: `{ name, setting: { topic_instruction, additional_prompt?, mimic_human?, resumable?, ai_nickname?, show_avatars?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count, ai_count, replace_human_with_ai?, max_wait_seconds? } }`
+Request: `{ name, setting: { topic_instruction, additional_prompt?, mimic_human?, resumable?, ai_nickname?, show_avatars?, model_id, temperature?, ai_personas?: [{ internal_name?, nickname?, persona, model_id?, temperature? }], simulate_pairing_seconds, timer_min_minutes, timer_max_minutes, max_duration_seconds, human_count, ai_count, replace_human_with_ai?, max_wait_seconds?, max_message_chars?, max_total_chars?, max_turns? } }`
 
 For `human_count=1`, `ai_count=1`, and `mimic_human=false`, the canonical human nickname is `PARTICIPANT`. AI naming resolves as selected persona `nickname` > chatroom `ai_nickname` > `AI`. The widget displays the current human as `You` without changing exported history. `You` and `Participant` are reserved AI nicknames, case-insensitively.
 
@@ -120,6 +120,28 @@ Response: updated chatroom object
 Deactivate a chatroom (sets status to `inactive`).
 
 Response: standard backend success envelope; chatroom is soft-deleted by setting `status=inactive`
+
+---
+
+## Management API - AI Conversation Batches
+
+AI-only chatrooms store `human_count=0` and require `ai_count=2..7`. They do
+not use the lobby, heartbeat, widget, or resume flow. Batch APIs are
+owner-authenticated and asynchronous.
+
+- `POST /api/createAiConversationBatch`: `{ chatroom_id, batch_count, client_request_id }`; `batch_count=1` is Start once.
+- `POST /api/getAiConversationBatches`: list the current user's batches.
+- `POST /api/getAiConversationBatch/:batch_job_id`: return counters plus a paged conversation summary (`offset`, `limit<=100`).
+- `POST /api/getAiConversationHistory/:conversation_id`: return owner-only event history using an opaque forward `after` cursor.
+- `POST /api/exportAiConversationBatch/:batch_job_id`: enqueue a ZIP export after the batch is terminal; polling later returns a 15-minute pre-signed URL.
+
+Settings default to `max_message_chars=400`, `max_total_chars=20000`, and
+`max_turns=100`. Current caps are `4000`, `200000`, and `200`. The final
+message may cross the total-character target. `batch_count` is `1..1000`, the
+fixed batch deadline is 24 hours, and exports expire after 7 days.
+
+Public rollout remains disabled until the account hard budget cap and the
+deployment-specific worker IAM path are ready.
 
 ---
 

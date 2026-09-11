@@ -83,6 +83,20 @@ This file records decisions that came from implementation/debug discussions afte
 - `Max Duration (sec)` is hidden in the editor and derived from Timer Max.
 - Timer Max greater than 15 minutes shows a cost warning.
 
+### AI-only Batch Generation
+
+- Feature-branch implementation supports `human_count=0`, `ai_count=2..7`,
+  Start once, batches up to 1000, owner-only polling/history, and asynchronous
+  ZIP export.
+- Provisioner, turn worker, and exporter are separate SQS-triggered Lambdas.
+  AI-only work does not use the lobby, widget, or heartbeat.
+- Two AIs alternate strictly. With three or more, non-last-speaker candidates
+  may stay silent; a final forced candidate guarantees progress.
+- Settings/model/persona assignments are snapshotted when a batch is created.
+  Every provider invocation records the existing token/cost usage row.
+- `AI_BATCH_ENABLED` defaults to false. Isolated development E2E is complete;
+  beta rollout still waits for hard budget enforcement and dedicated IAM.
+
 ### Deploy
 
 - GitHub Pages deployment builds both editor and widget from source.
