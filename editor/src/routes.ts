@@ -7,3 +7,7 @@ export function chatroomDetailRoute(id: string): string {
 export function chatroomUsageRoute(id: string): string {
   return `${CHATROOM_LIST_ROUTE}/${id}/usage`
 }
+
+export function aiConversationBatchRoute(chatroomId: string, batchJobId: string): string {
+  return `${CHATROOM_LIST_ROUTE}/${chatroomId}/ai-batches/${batchJobId}`
+}

@@ -20,7 +20,11 @@ import {
 } from '../lib/chatroomSetting'
 import ScriptGenerator from '../components/ScriptGenerator'
 import WidgetPreview from '../components/WidgetPreview'
-import { CHATROOM_LIST_ROUTE, chatroomUsageRoute } from '../routes'
+import {
+  CHATROOM_LIST_ROUTE,
+  aiConversationBatchRoute,
+  chatroomUsageRoute,
+} from '../routes'
 
 const TextArea = Input.TextArea
 const FormItem = Form.Item
@@ -336,6 +340,8 @@ export default function ChatroomEditor() {
   const [chatroom, setChatroom] = useState<Chatroom | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [startingBatch, setStartingBatch] = useState(false)
+  const [batchCount, setBatchCount] = useState(10)
   const [form] = Form.useForm<FormValues>()
   const sessionExpiredModalShownRef = useRef(false)
   const watchedHumanCount = Form.useWatch('human_count', form) as number | undefined
@@ -344,6 +350,9 @@ export default function ChatroomEditor() {
   const watchedResumable = Form.useWatch('resumable', form) as boolean | undefined
   const watchedAiNickname = Form.useWatch('ai_nickname', form) as string | undefined
   const watchedTimerMaxMinutes = Form.useWatch('timer_max_minutes', form) as number | null | undefined
+  const watchedAiPersonas = Form.useWatch('ai_personas', form) as AiPersonaSetting[] | undefined
+  const watchedMaxTurns = Form.useWatch('max_turns', form) as number | undefined
+  const isAiOnly = (watchedHumanCount ?? 1) === 0
 
   useEffect(() => {
     if (typeof watchedTimerMaxMinutes === 'undefined') return
@@ -429,7 +438,7 @@ export default function ChatroomEditor() {
     const nextStatus = options.activate ? 'active' : values.status ? 'active' : 'inactive'
 
     // Layer custom validation on top of Form's built-in rules.
-    const settingToValidate: ChatroomSetting = {
+    const settingToValidate = denormalizeForSave({
       topic_instruction: values.topic_instruction,
       additional_prompt: values.additional_prompt,
       ai_personas: normalizeAiPersonas(values.ai_personas),
@@ -453,7 +462,7 @@ export default function ChatroomEditor() {
       max_message_chars: values.max_message_chars,
       max_total_chars: values.max_total_chars,
       max_turns: values.max_turns,
-    }
+    })
     const result = validateChatroomSetting(settingToValidate)
     if (!result.ok) {
       const fields: Record<string, { value: unknown; errors: string[] }> = {}
@@ -469,7 +478,7 @@ export default function ChatroomEditor() {
       throw new Error(firstError)
     }
 
-    const finalSetting = denormalizeForSave(settingToValidate)
+    const finalSetting = settingToValidate
 
     setSaving(true)
     try {
@@ -513,6 +522,50 @@ export default function ChatroomEditor() {
   const handleOpenUsage = () => {
     const url = `${window.location.origin}${import.meta.env.BASE_URL}#${chatroomUsageRoute(id ?? '')}`
     window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  const setAiOnly = (enabled: boolean) => {
+    if (enabled) {
+      const currentAiCount = Number(form.getFieldValue('ai_count') ?? 2)
+      form.setFieldsValue({
+        human_count: 0,
+        ai_count: Math.max(2, currentAiCount),
+        resumable: false,
+        replace_human_with_ai: false,
+        simulate_pairing_seconds: 0,
+        max_wait_seconds: 0,
+      })
+      return
+    }
+    form.setFieldValue('human_count', 1)
+  }
+
+  const startAiBatch = async (count: number) => {
+    const target = window.open('about:blank', '_blank')
+    setStartingBatch(true)
+    try {
+      await handleSave({ activate: true })
+      const clientRequestId = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+      const created = await mgmtFetchJson<{ batch_job_id: string }>('/api/createAiConversationBatch', {
+        method: 'POST',
+        body: JSON.stringify({
+          chatroom_id: id,
+          batch_count: count,
+          client_request_id: clientRequestId,
+        }),
+      })
+      const route = aiConversationBatchRoute(id ?? '', created.batch_job_id)
+      const url = `${window.location.origin}${import.meta.env.BASE_URL}#${route}`
+      if (target) target.location.href = url
+      else window.location.href = url
+    } catch (error: unknown) {
+      target?.close()
+      Message.error(error instanceof Error ? error.message : 'Failed to start AI conversation')
+    } finally {
+      setStartingBatch(false)
+    }
   }
 
   if (loading) return <Spin style={{ display: 'block', margin: '80px auto' }} />
@@ -574,11 +627,24 @@ export default function ChatroomEditor() {
           {/* ─── Participants ─────────────────────────────────────── */}
           <SectionHeader>👥 Participants</SectionHeader>
 
+          <FormItem
+            label="AI-only mode"
+            extra="Generate asynchronous conversations between AIs without a human participant."
+          >
+            <Switch
+              checked={isAiOnly}
+              checkedText="On"
+              uncheckedText="Off"
+              onChange={setAiOnly}
+            />
+          </FormItem>
+
           <Row>
             <FormItem
               label="Human Count"
               field="human_count"
-              rules={[{ required: true, type: 'number', min: VALIDATION_LIMITS.targetHumanCountMin }]}
+              hidden={isAiOnly}
+              rules={[{ required: true, type: 'number', min: 0 }]}
               style={{ flex: 1, minWidth: 200 }}
             >
               <InputNumber min={VALIDATION_LIMITS.targetHumanCountMin} style={{ width: '100%' }} />
@@ -595,14 +661,14 @@ export default function ChatroomEditor() {
               style={{ flex: 1, minWidth: 200 }}
             >
               <InputNumber
-                min={VALIDATION_LIMITS.aiStrategyValueMin}
+                min={isAiOnly ? VALIDATION_LIMITS.aiOnlyCountMin : VALIDATION_LIMITS.aiStrategyValueMin}
                 max={VALIDATION_LIMITS.aiStrategyValueMax}
                 style={{ width: '100%' }}
               />
             </FormItem>
           </Row>
 
-          <Row>
+          {!isAiOnly && <Row>
             <FormItem
               label="Max wait time (sec)"
               field="max_wait_seconds"
@@ -639,7 +705,7 @@ export default function ChatroomEditor() {
                 disabled={(watchedHumanCount ?? 1) <= 1}
               />
             </FormItem>
-          </Row>
+          </Row>}
 
           <FormItem
             label="Show avatars"
@@ -653,6 +719,7 @@ export default function ChatroomEditor() {
           <FormItem
             label="Resume conversation"
             field="resumable"
+            hidden={isAiOnly}
             triggerPropName="checked"
             extra={enableResumable
               ? 'Use one persistent conversation per case-sensitive participant ID. Settings are locked when that conversation is first created.'
@@ -800,11 +867,62 @@ avoid talking about politics; keep messages under 12 words.
           <FormItem field="ai_personas">
             <PersonaListEditor />
           </FormItem>
+          {isAiOnly && (watchedAiPersonas?.length ?? 0) > 0 && (watchedAiPersonas?.length ?? 0) < (watchedAiCount ?? 0) && (
+            <div style={{ color: '#ff7d00', fontSize: 13, marginTop: -8, marginBottom: 16 }}>
+              Fewer personas than AIs. Some personas will be reused across distinct AI participants.
+            </div>
+          )}
 
           {/* ─── Misc ──────────────────────────────────────────────── */}
           <SectionHeader>Misc</SectionHeader>
 
-          <Row>
+          {isAiOnly ? (
+            <>
+              <Row>
+                <FormItem
+                  label="Max message length"
+                  field="max_message_chars"
+                  extra="Maximum characters in each generated message."
+                  rules={[{
+                    required: true,
+                    type: 'number',
+                    min: VALIDATION_LIMITS.maxMessageCharsMin,
+                    max: VALIDATION_LIMITS.maxMessageCharsMax,
+                  }]}
+                  style={{ flex: 1, minWidth: 180 }}
+                >
+                  <InputNumber min={1} max={VALIDATION_LIMITS.maxMessageCharsMax} suffix="characters" style={{ width: '100%' }} />
+                </FormItem>
+                <FormItem
+                  label="Conversation length"
+                  field="max_total_chars"
+                  extra="Target total characters. The final message may exceed it."
+                  rules={[{
+                    required: true,
+                    type: 'number',
+                    min: VALIDATION_LIMITS.maxTotalCharsMin,
+                    max: VALIDATION_LIMITS.maxTotalCharsMax,
+                  }]}
+                  style={{ flex: 1, minWidth: 180 }}
+                >
+                  <InputNumber min={1} max={VALIDATION_LIMITS.maxTotalCharsMax} suffix="characters" style={{ width: '100%' }} />
+                </FormItem>
+              </Row>
+              <FormItem
+                label="Max turns"
+                field="max_turns"
+                extra="Maximum accepted messages in each generated conversation."
+                rules={[{
+                  required: true,
+                  type: 'number',
+                  min: VALIDATION_LIMITS.maxTurnsMin,
+                  max: VALIDATION_LIMITS.maxTurnsMax,
+                }]}
+              >
+                <InputNumber min={1} max={VALIDATION_LIMITS.maxTurnsMax} style={{ width: '100%' }} />
+              </FormItem>
+            </>
+          ) : <Row>
             <FormItem
               label="🕒 Timer Min"
               field="timer_min_minutes"
@@ -821,28 +939,72 @@ avoid talking about politics; keep messages under 12 words.
             >
               <InputNumber min={0} suffix="minutes" style={{ width: '100%' }} />
             </FormItem>
-          </Row>
+          </Row>}
 
-          <FormItem
+          {!isAiOnly && <FormItem
             label="⏱️ Simulate Pairing (sec)"
             field="simulate_pairing_seconds"
             hidden={!enableSimulatePairing}
             extra="Server-managed lobby duration before a one-human mimic-human chat starts."
           >
             <InputNumber min={0} style={{ width: '100%' }} />
-          </FormItem>
+          </FormItem>}
         </Form>
 
-        <div style={{ borderTop: '1px solid #e5e6eb', margin: '24px 0' }} />
-        <ScriptGenerator chatroomId={chatroom.id} resumable={Boolean(watchedResumable)} />
+        {isAiOnly ? (
+          <>
+            <SectionHeader>Start Conversation</SectionHeader>
+            <div style={{ color: '#4e5969', fontSize: 13, marginBottom: 12 }}>
+              The job runs asynchronously. This configuration allows up to{' '}
+              <strong>{batchCount * (watchedAiCount === 2 ? 1 : (watchedAiCount ?? 2)) * (watchedMaxTurns ?? 100)}</strong>{' '}
+              model calls. At the initial concurrency, a typical run is roughly{' '}
+              <strong>{Math.max(1, Math.ceil(batchCount * (watchedMaxTurns ?? 100) * 6 / 10 / 60))} minutes</strong>;
+              actual calls are usually lower when 3+ AIs speak before every candidate is tried.
+            </div>
+            <Space align="end" wrap>
+              <Button
+                type="primary"
+                loading={startingBatch}
+                onClick={() => void startAiBatch(1)}
+              >
+                Start once
+              </Button>
+              <div>
+                <FieldLabel>Batch size</FieldLabel>
+                <InputNumber
+                  min={1}
+                  max={1000}
+                  value={batchCount}
+                  onChange={(value) => setBatchCount(typeof value === 'number' ? value : 1)}
+                  style={{ width: 140 }}
+                />
+              </div>
+              <Button
+                loading={startingBatch}
+                onClick={() => void startAiBatch(batchCount)}
+              >
+                Start batch
+              </Button>
+            </Space>
+          </>
+        ) : (
+          <>
+            <div style={{ borderTop: '1px solid #e5e6eb', margin: '24px 0' }} />
+            <ScriptGenerator chatroomId={chatroom.id} resumable={Boolean(watchedResumable)} />
+          </>
+        )}
       </div>
 
-      <div style={{ borderTop: '1px solid #e5e6eb', margin: '24px 0' }} />
-      <WidgetPreview
-        chatroomId={chatroom.id}
-        resumable={Boolean(watchedResumable)}
-        onSaveBeforeLaunch={handleSaveAndActivate}
-      />
+      {!isAiOnly && (
+        <>
+          <div style={{ borderTop: '1px solid #e5e6eb', margin: '24px 0' }} />
+          <WidgetPreview
+            chatroomId={chatroom.id}
+            resumable={Boolean(watchedResumable)}
+            onSaveBeforeLaunch={handleSaveAndActivate}
+          />
+        </>
+      )}
     </div>
   )
 }
