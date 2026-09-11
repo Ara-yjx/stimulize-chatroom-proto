@@ -8,6 +8,8 @@
     "synth": "cdk synth",
     "synth:event-dev": "cdk -a 'npx ts-node --prefer-ts-exts bin/event-storage-dev.ts' synth",
     "deploy:event-dev": "cdk -a 'npx ts-node --prefer-ts-exts bin/event-storage-dev.ts' deploy --all",
+    "synth:ai-batch-dev": "cdk -a 'npx ts-node --prefer-ts-exts bin/ai-batch-dev.ts' synth",
+    "deploy:ai-batch-dev": "cdk -a 'npx ts-node --prefer-ts-exts bin/ai-batch-dev.ts' deploy --all",
     "deploy": "cdk deploy --all",
     "test": "jest"
   },
