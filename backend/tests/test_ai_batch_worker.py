@@ -104,6 +104,8 @@ def test_process_work_commits_and_requeues_next_turn(monkeypatch) -> None:
     assert result == {"status": "running", "turn": 0}
     assert committed[0][1]["terminal_status"] is None
     assert committed[0][0][2]["content"] == "hello"
+    assert committed[0][0][2]["timestamp"] == 1000
+    assert "authored_at" not in committed[0][0][2]
     assert requeued == [("batch", "conversation", 1)]
 
 

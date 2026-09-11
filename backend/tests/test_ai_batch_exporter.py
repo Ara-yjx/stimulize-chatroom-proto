@@ -1,6 +1,7 @@
 import io
 import json
 import zipfile
+from decimal import Decimal
 
 from chatroom_api.ai_batch import exporter
 
@@ -28,7 +29,7 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
     monkeypatch.setattr(exporter.store, "get_conversation", get_conversation)
     monkeypatch.setattr(exporter.store, "query_history", lambda _id: [{
         "type": "message",
-        "timestamp": 1,
+        "timestamp": Decimal("1789147117914"),
         "sender": "AI",
         "internal_name": "condition",
         "content": "hello",
@@ -46,5 +47,10 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
         assert "conversations/0002.json" not in names
         text = archive.read("conversations/0001.txt").decode()
         assert "AI (condition): hello" in text
+        saved_conversation = json.loads(archive.read("conversations/0001.json"))
+        saved_timestamp = saved_conversation["events"][0]["timestamp"]
+        assert saved_timestamp == 1789147117914
+        assert isinstance(saved_timestamp, int)
+        assert "authored_at" not in saved_conversation["events"][0]
         saved_manifest = json.loads(archive.read("manifest.json"))
         assert saved_manifest["outcome_counts"]["failed_count"] == 1

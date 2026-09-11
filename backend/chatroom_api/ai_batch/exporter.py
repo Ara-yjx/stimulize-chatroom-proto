@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import zipfile
+from decimal import Decimal
 from uuid import uuid4
 
 from chatroom_api import config
@@ -23,6 +24,8 @@ logger.setLevel(logging.INFO)
 
 
 def _json_default(value):
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)

@@ -52,6 +52,9 @@ quality, then tune prompts if the AIs are too active or too passive.
   instance. Reused personas still produce distinct AI participants.
 - Server timestamps remain in stored events for ordering and cursors, but
   current time and timing metadata are omitted from AI-only inference prompts.
+- Accepted messages store `timestamp` as a server-clock Unix epoch millisecond
+  JSON number. AI-only conversations have no simulated typing delay, so they
+  omit `authored_at`; its absence means the authored time equals `timestamp`.
 - A batch clones its chatroom settings, personas, and model configuration into
   the batch metadata row when it is created. Every conversation in that batch
   uses this immutable snapshot. A future chatroom setting revision ID may
