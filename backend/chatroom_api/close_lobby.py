@@ -22,19 +22,20 @@ keeping ``lobby.py`` focused on its DDB primitives.
 from __future__ import annotations
 
 import logging
-import random
 from datetime import datetime, timezone
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, uuid5
 from typing import Optional
 
 from chatroom_api import config
-from chatroom_api.constants import EMOJI_POOL
 from chatroom_api._providers import get_event_store_provider
+from chatroom_api.ai_participants import (
+    build_ai_participants,
+    generate_nickname as _generate_nickname,
+    pick_avatar as _pick_avatar,
+    pick_personas as _pick_personas,
+)
 from chatroom_api.lobby import compute_ai_count
 from chatroom_api.settings import (
-    is_single_human_single_ai_assistant_room,
-    normalize_ai_nickname,
-    normalize_persona_entries,
     resolve_runtime_setting,
 )
 
@@ -62,74 +63,6 @@ def _get_rds():
 
 def _get_event_store():
     return get_event_store_provider()
-
-
-# ---------------------------------------------------------------------------
-# Local helpers.
-#
-# TODO: ``_generate_nickname`` and ``_pick_avatar`` are duplicated from
-# ``auth.py``. Once a third caller appears, factor them into a
-# ``participants.py`` helper module and import from both. Keeping the
-# duplicate here for now keeps the diff for task 1.3 focused.
-# ---------------------------------------------------------------------------
-
-
-def _generate_nickname(exclude=None) -> str:
-    """Generate ``Participant`` + 4 digits, avoiding nicknames in *exclude*."""
-    exclude = exclude or set()
-    while True:
-        name = f"Participant{random.randint(1000, 9999)}"
-        if name not in exclude:
-            return name
-
-
-def _pick_avatar(exclude=None) -> dict:
-    """Pick a random emoji avatar, avoiding emojis in *exclude* when possible."""
-    exclude = exclude or set()
-    available = [e for e in EMOJI_POOL if e not in exclude]
-    if not available:
-        available = list(EMOJI_POOL)
-    emoji = random.choice(available)
-    return {"emojiText": emoji}
-
-
-def _pick_personas(persona_pool: list, ai_count: int) -> list:
-    """Pick *ai_count* entries from *persona_pool* for one cohort.
-
-    Behavior:
-    - Empty pool → returns ``[""] * ai_count`` for the legacy string case.
-    - Pool with at least *ai_count* entries → sample without replacement
-      so each AI in the same room gets a distinct assignment.
-    - Pool smaller than *ai_count* → assign whole shuffled rounds of the
-      cleaned pool first, then top up the final partial round without
-      replacement from the same pool. Example: 3 personas, 7 AIs → 2 full
-      rounds (6 assignments) plus
-      1 extra random pick from the pool.
-
-    Legacy callers pass strings; newer callers may pass pre-normalized
-    dict entries. Non-string entries are ignored in the legacy path.
-    """
-    cleaned = []
-    for p in (persona_pool or []):
-        if isinstance(p, str):
-            stripped = str(p).strip()
-            if stripped:
-                cleaned.append(stripped)
-        elif isinstance(p, dict):
-            cleaned.append(p)
-    if not cleaned:
-        return [""] * ai_count
-    if ai_count <= 0:
-        return []
-    if len(cleaned) >= ai_count:
-        return random.sample(cleaned, ai_count)
-    full_rounds, remainder = divmod(ai_count, len(cleaned))
-    result: list[str] = []
-    for _ in range(full_rounds):
-        result.extend(random.sample(cleaned, len(cleaned)))
-    if remainder:
-        result.extend(random.sample(cleaned, remainder))
-    return result
 
 
 def _now_iso() -> str:
@@ -219,71 +152,11 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
             "max_wait_seconds": lobby.get("max_wait_seconds"),
         })
 
-    default_model_id = str(chatroom_setting.get("model_id") or "").strip()
-    default_temperature = chatroom_setting.get("temperature")
-    persona_entries = normalize_persona_entries(
-        chatroom_setting.get("ai_personas") or [],
-        default_model_id=default_model_id,
-        default_temperature=default_temperature,
+    ai_participants = build_ai_participants(
+        chatroom_setting,
+        ai_count,
+        existing_participants=participants_after_prune,
     )
-    selected_persona_entries = _pick_personas(persona_entries, ai_count) if persona_entries else []
-    use_assistant_names = is_single_human_single_ai_assistant_room(
-        chatroom_setting
-    )
-    room_ai_nickname = normalize_ai_nickname(
-        chatroom_setting.get("ai_nickname")
-    )
-
-    used_nicknames = {p.get("nickname") for p in participants_after_prune}
-    used_emojis = {(p.get("avatar") or {}).get("emojiText") for p in participants_after_prune}
-    used_internal_names: set[str] = set()
-
-    def resolve_internal_name(raw_name: str | None, index: int) -> str:
-        base = (raw_name or f"ai_{index + 1}").strip() or f"ai_{index + 1}"
-        candidate = base
-        suffix = 2
-        while candidate in used_internal_names:
-            candidate = f"{base}_{suffix}"
-            suffix += 1
-        used_internal_names.add(candidate)
-        return candidate
-
-    ai_participants: list[dict] = []
-    for i in range(ai_count):
-        selected_entry = (
-            selected_persona_entries[i]
-            if i < len(selected_persona_entries)
-            else {"persona": "", "model_id": default_model_id}
-        )
-        preferred_nickname = normalize_ai_nickname(
-            selected_entry.get("nickname")
-        )
-        if preferred_nickname and preferred_nickname not in used_nicknames:
-            nickname = preferred_nickname
-        elif use_assistant_names:
-            nickname = (
-                room_ai_nickname
-                if room_ai_nickname and room_ai_nickname not in used_nicknames
-                else "AI"
-            )
-        else:
-            nickname = _generate_nickname(exclude=used_nicknames)
-        avatar = _pick_avatar(exclude=used_emojis)
-        used_nicknames.add(nickname)
-        used_emojis.add(avatar["emojiText"])
-        ai_participants.append({
-            "ai_participant_id": "ai_" + uuid4().hex[:8],
-            "nickname": nickname,
-            "avatar": avatar,
-            "role": "ai",
-            "persona": selected_entry.get("persona", ""),
-            "model_id": selected_entry.get("model_id", default_model_id),
-            "temperature": selected_entry.get("temperature", default_temperature),
-            "internal_name": resolve_internal_name(
-                selected_entry.get("internal_name"),
-                i,
-            ),
-        })
 
     # --- Step 4: build conversation row + events; idempotent put.
     humans = [

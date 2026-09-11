@@ -44,6 +44,19 @@ from chatroom_api.gate import run_gate
 from chatroom_api.event_store import ConditionalWriteFailed
 from chatroom_api.participants import participant_id
 from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
+from chatroom_api.prompts.construction import (
+    base_bedrock_model_id as _base_bedrock_model_id,
+    build_additional_prompt_block as _build_additional_prompt_block,
+    build_bedrock_cache_prefix_message as _build_bedrock_cache_prefix_message,
+    build_bedrock_system_blocks as _build_bedrock_system_blocks,
+    build_dynamic_context_block as _build_dynamic_context_block,
+    build_prompt_blocks as _build_prompt_blocks,
+    build_semi_static_setup_blocks as _build_semi_static_setup_blocks,
+    build_static_prefix_block as _build_static_prefix_block,
+    build_system_prompt as _build_system_prompt,
+    prepend_cache_prefix_message as _prepend_cache_prefix_message,
+    supports_bedrock_prompt_cache as _supports_bedrock_prompt_cache,
+)
 from chatroom_api.settings import (
     derive_runtime_mode,
     is_single_human_single_ai_assistant_room,
@@ -52,8 +65,6 @@ from chatroom_api.settings import (
 from chatroom_api.prompts.speech_scaffold import (
     REQUIRED_SPEAK_TOOL_CONFIG,
     SPEAK_TOOL_CONFIG,  # re-exported for callers that want to inspect it
-    format_topic_block,
-    get_scaffold_for_mode,
 )
 
 logger = logging.getLogger(__name__)
@@ -309,299 +320,6 @@ def _split_resumable_history(conv: dict) -> tuple[list[dict], list[dict]]:
         [event for event in events if event.get("event_key", "") <= start_key],
         [event for event in events if event.get("event_key", "") > start_key],
     )
-
-
-def _build_static_prefix_block(
-    mode: str,
-    *,
-    mimic_human: bool = True,
-    require_response: bool = False,
-) -> str:
-    """Return the large static scaffold/examples block for this mode."""
-    return get_scaffold_for_mode(
-        mode,
-        mimic_human=mimic_human,
-        require_response=require_response,
-    )
-
-
-def _build_semi_static_setup_blocks(
-    chatroom_setting: dict,
-    persona: str,
-    my_nickname: str,
-    participant_nicknames: list[str] | None = None,
-) -> list[str]:
-    """Return the mostly-stable per-chatroom / per-AI setup blocks.
-
-    This intentionally excludes the scaffold/examples block and the dynamic
-    conversation-history block. The returned block order matches the current
-    prompt shape so this refactor does not change model behavior yet.
-    """
-    parts: list[str] = []
-    topic = format_topic_block(chatroom_setting.get("topic_instruction", ""))
-    if topic:
-        parts.append(topic)
-    if persona:
-        parts.append(f"<your-persona>\n{persona}\n</your-persona>")
-    if participant_nicknames:
-        listed = sorted(set(participant_nicknames))
-        rendered = "\n".join(
-            f"- {n} (you)" if n == my_nickname else f"- {n}"
-            for n in listed
-        )
-        parts.append(f"<participants>\n{rendered}\n</participants>")
-    if is_single_human_single_ai_assistant_room(chatroom_setting):
-        parts.append(
-            "<single-ai-idle-policy>\n"
-            "The backend may ask you to decide whether to speak every few seconds. "
-            "If your latest message has no human reply, normally stay silent for "
-            "roughly 60 seconds. After that wait, send at most one brief, natural "
-            "check-in that helps continue the conversation. If the check-in also "
-            "gets no human reply, stay silent until the human speaks again.\n"
-            "</single-ai-idle-policy>"
-        )
-    parts.append(f"<your-name>\n{my_nickname}\n</your-name>")
-    return parts
-
-
-def _build_dynamic_context_block(history_block: str) -> str:
-    """Return the current dynamic context block.
-
-    Phase 1 keeps the existing full visible history. Later phases can replace
-    this with summary + recent window without changing the outer assembly path.
-    """
-    return f"<conversation-history>\n{history_block}\n</conversation-history>"
-
-
-def _build_additional_prompt_block(chatroom_setting: dict) -> str:
-    """Return the optional last-mile reminder block."""
-    return (chatroom_setting.get("additional_prompt") or "").strip()
-
-
-def _build_prompt_blocks(
-    mode: str,
-    chatroom_setting: dict,
-    persona: str,
-    my_nickname: str,
-    history_block: str,
-    participant_nicknames: list[str] | None = None,
-    require_response: bool = False,
-) -> dict[str, str | list[str]]:
-    """Return explicit prompt segments for the current tick.
-
-    This is the first step of the token-saver refactor: make the prompt
-    structure explicit without changing prompt content yet.
-    """
-    return {
-        "static_prefix": _build_static_prefix_block(
-            mode,
-            mimic_human=bool(chatroom_setting.get("mimic_human", True)),
-            require_response=require_response,
-        ),
-        "semi_static_setup": _build_semi_static_setup_blocks(
-            chatroom_setting,
-            persona,
-            my_nickname,
-            participant_nicknames=participant_nicknames,
-        ),
-        "dynamic_context": _build_dynamic_context_block(history_block),
-        "additional_prompt": _build_additional_prompt_block(chatroom_setting),
-    }
-
-
-_BEDROCK_PROMPT_CACHE_MODEL_IDS = frozenset({
-    # Anthropic models listed by the Bedrock prompt-caching guide or their
-    # current Bedrock model cards.
-    "anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "anthropic.claude-3-7-sonnet-20250219-v1:0",
-    "anthropic.claude-opus-4-20250514-v1:0",
-    "anthropic.claude-opus-4-5-20251101-v1:0",
-    "anthropic.claude-opus-4-6-v1",
-    "anthropic.claude-opus-4-7",
-    "anthropic.claude-sonnet-4-20250514-v1:0",
-    "anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "anthropic.claude-sonnet-4-6",
-    "anthropic.claude-haiku-4-5-20251001-v1:0",
-    # Nova text models currently offered by the editor. Bedrock documents
-    # prompt caching for Nova text prompts, including explicit cache points.
-    "amazon.nova-pro-v1:0",
-    "amazon.nova-lite-v1:0",
-    "amazon.nova-micro-v1:0",
-    "amazon.nova-premier-v1:0",
-    "amazon.nova-2-lite-v1:0",
-})
-
-_BEDROCK_INFERENCE_PROFILE_PREFIXES = frozenset({
-    "global", "us", "eu", "apac", "jp", "au",
-})
-
-
-def _base_bedrock_model_id(model_id: str) -> str:
-    """Remove a Bedrock cross-region inference-profile prefix, if present."""
-    normalized = (model_id or "").strip()
-    prefix, separator, remainder = normalized.partition(".")
-    if separator and prefix in _BEDROCK_INFERENCE_PROFILE_PREFIXES:
-        return remainder
-    return normalized
-
-
-def _supports_bedrock_prompt_cache(model_id: str) -> bool:
-    """Return whether Bedrock prompt caching should be enabled for this model."""
-    return _base_bedrock_model_id(model_id) in _BEDROCK_PROMPT_CACHE_MODEL_IDS
-
-
-def _build_system_prompt(
-    mode: str,
-    chatroom_setting: dict,
-    persona: str,
-    my_nickname: str,
-    history_block: str,
-    participant_nicknames: list[str] | None = None,
-    require_response: bool = False,
-) -> str:
-    """Assemble SCAFFOLD + TOPIC + PERSONA + PARTICIPANTS + CONVERSATION_CONTEXT + ADDITIONAL_PROMPT.
-
-    Sections are joined with single newlines; each section already carries
-    its own internal structure (the scaffold ends with reminders, persona is
-    XML-tagged, history is XML-tagged). Empty optional sections (no persona,
-    empty topic, missing participants, or no additional_prompt) are omitted
-    to keep the prompt clean.
-
-    The ``<participants>`` block lists every nickname in the room (without
-    role markers — see the "AIs don't know who else is AI" rule in the
-    LLD). Without this, an AI might never realize a participant exists if
-    they never speak, defeating the inclusivity rules in the scaffold.
-
-    ``additional_prompt`` lands AFTER the conversation history so that
-    last-mile reminders (e.g. "stay one-thought-per-turn") are the most
-    recent thing the model sees before deciding what to say.
-    """
-    blocks = _build_prompt_blocks(
-        mode,
-        chatroom_setting,
-        persona,
-        my_nickname,
-        history_block,
-        participant_nicknames=participant_nicknames,
-        require_response=require_response,
-    )
-    parts: list[str] = [str(blocks["static_prefix"])]
-    parts.extend(blocks["semi_static_setup"])
-    parts.append(str(blocks["dynamic_context"]))
-    additional = str(blocks["additional_prompt"])
-    if additional:
-        parts.append(additional)
-    return "\n".join(parts)
-
-
-def _build_bedrock_system_blocks(
-    mode: str,
-    chatroom_setting: dict,
-    persona: str,
-    my_nickname: str,
-    history_block: str,
-    *,
-    model_id: str,
-    participant_nicknames: list[str] | None = None,
-    require_response: bool = False,
-) -> list[dict]:
-    """Return Bedrock system blocks.
-
-    For cache-supported Claude tool-use calls, only the large static scaffold
-    stays in ``system``. The cache checkpoint itself must live in
-    ``messages``; putting it in ``system`` or ``tools`` did not produce cache
-    hits in our Bedrock probes.
-    """
-    if not _supports_bedrock_prompt_cache(model_id):
-        return [{
-            "text": _build_system_prompt(
-                mode,
-                chatroom_setting,
-                persona,
-                my_nickname,
-                history_block,
-                participant_nicknames=participant_nicknames,
-                require_response=require_response,
-            )
-        }]
-
-    return [{
-        "text": _build_static_prefix_block(
-            mode,
-            mimic_human=bool(chatroom_setting.get("mimic_human", True)),
-            require_response=require_response,
-        )
-    }]
-
-
-def _build_bedrock_cache_prefix_message(
-    mode: str,
-    chatroom_setting: dict,
-    persona: str,
-    my_nickname: str,
-    history_block: str,
-    *,
-    completed_history_block: str | None = None,
-    participant_nicknames: list[str] | None = None,
-    require_response: bool = False,
-) -> dict:
-    """Return the leading user message that carries the Bedrock cache point.
-
-    The message content is:
-    1. semi-static per-chatroom / per-AI setup blocks
-    2. optional additional prompt
-    3. the cache checkpoint
-    4. the dynamic textual history block
-
-    This shape preserves the existing prompt content while moving the cache
-    checkpoint to the one place Bedrock tool-use calls actually honored in our
-    live probes: a ``messages[*].content`` block.
-    """
-    blocks = _build_prompt_blocks(
-        mode=mode,
-        chatroom_setting=chatroom_setting,
-        persona=persona,
-        my_nickname=my_nickname,
-        history_block=history_block,
-        participant_nicknames=participant_nicknames,
-        require_response=require_response,
-    )
-    content: list[dict] = []
-    for block in blocks["semi_static_setup"]:
-        content.append({"text": block})
-    additional = str(blocks["additional_prompt"])
-    if additional:
-        content.append({"text": additional})
-    if completed_history_block is not None:
-        content.append({
-            "text": (
-                "<completed-conversation-history>\n"
-                f"{completed_history_block}\n"
-                "</completed-conversation-history>"
-            )
-        })
-    content.append({"cachePoint": {"type": "default"}})
-    content.append({"text": str(blocks["dynamic_context"])})
-    return {"role": "user", "content": content}
-
-
-def _prepend_cache_prefix_message(
-    messages: list[dict],
-    prefix_message: dict,
-) -> list[dict]:
-    """Prepend the cache prefix, merging into the first user message when possible."""
-    if not messages:
-        return [prefix_message]
-
-    merged = [dict(m) for m in messages]
-    if merged[0]["role"] == "user":
-        merged[0] = {
-            "role": "user",
-            "content": list(prefix_message["content"]) + list(merged[0]["content"]),
-        }
-        return merged
-
-    return [prefix_message, *merged]
 
 
 def _build_tick_trigger_message(

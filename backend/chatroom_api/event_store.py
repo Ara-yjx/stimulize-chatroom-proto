@@ -270,10 +270,54 @@ def append_history_batch(
     expected_status: Optional[str] = None,
     expected_active_tick_id: Optional[str] = None,
     expected_metadata: Optional[dict] = None,
+    extra_transact_actions: Optional[list[dict]] = None,
 ) -> list[dict]:
+    """Append history and metadata, optionally composing caller-owned actions.
+
+    ``extra_transact_actions`` lets bounded background jobs update their own
+    state in the same DynamoDB transaction as the visible message. Callers
+    remain responsible for building valid low-level DynamoDB actions.
+    """
+    items, actions = build_append_history_actions(
+        conversation_id,
+        history_events,
+        batch_id,
+        metadata_updates=metadata_updates,
+        metadata_remove=metadata_remove,
+        expected_status=expected_status,
+        expected_active_tick_id=expected_active_tick_id,
+        expected_metadata=expected_metadata,
+    )
+    actions.extend(extra_transact_actions or [])
+    if len(actions) > 100:
+        raise ValueError("DynamoDB transaction exceeds 100 actions")
+    try:
+        _get_client().transact_write_items(
+            TransactItems=actions,
+            ClientRequestToken=batch_id,
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+            raise
+        if not _existing_batch_matches(items):
+            raise ConditionalWriteFailed("history append precondition failed") from exc
+    return items
+
+
+def build_append_history_actions(
+    conversation_id: str,
+    history_events: list[dict],
+    batch_id: str,
+    metadata_updates: Optional[dict] = None,
+    metadata_remove: Optional[list[str]] = None,
+    expected_status: Optional[str] = None,
+    expected_active_tick_id: Optional[str] = None,
+    expected_metadata: Optional[dict] = None,
+) -> tuple[list[dict], list[dict]]:
+    """Return normalized events and low-level actions for one history append."""
     items = normalize_history_events(conversation_id, history_events, batch_id)
     if not items:
-        raise ValueError("append_history_batch requires at least one event")
+        raise ValueError("history append requires at least one event")
     actions = [
         _metadata_update_action(
             conversation_id,
@@ -286,17 +330,7 @@ def append_history_batch(
         ),
         *_event_put_actions(items),
     ]
-    try:
-        _get_client().transact_write_items(
-            TransactItems=actions,
-            ClientRequestToken=batch_id,
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
-            raise
-        if not _existing_batch_matches(items):
-            raise ConditionalWriteFailed("history append precondition failed") from exc
-    return items
+    return items, actions
 
 
 def update_metadata(
