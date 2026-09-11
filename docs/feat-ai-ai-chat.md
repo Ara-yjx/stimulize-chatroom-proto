@@ -127,7 +127,7 @@ and export endpoints. It derives `owner_id` from the authenticated user,
 validates chatroom ownership, writes the batch snapshot, and sends one
 provisioning message using its EC2 instance role. A Provisioner Lambda then
 creates conversation metadata and fans out the work; the HTTP request does not
-try to provision up to 1000 conversations synchronously. This avoids another
+try to provision up to 10 conversations synchronously. This avoids another
 internal HTTP hop while keeping partial provisioning retryable. The current
 service token remains useful for worker calls to internal credits APIs, but it
 is not user identity.
@@ -177,7 +177,7 @@ hours and is not user-configurable.
 
 ### Initial operational limits
 
-- `batch_count`: `1..1000`; a typical batch is about `100` conversations.
+- `batch_count`: `1..10`.
 - One worker invocation processes one accepted turn. Silence and retries do not
   count as turns.
 - Batch timeout: 24 hours from batch creation.
@@ -188,10 +188,10 @@ hours and is not user-configurable.
 - Initial worker maximum concurrency: 10; increase it only after observing
   Bedrock throttling and completion latency.
 
-A typical default batch has 100 conversations, 100 turns each, and two AIs, so
-it performs about 10,000 model invocations. At concurrency 10 and roughly 4-8
-seconds per invocation, model time is about 1.1-2.2 hours; queueing, retries,
-and throttling make 1.5-3 hours a reasonable expectation. A 24-hour deadline
+A maximum-size default batch has 10 conversations, 100 turns each, and two AIs,
+so it performs about 1,000 model invocations. At concurrency 10 and roughly 4-8
+seconds per invocation, model time is about 7-14 minutes; queueing, retries,
+and throttling make 10-30 minutes a reasonable expectation. A 24-hour deadline
 provides wide headroom for slower models and three-plus-AI silence checks while
 still terminating abandoned work.
 

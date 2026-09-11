@@ -31,6 +31,7 @@ const FormItem = Form.Item
 const Option = Select.Option
 const OptGroup = Select.OptGroup
 const SAME_MODEL_AS_DEFAULT = '__CHATROOM_DEFAULT__'
+const MAX_AI_BATCH_COUNT = 10
 
 type ModelOption = {
   label: string
@@ -973,7 +974,7 @@ avoid talking about politics; keep messages under 12 words.
                 <FieldLabel>Batch size</FieldLabel>
                 <InputNumber
                   min={1}
-                  max={1000}
+                  max={MAX_AI_BATCH_COUNT}
                   value={batchCount}
                   onChange={(value) => setBatchCount(typeof value === 'number' ? value : 1)}
                   style={{ width: 140 }}

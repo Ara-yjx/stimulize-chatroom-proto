@@ -86,7 +86,7 @@ This file records decisions that came from implementation/debug discussions afte
 ### AI-only Batch Generation
 
 - Feature-branch implementation supports `human_count=0`, `ai_count=2..7`,
-  Start once, batches up to 1000, owner-only polling/history, and asynchronous
+  Start once, batches up to 10, owner-only polling/history, and asynchronous
   ZIP export.
 - Provisioner, turn worker, and exporter are separate SQS-triggered Lambdas.
   AI-only work does not use the lobby, widget, or heartbeat.

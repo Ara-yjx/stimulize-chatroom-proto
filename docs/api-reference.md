@@ -137,7 +137,7 @@ owner-authenticated and asynchronous.
 
 Settings default to `max_message_chars=400`, `max_total_chars=20000`, and
 `max_turns=100`. Current caps are `4000`, `200000`, and `200`. The final
-message may cross the total-character target. `batch_count` is `1..1000`, the
+message may cross the total-character target. `batch_count` is `1..10`, the
 fixed batch deadline is 24 hours, and exports expire after 7 days.
 
 Public rollout remains disabled until the account hard budget cap and the

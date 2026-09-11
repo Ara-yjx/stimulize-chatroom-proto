@@ -152,7 +152,7 @@ paths:
                 batch_count:
                   type: integer
                   minimum: 1
-                  maximum: 1000
+                  maximum: 10
                 client_request_id:
                   type: string
                   maxLength: 100
