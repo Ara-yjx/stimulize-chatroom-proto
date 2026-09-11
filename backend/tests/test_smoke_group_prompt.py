@@ -21,6 +21,10 @@ from chatroom_api.tick_handler import (
     _render_history_block,
     _supports_bedrock_prompt_cache,
 )
+from chatroom_api.prompts.speech_scaffold import (
+    build_speak_tool_config,
+    get_scaffold_for_mode,
+)
 
 
 def _conv() -> dict:
@@ -219,6 +223,21 @@ def test_required_speak_tool_disallows_silence() -> None:
     assert messages["items"]["minLength"] == 1
 
 
+def test_ai_only_scaffolds_do_not_claim_other_participants_are_human() -> None:
+    mimic = get_scaffold_for_mode("ai_only", mimic_human=True)
+    assistant = get_scaffold_for_mode("ai_only", mimic_human=False)
+    required = get_scaffold_for_mode(
+        "ai_only", mimic_human=False, require_response=True
+    )
+
+    assert "chatting with other humans" not in mimic
+    assert "chatting with other participants" in mimic
+    assert "Let humans speak" not in assistant
+    assert "Let other participants speak" in assistant
+    assert "human message" not in required
+    assert "previous participant message" in required
+
+
 @pytest.mark.parametrize("model_id", [
     "global.anthropic.claude-sonnet-4-6",
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -347,3 +366,16 @@ def test_bedrock_messages_pending_ai_message_excluded() -> None:
     assert len(msgs_for_venus) == 1
     assert msgs_for_venus[0]["role"] == "user"
     assert "[Earth] hi" in msgs_for_venus[0]["content"][0]["text"]
+
+
+def test_batch_speak_tool_schema_limits_one_message_length() -> None:
+    tool = build_speak_tool_config(
+        require_message=True,
+        max_message_chars=400,
+        max_messages=1,
+    )
+    messages = tool["tools"][0]["toolSpec"]["inputSchema"]["json"]["properties"]["messages"]
+    assert messages["minItems"] == 1
+    assert messages["maxItems"] == 1
+    assert messages["items"]["minLength"] == 1
+    assert messages["items"]["maxLength"] == 400

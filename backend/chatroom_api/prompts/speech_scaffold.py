@@ -613,6 +613,47 @@ REQUIRED_SPEAK_TOOL_CONFIG = {
 }
 
 
+def build_speak_tool_config(
+    *,
+    require_message: bool,
+    max_message_chars: int | None = None,
+    max_messages: int = 5,
+) -> dict:
+    """Build a bounded copy of the speak-tool schema for batch inference."""
+    item_schema = {"type": "string"}
+    if require_message:
+        item_schema["minLength"] = 1
+    if max_message_chars is not None:
+        item_schema["maxLength"] = int(max_message_chars)
+    messages_schema = {
+        "type": "array",
+        "maxItems": int(max_messages),
+        "items": item_schema,
+    }
+    if require_message:
+        messages_schema["minItems"] = 1
+    return {
+        "tools": [{
+            "toolSpec": {
+                "name": "speak",
+                "description": (
+                    "Send a message now. Silence is not allowed."
+                    if require_message
+                    else "Decide whether to send a message now. Pass an empty array to stay silent."
+                ),
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {"messages": messages_schema},
+                        "required": ["messages"],
+                    },
+                },
+            },
+        }],
+        "toolChoice": {"tool": {"name": "speak"}},
+    }
+
+
 def get_scaffold_for_mode(
     mode: str,
     *,
@@ -630,6 +671,28 @@ def get_scaffold_for_mode(
       gate would not pick a candidate in degenerate cases anyway, so this
       silently falls through rather than raising.
     """
+    if mode == "ai_only":
+        if mimic_human:
+            return SPEECH_SCAFFOLD.replace(
+                "chatting with other humans",
+                "chatting with other participants",
+                1,
+            )
+        if require_response:
+            return GENERIC_AI_ASSISTANT_REQUIRED_RESPONSE_SCAFFOLD.replace(
+                "the only AI assistant participating in an online conversation",
+                "an AI assistant participating in an AI-only conversation",
+                1,
+            ).replace(
+                "the human message that was just sent",
+                "the previous participant message",
+                1,
+            )
+        return GENERIC_AI_ASSISTANT_SCAFFOLD.replace(
+            "Let humans speak.",
+            "Let other participants speak.",
+            1,
+        )
     if not mimic_human and require_response:
         return GENERIC_AI_ASSISTANT_REQUIRED_RESPONSE_SCAFFOLD
     if not mimic_human:

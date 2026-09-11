@@ -13,6 +13,7 @@ from chatroom_api import config
 from chatroom_api.prompts.speech_scaffold import (
     REQUIRED_SPEAK_TOOL_CONFIG,
     SPEAK_TOOL_CONFIG,
+    build_speak_tool_config,
     parse_speak_tool_call,
 )
 
@@ -143,6 +144,8 @@ def invoke_speak_tool(
     *,
     temperature: float = 0.7,
     require_message: bool = False,
+    max_message_chars: int | None = None,
+    max_messages: int = 5,
 ) -> dict:
     """Call Bedrock Converse API forcing the `speak` tool.
 
@@ -168,7 +171,17 @@ def invoke_speak_tool(
             messages=messages,
             system=_normalize_system_blocks(system_prompt),
             toolConfig=(
-                REQUIRED_SPEAK_TOOL_CONFIG if require_message else SPEAK_TOOL_CONFIG
+                build_speak_tool_config(
+                    require_message=require_message,
+                    max_message_chars=max_message_chars,
+                    max_messages=max_messages,
+                )
+                if max_message_chars is not None or max_messages != 5
+                else (
+                    REQUIRED_SPEAK_TOOL_CONFIG
+                    if require_message
+                    else SPEAK_TOOL_CONFIG
+                )
             ),
             inferenceConfig={"maxTokens": 512, "temperature": temperature},
         )

@@ -64,6 +64,7 @@ def build_ai_participants(
     *,
     existing_participants: Iterable[dict] = (),
     ai_id_factory: Callable[[int], str] | None = None,
+    rng: random.Random | None = None,
 ) -> list[dict]:
     """Build normalized AI participants for lobby and batch conversations."""
     default_model_id = str(chatroom_setting.get("model_id") or "").strip()
@@ -73,9 +74,21 @@ def build_ai_participants(
         default_model_id=default_model_id,
         default_temperature=default_temperature,
     )
-    selected_entries = (
-        pick_personas(persona_entries, ai_count) if persona_entries else []
-    )
+    random_source = rng or random
+    selected_entries = []
+    if persona_entries:
+        if len(persona_entries) >= ai_count:
+            selected_entries = random_source.sample(persona_entries, ai_count)
+        else:
+            rounds, remainder = divmod(ai_count, len(persona_entries))
+            for _ in range(rounds):
+                selected_entries.extend(
+                    random_source.sample(persona_entries, len(persona_entries))
+                )
+            if remainder:
+                selected_entries.extend(
+                    random_source.sample(persona_entries, remainder)
+                )
     use_assistant_names = is_single_human_single_ai_assistant_room(
         chatroom_setting
     )
@@ -124,8 +137,14 @@ def build_ai_participants(
                 else "AI"
             )
         else:
-            nickname = generate_nickname(exclude=used_nicknames)
-        avatar = pick_avatar(exclude=used_emojis)
+            while True:
+                nickname = f"Participant{random_source.randint(1000, 9999)}"
+                if nickname not in used_nicknames:
+                    break
+        available = [emoji for emoji in EMOJI_POOL if emoji not in used_emojis]
+        if not available:
+            available = list(EMOJI_POOL)
+        avatar = {"emojiText": random_source.choice(available)}
         used_nicknames.add(nickname)
         used_emojis.add(avatar["emojiText"])
         participants.append({
