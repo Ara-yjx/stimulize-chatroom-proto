@@ -1,8 +1,27 @@
 from chatroom_api.settings import (
+    derive_runtime_mode,
     is_single_human_single_ai_assistant_room,
     normalize_ai_nickname,
     resolve_runtime_setting,
 )
+
+
+def test_ai_only_setting_preserves_zero_humans_and_batch_limits() -> None:
+    setting = resolve_runtime_setting({
+        "human_count": 0,
+        "ai_count": 3,
+        "resumable": True,
+    })
+
+    assert derive_runtime_mode(setting) == "ai_only"
+    assert setting["human_count"] == 0
+    assert setting["target_human_count"] == 0
+    assert setting["ai_strategy_value"] == 3
+    assert setting["max_wait_seconds"] == 0
+    assert setting["resumable"] is False
+    assert setting["max_message_chars"] == 400
+    assert setting["max_total_chars"] == 20_000
+    assert setting["max_turns"] == 100
 
 
 def test_show_avatars_defaults_on_and_preserves_false() -> None:

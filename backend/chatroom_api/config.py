@@ -21,6 +21,7 @@ USE_MOCK_RDS = os.environ.get("USE_MOCK_RDS", "true").lower() == "true"
 USE_MOCK_LOBBY = os.environ.get("USE_MOCK_LOBBY", "true").lower() == "true"
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-2")
 TICK_HANDLER_LAMBDA = os.environ.get("TICK_HANDLER_LAMBDA", "")
+AI_BATCH_ENABLED = os.environ.get("AI_BATCH_ENABLED", "false").lower() == "true"
 
 # RDS connection params (used by rds.py when USE_MOCK_RDS is False)
 RDS_HOST = os.environ.get("RDS_HOST", "")

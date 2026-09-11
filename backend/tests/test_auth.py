@@ -118,6 +118,24 @@ class TestHandleAuthTokenV2:
         s, b = handle_auth_token({})
         assert s == 400
 
+    def test_ai_only_chatroom_cannot_enter_interactive_lobby(self):
+        rds = MagicMock()
+        rds.get_chatroom.return_value = {
+            **SAMPLE_CHATROOM,
+            "setting": {
+                **SAMPLE_CHATROOM["setting"],
+                "human_count": 0,
+                "ai_count": 2,
+            },
+        }
+        with patch("chatroom_api.auth._get_rds", return_value=rds), \
+             patch("chatroom_api.auth._get_lobby") as lobby_getter:
+            status, body = handle_auth_token({"chatroom_id": SAMPLE_CHATROOM["id"]})
+
+        assert status == 400
+        assert body["code"] == "ai_only_chatroom"
+        lobby_getter.assert_not_called()
+
     def test_participants_stored(self):
         mock_lobby.reset()
         mock_dynamo.reset()

@@ -48,11 +48,13 @@ describe('validateChatroomSetting', () => {
     expect(result.ok).toBe(true)
   })
 
-  it('rejects human_count = 0', () => {
-    const setting = { ...baseGroupSetting(), human_count: 0 }
+  it('accepts human_count = 0 only with at least two AIs', () => {
+    const setting = { ...baseGroupSetting(), human_count: 0, ai_count: 2 }
     const result = validateChatroomSetting(setting)
-    expect(result.ok).toBe(false)
-    expect(result.errors.human_count).toBeDefined()
+    expect(result.ok).toBe(true)
+
+    const invalid = validateChatroomSetting({ ...setting, ai_count: 1 })
+    expect(invalid.errors.ai_count).toContain('at least 2')
   })
 
   it('accepts replace_human_with_ai because total participants are derived from human_count + ai_count', () => {
@@ -175,6 +177,25 @@ describe('validateChatroomSetting', () => {
 })
 
 describe('denormalizeForSave', () => {
+  it('derives fixed non-lobby fields for AI-only settings', () => {
+    const input = {
+      ...defaultSettingForMode('ai_only'),
+      replace_human_with_ai: true,
+      resumable: true,
+      simulate_pairing_seconds: 15,
+      max_wait_seconds: 60,
+    }
+    const out = denormalizeForSave(input)
+    expect(deriveChatroomMode(out)).toBe('ai_only')
+    expect(out.target_human_count).toBe(0)
+    expect(out.ai_join_strategy).toBe('fixed_ai_count')
+    expect(out.ai_strategy_value).toBe(2)
+    expect(out.replace_human_with_ai).toBe(false)
+    expect(out.resumable).toBe(false)
+    expect(out.simulate_pairing_seconds).toBe(0)
+    expect(out.max_wait_seconds).toBe(0)
+  })
+
   it('derives fixed runtime values for one-human one-ai and preserves max_duration_seconds', () => {
     const input: ChatroomSetting = {
       ...defaultChatroomSetting(),

@@ -32,6 +32,8 @@ def derive_runtime_mode(setting: dict | None) -> str:
         normalized.get("ai_count", normalized.get("ai_strategy_value", 1)),
         1,
     )
+    if human_count == 0:
+        return "ai_only"
     return "one_on_one" if human_count == 1 and ai_count == 1 else "group"
 
 
@@ -91,7 +93,7 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
         normalized.get("ai_count", normalized.get("ai_strategy_value", 1)),
         1,
     )
-    human_count = max(1, human_count)
+    human_count = max(0, human_count)
     ai_count = max(0, ai_count)
 
     replace_human_with_ai = bool(
@@ -104,7 +106,13 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
         _coerce_int(normalized.get("simulate_pairing_seconds", 0), 0),
     )
 
-    if human_count <= 1:
+    if human_count == 0:
+        replace_human_with_ai = False
+        normalized["target_human_count"] = 0
+        normalized["ai_join_strategy"] = "fixed_ai_count"
+        normalized["ai_strategy_value"] = ai_count
+        normalized["max_wait_seconds"] = 0
+    elif human_count == 1:
         replace_human_with_ai = False
         normalized["target_human_count"] = 1
         normalized["ai_join_strategy"] = "fixed_ai_count"
@@ -140,6 +148,21 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
         simulate_pairing_seconds if human_count == 1 and mimic_human else 0
     )
     normalized["resumable"] = bool(normalized.get("resumable", False))
+    if human_count == 0:
+        normalized["resumable"] = False
+
+    normalized["max_message_chars"] = max(
+        1,
+        _coerce_int(normalized.get("max_message_chars", 400), 400),
+    )
+    normalized["max_total_chars"] = max(
+        1,
+        _coerce_int(normalized.get("max_total_chars", 20_000), 20_000),
+    )
+    normalized["max_turns"] = max(
+        1,
+        _coerce_int(normalized.get("max_turns", 100), 100),
+    )
 
     temperature = normalized.get("temperature", 0.7)
     normalized["temperature"] = normalize_temperature(temperature, default=0.7)

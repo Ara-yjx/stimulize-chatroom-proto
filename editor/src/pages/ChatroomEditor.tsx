@@ -450,6 +450,9 @@ export default function ChatroomEditor() {
       ai_join_strategy: values.ai_join_strategy,
       ai_strategy_value: values.ai_strategy_value,
       max_wait_seconds: values.max_wait_seconds,
+      max_message_chars: values.max_message_chars,
+      max_total_chars: values.max_total_chars,
+      max_turns: values.max_turns,
     }
     const result = validateChatroomSetting(settingToValidate)
     if (!result.ok) {

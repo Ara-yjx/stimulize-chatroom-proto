@@ -93,6 +93,12 @@ def handle_auth_token(body: dict) -> tuple[int, dict]:
 
     chatroom_setting = resolve_runtime_setting(chatroom["setting"])
 
+    if int(chatroom_setting.get("human_count", 1)) == 0:
+        return (400, {
+            "error": "AI-only chatrooms must be started from the editor",
+            "code": "ai_only_chatroom",
+        })
+
     if chatroom_setting.get("resumable"):
         if not resumable.is_supported_setting(chatroom_setting):
             return (400, {
