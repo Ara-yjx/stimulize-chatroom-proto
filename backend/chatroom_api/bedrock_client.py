@@ -7,7 +7,8 @@ import time
 from typing import Callable
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError, EndpointConnectionError
 
 from chatroom_api import config
 from chatroom_api.prompts.speech_scaffold import (
@@ -20,6 +21,7 @@ from chatroom_api.prompts.speech_scaffold import (
 logger = logging.getLogger(__name__)
 
 _client = None
+_deadline_client = None
 
 # Errors that are transient and worth retrying
 _RETRYABLE_ERRORS = {"ThrottlingException", "ModelTimeoutException", "ServiceUnavailableException"}
@@ -51,7 +53,29 @@ def _get_client():
     return _client
 
 
-def _call_with_retry(call: Callable[[], dict]) -> dict:
+def _get_deadline_client():
+    global _deadline_client
+    if _deadline_client is None:
+        # Explicit retries must pass the caller's deadline check. Disable SDK
+        # retries underneath it; keep ordinary interactive callers unchanged.
+        _deadline_client = boto3.client(
+            "bedrock-runtime", region_name=config.BEDROCK_REGION,
+            config=BotoConfig(connect_timeout=5, read_timeout=90, retries={"total_max_attempts": 1}),
+        )
+    return _deadline_client
+
+
+def _bounded_converse(client, **request):
+    # Bedrock Opus 4.7 rejects sampling-temperature overrides.
+    if 'claude-opus-4-7' in request.get('modelId', ''):
+        request['inferenceConfig'] = {k: v for k, v in request.get('inferenceConfig', {}).items() if k != 'temperature'}
+    if config.PROMPT_ATTACHMENTS_ENABLED:
+        from chatroom_api.prompt_attachments import check_serialized_request
+        check_serialized_request(request, client)
+    return client.converse(**request)
+
+
+def _call_with_retry(call: Callable[[], dict], before_attempt: Callable[[], None] | None = None) -> dict:
     """Invoke ``call`` with the shared Bedrock retry + error classification.
 
     ``call`` is a zero-arg closure that issues a Bedrock API request and
@@ -64,6 +88,8 @@ def _call_with_retry(call: Callable[[], dict]) -> dict:
     last_error = None
 
     for attempt in range(MAX_RETRIES):
+        if before_attempt:
+            before_attempt()
         try:
             return call()
         except ClientError as e:
@@ -86,6 +112,9 @@ def _call_with_retry(call: Callable[[], dict]) -> dict:
 
         except BedrockInferenceError:
             raise
+
+        except (ConnectTimeoutError, ReadTimeoutError, EndpointConnectionError) as e:
+            raise BedrockInferenceError(type(e).__name__, str(e), retryable=before_attempt is not None)
 
         except Exception as e:
             raise BedrockInferenceError("UnknownError", str(e), retryable=False)
@@ -120,7 +149,7 @@ def invoke(
     client = _get_client()
 
     def _do_call() -> dict:
-        response = client.converse(
+        response = _bounded_converse(client,
             modelId=model_id,
             messages=messages,
             system=_normalize_system_blocks(system_prompt),
@@ -146,6 +175,7 @@ def invoke_speak_tool(
     require_message: bool = False,
     max_message_chars: int | None = None,
     max_messages: int = 5,
+    before_attempt: Callable[[], None] | None = None,
 ) -> dict:
     """Call Bedrock Converse API forcing the `speak` tool.
 
@@ -163,10 +193,10 @@ def invoke_speak_tool(
 
     Raises: BedrockInferenceError on failure.
     """
-    client = _get_client()
+    client = _get_deadline_client() if before_attempt else _get_client()
 
     def _do_call() -> dict:
-        response = client.converse(
+        response = _bounded_converse(client,
             modelId=model_id,
             messages=messages,
             system=_normalize_system_blocks(system_prompt),
@@ -194,4 +224,4 @@ def invoke_speak_tool(
             "raw_response": response,
         }
 
-    return _call_with_retry(_do_call)
+    return _call_with_retry(_do_call, before_attempt)

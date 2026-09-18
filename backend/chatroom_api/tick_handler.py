@@ -62,6 +62,7 @@ from chatroom_api.settings import (
     is_single_human_single_ai_assistant_room,
     normalize_temperature,
 )
+from chatroom_api.prompt_attachments import attach_for_inference
 from chatroom_api.prompts.speech_scaffold import (
     REQUIRED_SPEAK_TOOL_CONFIG,
     SPEAK_TOOL_CONFIG,  # re-exported for callers that want to inspect it
@@ -595,6 +596,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
         ]
 
     try:
+        bedrock_messages = attach_for_inference(bedrock_messages, chatroom_setting, candidate_participant or {})
         result = _invoke_with_model_fallback(
             model_id,
             system_prompt,

@@ -14,9 +14,13 @@ import {
   aws_s3 as s3,
   aws_secretsmanager as secretsmanager,
   aws_sqs as sqs,
+  aws_stepfunctions as sfn,
+  aws_events as events,
+  aws_events_targets as targets,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { backendPythonCode } from "./backend-code";
+import { conversationWorkflow, conversationRecovery } from "./ai-conversation-workflow";
 
 export interface AiConversationBatchStackProps extends StackProps {
   conversationTable: dynamodb.ITable;
@@ -30,7 +34,8 @@ export interface AiConversationBatchStackProps extends StackProps {
 export class AiConversationBatchStack extends Stack {
   public readonly batchTable: dynamodb.Table;
   public readonly provisionQueue: sqs.Queue;
-  public readonly workQueue: sqs.Queue;
+  public readonly conversationWorkflow: sfn.StateMachine;
+  public readonly conversationRecovery: sfn.StateMachine;
   public readonly exportQueue: sqs.Queue;
   public readonly exportBucket: s3.Bucket;
   public readonly provisioner: lambda.Function;
@@ -43,6 +48,21 @@ export class AiConversationBatchStack extends Stack {
     const prefix = props.resourcePrefix;
     const useMockRds = props.useMockRds ?? false;
     const removalPolicy = props.removalPolicy ?? RemovalPolicy.RETAIN;
+    // Keep old queued work available for diagnosis during the orchestration cutover.
+    if (this.node.tryGetContext("keepLegacyWorkQueues") === "true") {
+      const legacyDlq = new sqs.Queue(this, "WorkDlq", {
+        queueName: `${prefix}-work-dlq.fifo`, fifo: true,
+        retentionPeriod: Duration.days(14), encryption: sqs.QueueEncryption.SQS_MANAGED,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      new sqs.Queue(this, "WorkQueue", {
+        queueName: `${prefix}-work.fifo`, fifo: true, contentBasedDeduplication: false,
+        visibilityTimeout: Duration.minutes(12), retentionPeriod: Duration.days(14),
+        encryption: sqs.QueueEncryption.SQS_MANAGED,
+        deadLetterQueue: { queue: legacyDlq, maxReceiveCount: 5 },
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+    }
     const rdsHost = this.node.tryGetContext("rdsHost") as string;
     const rdsPort = (this.node.tryGetContext("rdsPort") as string) || "5432";
     const rdsDatabase = (this.node.tryGetContext("rdsDatabase") as string) || "stimulize";
@@ -78,12 +98,6 @@ export class AiConversationBatchStack extends Stack {
       retentionPeriod: Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
     });
-    const workDlq = new sqs.Queue(this, "WorkDlq", {
-      queueName: `${prefix}-work-dlq.fifo`,
-      fifo: true,
-      retentionPeriod: Duration.days(14),
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-    });
     const exportDlq = new sqs.Queue(this, "ExportDlq", {
       queueName: `${prefix}-export-dlq`,
       retentionPeriod: Duration.days(14),
@@ -95,15 +109,6 @@ export class AiConversationBatchStack extends Stack {
       retentionPeriod: Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       deadLetterQueue: { queue: provisionDlq, maxReceiveCount: 5 },
-    });
-    this.workQueue = new sqs.Queue(this, "WorkQueue", {
-      queueName: `${prefix}-work.fifo`,
-      fifo: true,
-      contentBasedDeduplication: false,
-      visibilityTimeout: Duration.minutes(12),
-      retentionPeriod: Duration.days(14),
-      encryption: sqs.QueueEncryption.SQS_MANAGED,
-      deadLetterQueue: { queue: workDlq, maxReceiveCount: 5 },
     });
     this.exportQueue = new sqs.Queue(this, "ExportQueue", {
       queueName: `${prefix}-export`,
@@ -117,7 +122,7 @@ export class AiConversationBatchStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
-      lifecycleRules: [{ expiration: Duration.days(7) }],
+      lifecycleRules: [{ prefix: "owners/", expiration: Duration.days(7) }],
       removalPolicy,
       autoDeleteObjects: false,
     });
@@ -149,7 +154,7 @@ export class AiConversationBatchStack extends Stack {
       logGroup: logGroup("Provisioner"),
       environment: {
         ...commonEnvironment,
-        AI_BATCH_WORK_QUEUE_URL: this.workQueue.queueUrl,
+        AI_BATCH_EXPORT_BUCKET: this.exportBucket.bucketName,
       },
     });
     this.worker = new lambda.Function(this, "Worker", {
@@ -163,7 +168,6 @@ export class AiConversationBatchStack extends Stack {
       logGroup: logGroup("Worker"),
       environment: {
         ...commonEnvironment,
-        AI_BATCH_WORK_QUEUE_URL: this.workQueue.queueUrl,
         BEDROCK_REGION: "us-east-2",
         ...(useMockRds ? {} : {
           RDS_HOST: rdsHost,
@@ -193,10 +197,6 @@ export class AiConversationBatchStack extends Stack {
       this.provisionQueue,
       { batchSize: 1, reportBatchItemFailures: true },
     ));
-    this.worker.addEventSource(new eventSources.SqsEventSource(
-      this.workQueue,
-      { batchSize: 1, reportBatchItemFailures: true },
-    ));
     this.exporter.addEventSource(new eventSources.SqsEventSource(
       this.exportQueue,
       { batchSize: 1, reportBatchItemFailures: true },
@@ -206,18 +206,79 @@ export class AiConversationBatchStack extends Stack {
     props.conversationTable.grantReadWriteData(this.provisioner);
     props.eventTable.grantReadWriteData(this.provisioner);
     this.provisionQueue.grantConsumeMessages(this.provisioner);
-    this.workQueue.grantSendMessages(this.provisioner);
+    this.exportBucket.grantReadWrite(this.provisioner, "prompt-references/*");
 
     this.batchTable.grantReadWriteData(this.worker);
     props.conversationTable.grantReadWriteData(this.worker);
     props.eventTable.grantReadWriteData(this.worker);
-    this.workQueue.grantConsumeMessages(this.worker);
-    this.workQueue.grantSendMessages(this.worker);
     this.worker.addToRolePolicy(new iam.PolicyStatement({
       actions: ["bedrock:InvokeModel"],
       resources: ["*"],
     }));
     rdsSecret?.grantRead(this.worker);
+
+    const workflowRole = new iam.Role(this, "ConversationWorkflowRole", {
+      assumedBy: new iam.ServicePrincipal("states.amazonaws.com"),
+    });
+    this.worker.grantInvoke(workflowRole);
+    props.conversationTable.grantReadWriteData(workflowRole);
+    this.batchTable.grantReadWriteData(workflowRole);
+    this.conversationWorkflow = new sfn.StateMachine(this, "ConversationWorkflow", {
+      stateMachineName: `${prefix}-conversation`,
+      stateMachineType: sfn.StateMachineType.STANDARD,
+      role: workflowRole,
+      definitionBody: sfn.DefinitionBody.fromString(this.toJsonString(conversationWorkflow(
+        this.worker.functionArn, props.conversationTable.tableName, this.batchTable.tableName,
+      ))),
+      logs: {
+        destination: new logs.LogGroup(this, "ConversationWorkflowLogs", {
+          retention: logs.RetentionDays.ONE_MONTH, removalPolicy,
+        }),
+        level: sfn.LogLevel.ERROR, includeExecutionData: false,
+      },
+    });
+    this.conversationWorkflow.grantStartExecution(this.provisioner);
+    this.provisioner.addEnvironment("AI_BATCH_STATE_MACHINE_ARN", this.conversationWorkflow.stateMachineArn);
+    const recoveryRole = new iam.Role(this, "ConversationRecoveryRole", {
+      assumedBy: new iam.ServicePrincipal("states.amazonaws.com"),
+    });
+    props.conversationTable.grantReadWriteData(recoveryRole);
+    this.batchTable.grantReadWriteData(recoveryRole);
+    this.conversationRecovery = new sfn.StateMachine(this, "ConversationRecovery", {
+      stateMachineName: `${prefix}-conversation-recovery`,
+      stateMachineType: sfn.StateMachineType.STANDARD, role: recoveryRole,
+      definitionBody: sfn.DefinitionBody.fromString(this.toJsonString(conversationRecovery(
+        props.conversationTable.tableName, this.batchTable.tableName,
+      ))),
+    });
+    const recoveryDlq = new sqs.Queue(this, "RecoveryDlq", {
+      queueName: `${prefix}-recovery-dlq`, retentionPeriod: Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+    });
+    new events.Rule(this, "ConversationExecutionFailed", {
+      eventPattern: {
+        source: ["aws.states"], detailType: ["Step Functions Execution Status Change"],
+        detail: { stateMachineArn: [this.conversationWorkflow.stateMachineArn], status: ["FAILED", "TIMED_OUT", "ABORTED"] },
+      },
+      targets: [new targets.SfnStateMachine(this.conversationRecovery, {
+        deadLetterQueue: recoveryDlq, retryAttempts: 5,
+      })],
+    });
+    new cloudwatch.Alarm(this, "ConversationRecoveryFailed", {
+      alarmName: `${prefix}-recovery-failed`, metric: this.conversationRecovery.metricFailed(),
+      threshold: 1, evaluationPeriods: 1, treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    for (const [name, metric] of [
+      ["failed", this.conversationWorkflow.metricFailed()],
+      ["timed-out", this.conversationWorkflow.metricTimedOut()],
+      ["aborted", this.conversationWorkflow.metricAborted()],
+    ] as const) {
+      new cloudwatch.Alarm(this, `ConversationWorkflow-${name}`, {
+        alarmName: `${prefix}-workflow-${name}`, metric,
+        threshold: 1, evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    }
 
     this.batchTable.grantReadWriteData(this.exporter);
     props.conversationTable.grantReadData(this.exporter);
@@ -227,8 +288,8 @@ export class AiConversationBatchStack extends Stack {
 
     for (const [name, queue] of [
       ["provision", provisionDlq],
-      ["work", workDlq],
       ["export", exportDlq],
+      ["recovery", recoveryDlq],
     ] as const) {
       new cloudwatch.Alarm(this, `${name}DlqAlarm`, {
         alarmName: `${prefix}-${name}-dlq-visible`,
@@ -243,5 +304,7 @@ export class AiConversationBatchStack extends Stack {
     new CfnOutput(this, "ProvisionQueueUrl", { value: this.provisionQueue.queueUrl });
     new CfnOutput(this, "ExportQueueUrl", { value: this.exportQueue.queueUrl });
     new CfnOutput(this, "ExportBucketName", { value: this.exportBucket.bucketName });
+    new CfnOutput(this, "ConversationWorkflowArn", { value: this.conversationWorkflow.stateMachineArn });
+    new CfnOutput(this, "ConversationRecoveryArn", { value: this.conversationRecovery.stateMachineArn });
   }
 }

@@ -22,9 +22,12 @@ USE_MOCK_LOBBY = os.environ.get("USE_MOCK_LOBBY", "true").lower() == "true"
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "us-east-2")
 TICK_HANDLER_LAMBDA = os.environ.get("TICK_HANDLER_LAMBDA", "")
 AI_BATCH_ENABLED = os.environ.get("AI_BATCH_ENABLED", "false").lower() == "true"
+PROMPT_ATTACHMENTS_ENABLED = os.environ.get("PROMPT_ATTACHMENTS_ENABLED", "false").lower() == "true"
+PROMPT_ATTACHMENT_BUCKET = os.environ.get("PROMPT_ATTACHMENT_BUCKET", "")
+PROMPT_ATTACHMENT_MODELS = frozenset(x.strip() for x in os.environ.get("PROMPT_ATTACHMENT_MODELS", "").split(",") if x.strip())
 AI_BATCH_TABLE = os.environ.get("AI_BATCH_TABLE", "ai-conversation-batches")
 AI_BATCH_PROVISION_QUEUE_URL = os.environ.get("AI_BATCH_PROVISION_QUEUE_URL", "")
-AI_BATCH_WORK_QUEUE_URL = os.environ.get("AI_BATCH_WORK_QUEUE_URL", "")
+AI_BATCH_STATE_MACHINE_ARN = os.environ.get("AI_BATCH_STATE_MACHINE_ARN", "")
 AI_BATCH_EXPORT_QUEUE_URL = os.environ.get("AI_BATCH_EXPORT_QUEUE_URL", "")
 AI_BATCH_EXPORT_BUCKET = os.environ.get("AI_BATCH_EXPORT_BUCKET", "")
 

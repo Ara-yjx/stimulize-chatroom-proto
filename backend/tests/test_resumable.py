@@ -156,6 +156,34 @@ def test_inactive_auth_resumes_same_conversation_with_new_episode() -> None:
     assert [e["status"] for e in resumed["episodes"]] == ["inactive", "active"]
 
 
+def test_resume_keeps_files_after_room_detachment(monkeypatch):
+    from hashlib import sha256
+    from chatroom_api import config
+    from chatroom_api.prompt_attachments import MANIFEST_FIELD
+    asset_id = 'paid_11111111-1111-4111-8111-111111111111'
+    room = deepcopy(CHATROOM)
+    room['setting']['prompt_attachment_ids'] = [asset_id]
+    manifest = {asset_id: {'id': asset_id, 'format': 'txt', 'byte_size': 5,
+        'sha256': sha256(b'hello').hexdigest(), 's3_key': 'assets/' + asset_id}}
+    provider = MagicMock()
+    provider.resolve_prompt_assets.return_value = manifest
+    monkeypatch.setattr(config, 'PROMPT_ATTACHMENTS_ENABLED', True)
+    monkeypatch.setattr(config, 'PROMPT_ATTACHMENT_MODELS', {CHATROOM['setting']['model_id']})
+    with patch('chatroom_api._providers.get_rds_provider', return_value=provider):
+        status, first = _auth(chatroom=room)
+        assert status == 200
+        conversation = mock_dynamo.get_conversation(first['conversation_id'])
+        assert resumable.end_episode(conversation)
+        provider.resolve_prompt_assets.side_effect = AssertionError('Resume must not resolve current files')
+        status, second = _auth(chatroom=CHATROOM)
+        assert status == 200 and second['resumed']
+    saved = mock_dynamo.get_conversation(first['conversation_id'])
+    assert saved['chatroom_setting'][MANIFEST_FIELD] == manifest
+    assert saved['chatroom_setting']['prompt_attachment_ids'] == [asset_id]
+    assert MANIFEST_FIELD not in second['chatroom_setting']
+    assert 'prompt_attachment_ids' not in second['chatroom_setting']
+
+
 def test_human_event_has_connection_and_stable_author_identity() -> None:
     _, body = _auth()
     claims = _claims(body)

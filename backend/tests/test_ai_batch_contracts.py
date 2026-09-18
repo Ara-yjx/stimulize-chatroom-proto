@@ -8,7 +8,7 @@ from chatroom_api.ai_batch.contracts import (
     conversation_id,
     parse_queue_body,
     terminal_batch_status,
-    work_message,
+    provision_message,
 )
 
 
@@ -22,10 +22,10 @@ def test_ids_and_request_hash_are_stable_and_scoped() -> None:
 
 
 def test_queue_contract_requires_version_and_fields() -> None:
-    message = work_message("batch", "conversation", 4)
+    message = provision_message("batch")
     assert parse_queue_body(
         json.dumps(message),
-        ("batch_job_id", "conversation_id", "expected_turn"),
+        ("batch_job_id",),
     ) == message
     with pytest.raises(ValueError, match="version"):
         parse_queue_body('{"version":2}', ())

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from chatroom_api import jwt_utils
+from chatroom_api.prompt_attachments import public_setting, prepare_setting
 from chatroom_api._providers import get_event_store_provider
 from chatroom_api.close_lobby import _pick_avatar, _pick_personas
 from chatroom_api.cursors import decode_cursor, encode_cursor, event_key_timestamp, make_event_key
@@ -106,6 +107,8 @@ def _build_participants(setting: dict, participant_id: str) -> tuple[list[dict],
         "avatar": _pick_avatar(exclude={human_avatar.get("emojiText")}),
         "role": "ai",
         "persona": selected.get("persona", ""),
+        **({'prompt_attachment_ids': list(selected['prompt_attachment_ids'])}
+           if selected.get('prompt_attachment_ids') else {}),
         "model_id": selected.get("model_id", default_model_id),
         "temperature": selected.get("temperature", default_temperature),
         "internal_name": selected.get("internal_name") or "ai_1",
@@ -155,7 +158,7 @@ def _auth_payload(conversation: dict, session_id: str, connection_id: str, *, re
         "conversation_id": conversation["conversation_id"],
         "nickname": human.get("nickname", "PARTICIPANT"),
         "avatar": human.get("avatar"),
-        "chatroom_setting": conversation["chatroom_setting"],
+        "chatroom_setting": public_setting(conversation["chatroom_setting"]),
         "episode_number": episode_number,
         "episode_started_at": conversation["active_episode_started_at"],
         "history_start_cursor": conversation.get("active_history_start_cursor"),
@@ -180,6 +183,8 @@ def create_or_resume(chatroom: dict, participant_id: str) -> tuple[int, dict]:
         conversation = db.get_conversation(conversation_id)
 
         if conversation is None:
+            from chatroom_api._providers import get_rds_provider
+            setting = resolve_runtime_setting(prepare_setting(chatroom, get_rds_provider()))
             participants, _human = _build_participants(setting, participant_id)
             episode = {
                 "episode_number": 1,

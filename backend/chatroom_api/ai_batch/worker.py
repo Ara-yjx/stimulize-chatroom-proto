@@ -1,22 +1,23 @@
-"""FIFO SQS handler that advances one accepted AI-only turn."""
+"""Checkpointed conversation slices, invoked by Step Functions Standard."""
 
 from __future__ import annotations
 
 import logging
+import time
 from uuid import uuid4
 
 from chatroom_api import config
 from chatroom_api.ai_batch import store
 from chatroom_api.ai_batch.contracts import (
     BATCH_EXECUTABLE_STATUSES,
-    CONVERSATION_TERMINAL_STATUSES,
-    WORKER_LEASE_MS,
-    parse_queue_body,
+    WORKER_SLICE_SECONDS,
+    WORKER_CALL_HEADROOM_MS,
     turn_write_id,
 )
 from chatroom_api.ai_batch.scheduler import candidates_for_turn, forced_candidate
 from chatroom_api.bedrock_client import BedrockInferenceError, invoke_speak_tool
 from chatroom_api.conversation import build_bedrock_messages
+from chatroom_api.prompt_attachments import attach_for_inference
 from chatroom_api.inference_usage import credits_allow, record_bedrock_usage
 from chatroom_api.participants import participant_id
 from chatroom_api.prompts.construction import (
@@ -34,6 +35,23 @@ logger.setLevel(logging.INFO)
 
 class TerminalConversationError(RuntimeError):
     pass
+
+
+class ConversationDeadlineReached(RuntimeError):
+    pass
+
+
+class WorkerSliceComplete(RuntimeError):
+    pass
+
+
+class ConversationAlreadyTerminal(RuntimeError):
+    pass
+
+
+def _check_deadline(batch: dict) -> None:
+    if store.now_ms() >= int(batch["deadline_at"]):
+        raise ConversationDeadlineReached()
 
 
 def _history_block(events: list[dict]) -> str:
@@ -121,6 +139,7 @@ def _build_request(
             require_message=require_message,
             correction=correction,
         )]
+    messages = attach_for_inference(messages, setting, participant)
     return model_id, float(temperature), system, messages
 
 
@@ -132,6 +151,7 @@ def _invoke_candidate(
     *,
     require_message: bool,
     attempt: int,
+    before_attempt=None,
 ) -> str | None:
     owner_id = str(batch["owner_id"])
     if not credits_allow(owner_id):
@@ -155,6 +175,7 @@ def _invoke_candidate(
         require_message=require_message,
         max_message_chars=max_chars,
         max_messages=1,
+        before_attempt=before_attempt or (lambda: _check_deadline(batch)),
     )
     resolved_messages = [
         str(message).strip()
@@ -179,6 +200,7 @@ def _invoke_candidate(
             "temperature": temperature,
         },
     )
+    _check_deadline(batch)
     if not resolved_messages:
         if require_message:
             raise TerminalConversationError("model returned silence when a message was required")
@@ -209,6 +231,7 @@ def _invoke_candidate(
         require_message=True,
         max_message_chars=max_chars,
         max_messages=1,
+        before_attempt=before_attempt or (lambda: _check_deadline(batch)),
     )
     corrected_messages = [
         str(message).strip()
@@ -234,12 +257,13 @@ def _invoke_candidate(
             "temperature": temperature,
         },
     )
+    _check_deadline(batch)
     if len(corrected_messages) != 1 or len(corrected_messages[0]) > max_chars:
         raise TerminalConversationError("model exceeded message length after correction")
     return corrected_messages[0]
 
 
-def _choose_message(batch: dict, conversation: dict, history: list[dict]) -> tuple[dict, str]:
+def _choose_message(batch: dict, conversation: dict, history: list[dict], *, before_attempt=None) -> tuple[dict, str]:
     participants = list(conversation.get("participants") or [])
     candidates = candidates_for_turn(
         participants,
@@ -254,6 +278,7 @@ def _choose_message(batch: dict, conversation: dict, history: list[dict]) -> tup
             history,
             require_message=True,
             attempt=1,
+            before_attempt=before_attempt,
         )
         if text is None:
             raise TerminalConversationError("two-AI turn produced no message")
@@ -267,6 +292,7 @@ def _choose_message(batch: dict, conversation: dict, history: list[dict]) -> tup
             history,
             require_message=False,
             attempt=attempt,
+            before_attempt=before_attempt,
         )
         if text is not None:
             return participant, text
@@ -278,68 +304,84 @@ def _choose_message(batch: dict, conversation: dict, history: list[dict]) -> tup
         history,
         require_message=True,
         attempt=len(candidates) + 1,
+        before_attempt=before_attempt,
     )
     if text is None:
         raise TerminalConversationError("forced AI turn produced no message")
     return participant, text
 
 
-def _process_work(body: dict, receive_count: int = 1) -> dict:
+def _process_work(body: dict, context=None) -> dict:
     if not config.AI_BATCH_ENABLED:
         raise RuntimeError("AI batch runtime is disabled")
     batch_id = str(body["batch_job_id"])
     conv_id = str(body["conversation_id"])
-    expected_turn = int(body["expected_turn"])
     batch = store.get_batch(batch_id)
-    conversation = store.get_conversation(conv_id)
-    if batch is None or conversation is None:
-        raise TerminalConversationError("batch or conversation not found")
-    if conversation.get("batch_job_id") != batch_id:
-        raise TerminalConversationError("conversation does not belong to batch")
-    if conversation.get("status") in CONVERSATION_TERMINAL_STATUSES:
-        store.finalize_batch_if_done(batch_id)
-        return {"status": "noop", "reason": "terminal"}
-
-    current_turn = int(conversation.get("next_turn", 0) or 0)
-    if expected_turn < current_turn:
-        store.send_work(batch_id, conv_id, current_turn)
-        return {"status": "requeued", "expected_turn": current_turn}
-    if expected_turn > current_turn:
-        return {"status": "noop", "reason": "future_turn"}
-
-    now_value_ms = store.now_ms()
-    if now_value_ms >= int(batch["deadline_at"]):
-        store.mark_batch_timed_out(batch_id, now_value_ms)
-        store.mark_conversation_terminal(conversation, "timed_out", error="batch deadline elapsed")
-        return {"status": "timed_out"}
-    if batch.get("status") not in BATCH_EXECUTABLE_STATUSES:
-        if batch.get("status") == "timed_out":
-            store.mark_conversation_terminal(conversation, "timed_out", error="batch deadline elapsed")
-        return {"status": "noop", "reason": "batch_not_executable"}
-
+    if batch is None:
+        raise TerminalConversationError("batch not found")
     setting = dict(batch["settings_snapshot"])
     max_turns = int(setting["max_turns"])
     max_total_chars = int(setting["max_total_chars"])
-    if current_turn >= max_turns or int(conversation.get("total_chars", 0) or 0) >= max_total_chars:
-        store.mark_conversation_terminal(conversation, "completed")
-        store.finalize_batch_if_done(batch_id)
-        return {"status": "completed"}
+    started = time.monotonic()
 
-    lease_id = uuid4().hex
-    if not store.acquire_worker_lease(
-        batch_id,
-        conversation,
-        expected_turn,
-        lease_id,
-        now_value_ms,
-        WORKER_LEASE_MS,
-    ):
-        return {"status": "leased"}
-    conversation = {**conversation, "status": "running", "worker_lease_id": lease_id}
+    def before_attempt():
+        _check_deadline(batch)
+        if store.get_conversation(conv_id).get("execution_state") == "terminal":
+            raise ConversationAlreadyTerminal()
+        if (time.monotonic() - started >= WORKER_SLICE_SECONDS
+                or (context and context.get_remaining_time_in_millis() < WORKER_CALL_HEADROOM_MS)):
+            raise WorkerSliceComplete()
 
-    try:
+    while True:
+        conversation = store.get_conversation(conv_id)
+        if not conversation or conversation.get("batch_job_id") != batch_id:
+            raise TerminalConversationError("conversation does not belong to batch")
+        if conversation.get("execution_state") == "terminal":
+            store.finalize_batch_if_done(batch_id)
+            return {"terminal": True, "outcome": conversation["outcome"]}
+        terminal = None
+        error = None
+        if store.now_ms() >= int(batch["deadline_at"]):
+            terminal = "timed_out"
+        elif batch.get("status") not in BATCH_EXECUTABLE_STATUSES:
+            terminal, error = "failed", "batch_not_executable"
+        elif (int(conversation["message_count"]) >= max_turns
+              or int(conversation["total_chars"]) >= max_total_chars):
+            terminal = "completed"
+        if terminal:
+            if not store.mark_conversation_terminal(conversation, terminal, error=error):
+                raise RuntimeError("terminal transition conflict")
+            continue
+        if (time.monotonic() - started >= WORKER_SLICE_SECONDS
+                or (context and context.get_remaining_time_in_millis() < WORKER_CALL_HEADROOM_MS)):
+            return {"terminal": False}
+        if not store.start_conversation(batch_id, conversation):
+            raise RuntimeError("start transition conflict")
+        conversation = {**conversation, "status": "running", "execution_state": "running"}
         history = store.query_history(conv_id)
-        participant, text = _choose_message(batch, conversation, history)
+        try:
+            participant, text = _choose_message(batch, conversation, history, before_attempt=before_attempt)
+            _check_deadline(batch)
+        except WorkerSliceComplete:
+            return {"terminal": False}
+        except ConversationAlreadyTerminal:
+            continue
+        except ConversationDeadlineReached:
+            if not store.mark_conversation_terminal(conversation, "timed_out"):
+                raise RuntimeError("timeout transition conflict")
+            continue
+        except BedrockInferenceError as exc:
+            if exc.retryable:
+                raise
+            terminal = "timed_out" if store.now_ms() >= int(batch["deadline_at"]) else "failed"
+            if not store.mark_conversation_terminal(conversation, terminal, error=str(exc)):
+                raise RuntimeError("failure transition conflict") from exc
+            continue
+        except TerminalConversationError as exc:
+            terminal = "timed_out" if store.now_ms() >= int(batch["deadline_at"]) else "failed"
+            if not store.mark_conversation_terminal(conversation, terminal, error=str(exc)):
+                raise RuntimeError("failure transition conflict") from exc
+            continue
         next_message_count = int(conversation.get("message_count", 0) or 0) + 1
         next_total_chars = int(conversation.get("total_chars", 0) or 0) + len(text)
         terminal = (
@@ -350,7 +392,6 @@ def _process_work(body: dict, receive_count: int = 1) -> dict:
         timestamp = store.now_ms()
         store.commit_turn(
             conversation,
-            lease_id,
             {
                 "type": "message",
                 "sender": participant.get("nickname") or "Participant",
@@ -362,60 +403,12 @@ def _process_work(body: dict, receive_count: int = 1) -> dict:
                 "timestamp": timestamp,
                 "created_at": store.now_iso(),
                 "batch_job_id": batch_id,
-                "turn_number": current_turn,
-                "turn_write_id": turn_write_id(conv_id, current_turn),
+                "turn_number": int(conversation["next_turn"]),
+                "turn_write_id": turn_write_id(conv_id, int(conversation["next_turn"])),
             },
             terminal_status=terminal,
         )
-    except BedrockInferenceError as exc:
-        if exc.retryable and receive_count < 5:
-            store.release_worker_lease(conv_id, lease_id, str(exc))
-            raise
-        store.mark_conversation_terminal(
-            conversation,
-            "failed",
-            error=str(exc),
-            expected_lease_id=lease_id,
-        )
-        store.finalize_batch_if_done(batch_id)
-        if exc.retryable:
-            raise
-        return {"status": "failed", "error": exc.error_type}
-    except TerminalConversationError as exc:
-        store.mark_conversation_terminal(
-            conversation,
-            "failed",
-            error=str(exc),
-            expected_lease_id=lease_id,
-        )
-        store.finalize_batch_if_done(batch_id)
-        return {"status": "failed", "error": str(exc)}
-    except Exception as exc:
-        store.release_worker_lease(conv_id, lease_id, str(exc))
-        raise
-
-    if terminal:
-        store.finalize_batch_if_done(batch_id)
-        return {"status": "completed", "turn": current_turn}
-    store.send_work(batch_id, conv_id, current_turn + 1)
-    return {"status": "running", "turn": current_turn}
 
 
 def lambda_handler(event: dict, context=None) -> dict:
-    failures = []
-    results = []
-    for record in event.get("Records", []):
-        message_id = record.get("messageId", "")
-        try:
-            body = parse_queue_body(
-                record.get("body", ""),
-                ("batch_job_id", "conversation_id", "expected_turn"),
-            )
-            receive_count = int(
-                (record.get("attributes") or {}).get("ApproximateReceiveCount", "1")
-            )
-            results.append(_process_work(body, receive_count))
-        except Exception:
-            logger.exception("AI batch worker failed")
-            failures.append({"itemIdentifier": message_id})
-    return {"batchItemFailures": failures, "results": results}
+    return _process_work(event, context)

@@ -108,6 +108,7 @@ def create_open_lobby(
         "ai_join_strategy": setting["ai_join_strategy"],
         "ai_strategy_value": int(setting["ai_strategy_value"]),
         "max_wait_seconds": max_wait_seconds,
+        'has_prompt_attachments': bool(setting.get('has_prompt_attachments')),
         "actual_human_count": 0,
         "participants": [],
         "deadline_at": now_ms + max_wait_seconds * 1000,

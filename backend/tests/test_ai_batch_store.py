@@ -26,7 +26,6 @@ def test_commit_terminal_turn_composes_batch_counter_transaction(monkeypatch) ->
 
     store.commit_turn(
         conversation,
-        "lease",
         event,
         terminal_status="completed",
     )
@@ -35,7 +34,9 @@ def test_commit_terminal_turn_composes_batch_counter_transaction(monkeypatch) ->
     assert kwargs["metadata_updates"]["next_turn"] == 4
     assert kwargs["metadata_updates"]["message_count"] == 4
     assert kwargs["metadata_updates"]["total_chars"] == 15
-    assert kwargs["expected_metadata"]["worker_lease_id"] == "lease"
+    assert kwargs["expected_metadata"]["state_version"] == 3
+    assert kwargs["metadata_updates"]["execution_state"] == "terminal"
+    assert kwargs["metadata_updates"]["outcome"] == "succeeded"
     batch_update = kwargs["extra_transact_actions"][0]["Update"]
     assert batch_update["TableName"] == "batch-table"
     assert "completed_count" in batch_update["UpdateExpression"]

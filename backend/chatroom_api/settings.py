@@ -220,7 +220,9 @@ def normalize_persona_entry(
     )
     internal_name = str(entry.get("internal_name") or "").strip() or None
     nickname = str(entry.get("nickname") or "").strip() or None
-    if not persona and not internal_name and not nickname:
+    from chatroom_api.prompt_attachments import attachment_ids
+    attachments = attachment_ids(entry.get('prompt_attachment_ids'))
+    if not persona and not internal_name and not nickname and not attachments:
         return None
 
     return {
@@ -229,6 +231,7 @@ def normalize_persona_entry(
         "temperature": temperature,
         "internal_name": internal_name,
         "nickname": nickname,
+        **({'prompt_attachment_ids': attachments} if attachments else {}),
     }
 
 

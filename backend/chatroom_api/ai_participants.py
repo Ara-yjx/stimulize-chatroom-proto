@@ -153,6 +153,8 @@ def build_ai_participants(
             "avatar": avatar,
             "role": "ai",
             "persona": selected.get("persona", ""),
+            **({'prompt_attachment_ids': list(selected['prompt_attachment_ids'])}
+               if selected.get('prompt_attachment_ids') else {}),
             "model_id": selected.get("model_id", default_model_id),
             "temperature": selected.get("temperature", default_temperature),
             "internal_name": resolve_internal_name(

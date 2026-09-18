@@ -18,6 +18,7 @@ from chatroom_api.settings import (
     is_single_human_single_ai_assistant_room,
     resolve_runtime_setting,
 )
+from chatroom_api.prompt_attachments import public_setting, has_attachments
 from chatroom_api import resumable
 
 # Hard cap on the lobby join retry loop. Each iteration either advances
@@ -92,6 +93,10 @@ def handle_auth_token(body: dict) -> tuple[int, dict]:
         return (401, {"error": "chatroom is inactive"})
 
     chatroom_setting = resolve_runtime_setting(chatroom["setting"])
+    if has_attachments(chatroom_setting):
+        from chatroom_api import config
+        if not config.PROMPT_ATTACHMENTS_ENABLED:
+            return (400, {'error': 'Prompt attachments are disabled'})
 
     if int(chatroom_setting.get("human_count", 1)) == 0:
         return (400, {
@@ -205,6 +210,7 @@ def _handle_lobby_auth(
         "ai_join_strategy": chatroom_setting["ai_join_strategy"],
         "ai_strategy_value": int(chatroom_setting["ai_strategy_value"]),
         "max_wait_seconds": int(chatroom_setting["max_wait_seconds"]),
+        'has_prompt_attachments': has_attachments(chatroom_setting),
     }
 
     session_id = str(uuid4())
@@ -289,6 +295,6 @@ def _handle_lobby_auth(
         "conversation_id": conversation_id,
         "nickname": nickname,
         "avatar": avatar,
-        "chatroom_setting": chatroom_setting,
+        "chatroom_setting": public_setting(chatroom_setting),
         "lobby": lobby_state,
     })

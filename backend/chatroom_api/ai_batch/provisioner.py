@@ -17,6 +17,7 @@ from chatroom_api.ai_batch.contracts import (
     turn_write_id,
 )
 from chatroom_api.ai_participants import build_ai_participants
+from chatroom_api.ai_batch.prompt_reference import render_prompt_reference
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def _provision_batch(batch_job_id: str, receive_count: int = 1) -> dict:
         raise RuntimeError("provision lease is currently held")
 
     try:
+        store.save_prompt_reference(batch, lease_id, render_prompt_reference(batch))
         setting = dict(batch["settings_snapshot"])
         ai_count = int(setting["ai_count"])
         batch_count = int(batch["batch_count"])
@@ -70,6 +72,8 @@ def _provision_batch(batch_job_id: str, receive_count: int = 1) -> dict:
                     "chatroom_id": batch["chatroom_id"],
                     "participants": participants,
                     "status": "queued",
+                    "execution_state": "pending",
+                    "outcome": None,
                     "deadline_at": int(batch["deadline_at"]),
                     "state_version": 0,
                     "next_turn": 0,
@@ -91,7 +95,7 @@ def _provision_batch(batch_job_id: str, receive_count: int = 1) -> dict:
                 }],
                 turn_write_id(conv_id, -1),
             )
-            store.send_work(batch_job_id, conv_id, 0)
+            store.start_execution(batch_job_id, conv_id, int(batch["deadline_at"]))
         if not store.finish_provision(batch_job_id, lease_id):
             raise RuntimeError("provision lease was lost before completion")
     except Exception as exc:

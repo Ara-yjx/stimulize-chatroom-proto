@@ -1,5 +1,6 @@
 from chatroom_api import config
 from chatroom_api.ai_batch import worker
+import pytest
 
 
 def _participants(count: int) -> list[dict]:
@@ -79,21 +80,28 @@ def test_three_ai_force_path_has_at_most_ai_count_invocations(monkeypatch) -> No
     assert calls[-1][1] is True
 
 
-def test_process_work_commits_and_requeues_next_turn(monkeypatch) -> None:
+def test_process_work_keeps_advancing_persisted_progress(monkeypatch) -> None:
     batch = _batch()
     conversation = _conversation()
     committed = []
-    requeued = []
     monkeypatch.setattr(config, "AI_BATCH_ENABLED", True)
     monkeypatch.setattr(worker.store, "get_batch", lambda _id: batch)
     monkeypatch.setattr(worker.store, "get_conversation", lambda _id: conversation)
     monkeypatch.setattr(worker.store, "now_ms", lambda: 1000)
     monkeypatch.setattr(worker.store, "now_iso", lambda: "now")
-    monkeypatch.setattr(worker.store, "acquire_worker_lease", lambda *args: True)
+    monkeypatch.setattr(worker.store, "start_conversation", lambda *args: True)
     monkeypatch.setattr(worker.store, "query_history", lambda _id: [])
-    monkeypatch.setattr(worker, "_choose_message", lambda *args: (conversation["participants"][0], "hello"))
-    monkeypatch.setattr(worker.store, "commit_turn", lambda *args, **kwargs: committed.append((args, kwargs)))
-    monkeypatch.setattr(worker.store, "send_work", lambda *args: requeued.append(args))
+    monkeypatch.setattr(worker, "_choose_message", lambda *args, **kw: (conversation["participants"][0], "hello"))
+    monkeypatch.setattr(worker.store, "finalize_batch_if_done", lambda *args: None)
+
+    def commit(conv, event, *, terminal_status):
+        committed.append(event)
+        conversation.update(next_turn=conv["next_turn"] + 1, message_count=conv["message_count"] + 1,
+                            total_chars=conv["total_chars"] + len(event["content"]),
+                            execution_state="terminal" if terminal_status else "running",
+                            outcome="succeeded" if terminal_status else None)
+
+    monkeypatch.setattr(worker.store, "commit_turn", commit)
 
     result = worker._process_work({
         "batch_job_id": "batch",
@@ -101,24 +109,23 @@ def test_process_work_commits_and_requeues_next_turn(monkeypatch) -> None:
         "expected_turn": 0,
     })
 
-    assert result == {"status": "running", "turn": 0}
-    assert committed[0][1]["terminal_status"] is None
-    assert committed[0][0][2]["content"] == "hello"
-    assert committed[0][0][2]["timestamp"] == 1000
-    assert "authored_at" not in committed[0][0][2]
-    assert requeued == [("batch", "conversation", 1)]
+    assert result == {"terminal": True, "outcome": "succeeded"}
+    assert len(committed) == 4
+    assert committed[0]["content"] == "hello"
+    assert committed[0]["timestamp"] == 1000
+    assert "authored_at" not in committed[0]
 
 
-def test_stale_delivery_repairs_missing_next_queue_message(monkeypatch) -> None:
+def test_terminal_reinvocation_does_not_infer(monkeypatch) -> None:
     monkeypatch.setattr(config, "AI_BATCH_ENABLED", True)
     monkeypatch.setattr(worker.store, "get_batch", lambda _id: _batch())
     monkeypatch.setattr(
         worker.store,
         "get_conversation",
-        lambda _id: _conversation(status="running", next_turn=2),
+        lambda _id: _conversation(status="completed", execution_state="terminal", outcome="succeeded"),
     )
-    requeued = []
-    monkeypatch.setattr(worker.store, "send_work", lambda *args: requeued.append(args))
+    monkeypatch.setattr(worker.store, "finalize_batch_if_done", lambda *args: None)
+    monkeypatch.setattr(worker, "_choose_message", lambda *args: pytest.fail("must not infer"))
 
     result = worker._process_work({
         "batch_job_id": "batch",
@@ -126,5 +133,4 @@ def test_stale_delivery_repairs_missing_next_queue_message(monkeypatch) -> None:
         "expected_turn": 1,
     })
 
-    assert result == {"status": "requeued", "expected_turn": 2}
-    assert requeued == [("batch", "conversation", 2)]
+    assert result == {"terminal": True, "outcome": "succeeded"}

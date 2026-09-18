@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -15,10 +16,10 @@ from botocore.exceptions import ClientError
 
 from chatroom_api import config, event_store
 from chatroom_api.ai_batch.contracts import (
-    BATCH_EXECUTABLE_STATUSES,
     BATCH_TERMINAL_STATUSES,
+    conversation_id,
     terminal_batch_status,
-    work_message,
+    turn_write_id,
 )
 from chatroom_api.dynamo import _to_dynamodb_safe
 
@@ -26,8 +27,8 @@ from chatroom_api.dynamo import _to_dynamodb_safe
 _batch_table = None
 _metadata_table = None
 _client = None
-_sqs = None
 _s3 = None
+_sfn = None
 _serializer = TypeSerializer()
 _deserializer = TypeDeserializer()
 
@@ -59,13 +60,6 @@ def _get_client():
     if _client is None:
         _client = boto3.client("dynamodb")
     return _client
-
-
-def _get_sqs():
-    global _sqs
-    if _sqs is None:
-        _sqs = boto3.client("sqs")
-    return _sqs
 
 
 def _get_s3():
@@ -158,7 +152,10 @@ def finish_provision(batch_job_id: str, lease_id: str) -> bool:
             },
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
-        return False
+        # Very short conversations can finish before fan-out itself returns.
+        latest = get_batch(batch_job_id)
+        return bool(latest and latest.get("status") in BATCH_TERMINAL_STATUSES
+                    and int(latest.get("unfinished_count", 0)) == 0)
     return True
 
 
@@ -198,31 +195,31 @@ def record_batch_error(batch_job_id: str, error: str) -> None:
 
 
 def fail_provision(batch_job_id: str, lease_id: str, error: str) -> bool:
-    table = _get_batch_table()
-    try:
-        table.update_item(
-            Key={"batch_job_id": batch_job_id},
-            UpdateExpression=(
-                "SET #status = :failed, failed_count = batch_count, "
-                "unfinished_count = :zero, queued_count = :zero, "
-                "last_error = :error, updated_at = :updated "
-                "REMOVE provision_lease_id, provision_lease_until"
-            ),
-            ConditionExpression=(
-                "#status = :provisioning AND provision_lease_id = :lease"
-            ),
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":failed": "failed",
-                ":provisioning": "provisioning",
-                ":lease": lease_id,
-                ":zero": 0,
-                ":error": str(error)[:1000],
-                ":updated": now_iso(),
-            },
-        )
-    except table.meta.client.exceptions.ConditionalCheckFailedException:
+    batch = get_batch(batch_job_id)
+    if not batch or batch.get("provision_lease_id") != lease_id:
         return False
+    # Some workflows may already have completed while fan-out failed. Never
+    # overwrite their counters with batch_count or erase unfinished work.
+    for index in range(int(batch["batch_count"])):
+        conv_id = conversation_id(batch_job_id, index)
+        if get_conversation(conv_id) is None:
+            create_conversation({
+                "conversation_id": conv_id, "batch_job_id": batch_job_id,
+                "batch_index": index, "conversation_type": "ai_batch",
+                "owner_id": batch["owner_id"], "chatroom_id": batch["chatroom_id"],
+                "created_at": batch["created_at"], "deadline_at": batch["deadline_at"],
+                "status": "queued", "execution_state": "pending", "outcome": None,
+                "state_version": 0, "next_turn": 0, "message_count": 0, "total_chars": 0,
+            }, [], turn_write_id(conv_id, -1))
+        for _ in range(3):
+            row = get_conversation(conv_id)
+            if row.get("execution_state") == "terminal":
+                break
+            if mark_conversation_terminal(row, "failed", error=error):
+                break
+        else:
+            raise RuntimeError("could not finalize partially provisioned conversation")
+    finalize_batch_if_done(batch_job_id)
     return True
 
 
@@ -235,38 +232,52 @@ def create_conversation(metadata: dict, initial_events: list[dict], write_id: st
             raise
 
 
-def send_work(batch_job_id: str, conversation_id: str, expected_turn: int) -> None:
-    if not config.AI_BATCH_WORK_QUEUE_URL:
-        raise RuntimeError("AI_BATCH_WORK_QUEUE_URL is not configured")
-    body = work_message(batch_job_id, conversation_id, expected_turn)
-    _get_sqs().send_message(
-        QueueUrl=config.AI_BATCH_WORK_QUEUE_URL,
-        MessageBody=json.dumps(body, separators=(",", ":"), sort_keys=True),
-        MessageGroupId=conversation_id,
-        MessageDeduplicationId=f"{conversation_id}:{expected_turn}",
+def start_execution(batch_job_id: str, conversation_id: str, deadline_at: int) -> str:
+    global _sfn
+    arn = config.AI_BATCH_STATE_MACHINE_ARN
+    if not arn:
+        raise RuntimeError("AI_BATCH_STATE_MACHINE_ARN is not configured")
+    if _sfn is None:
+        _sfn = boto3.client("stepfunctions")
+    body = {
+        "batch_job_id": batch_job_id,
+        "conversation_id": conversation_id,
+        "deadline": datetime.fromtimestamp(deadline_at / 1000, timezone.utc).isoformat(),
+    }
+    # Stable name AND input make retries safe even when the first response was lost.
+    execution_arn = arn.replace(":stateMachine:", ":execution:") + ":" + conversation_id
+    try:
+        _sfn.start_execution(
+            stateMachineArn=arn, name=conversation_id,
+            input=json.dumps(body, sort_keys=True, separators=(",", ":")),
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ExecutionAlreadyExists":
+            raise
+    _get_metadata_table().update_item(
+        Key={"conversation_id": conversation_id},
+        UpdateExpression="SET execution_arn = :arn",
+        ConditionExpression="batch_job_id = :batch",
+        ExpressionAttributeValues={":arn": execution_arn, ":batch": batch_job_id},
     )
+    return execution_arn
 
 
-def acquire_worker_lease(
+def start_conversation(
     batch_job_id: str,
     conversation: dict,
-    expected_turn: int,
-    lease_id: str,
-    now_value_ms: int,
-    lease_ms: int,
 ) -> bool:
     status = conversation.get("status")
     if status not in {"queued", "running"}:
         return False
+    if status == "running":
+        return True
     names = {"#status": "status"}
     values = {
         ":batch": batch_job_id,
-        ":expected_turn": int(expected_turn),
+        ":expected_turn": int(conversation["next_turn"]),
         ":expected_status": status,
         ":running": "running",
-        ":lease": lease_id,
-        ":until": now_value_ms + lease_ms,
-        ":now": now_value_ms,
         ":updated": now_iso(),
     }
     actions = [{
@@ -274,13 +285,11 @@ def acquire_worker_lease(
             "TableName": config.DYNAMODB_TABLE,
             "Key": _serialize({"conversation_id": conversation["conversation_id"]}),
             "UpdateExpression": (
-                "SET #status = :running, worker_lease_id = :lease, "
-                "worker_lease_until = :until, updated_at = :updated"
+                "SET #status = :running, execution_state = :running, updated_at = :updated"
             ),
             "ConditionExpression": (
                 "batch_job_id = :batch AND next_turn = :expected_turn AND "
-                "#status = :expected_status AND "
-                "(attribute_not_exists(worker_lease_until) OR worker_lease_until < :now)"
+                "#status = :expected_status"
             ),
             "ExpressionAttributeNames": names,
             "ExpressionAttributeValues": _serialize(values),
@@ -312,32 +321,11 @@ def acquire_worker_lease(
     try:
         _get_client().transact_write_items(
             TransactItems=actions,
-            ClientRequestToken=lease_id,
         )
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException":
             return False
         raise
-    return True
-
-
-def release_worker_lease(conversation_id: str, lease_id: str, error: str | None = None) -> bool:
-    table = _get_metadata_table()
-    expression = "SET updated_at = :updated"
-    values = {":updated": now_iso(), ":lease": lease_id}
-    if error:
-        expression += ", last_error = :error"
-        values[":error"] = str(error)[:1000]
-    expression += " REMOVE worker_lease_id, worker_lease_until"
-    try:
-        table.update_item(
-            Key={"conversation_id": conversation_id},
-            UpdateExpression=expression,
-            ConditionExpression="worker_lease_id = :lease",
-            ExpressionAttributeValues=values,
-        )
-    except table.meta.client.exceptions.ConditionalCheckFailedException:
-        return False
     return True
 
 
@@ -374,7 +362,6 @@ def _terminal_batch_action(batch_job_id: str, terminal_status: str) -> dict:
 
 def commit_turn(
     conversation: dict,
-    lease_id: str,
     event: dict,
     *,
     terminal_status: str | None = None,
@@ -384,6 +371,8 @@ def commit_turn(
     content = str(event.get("content") or "")
     metadata_updates = {
         "status": terminal_status or "running",
+        "execution_state": "terminal" if terminal_status else "running",
+        "outcome": "succeeded" if terminal_status == "completed" else terminal_status,
         "state_version": int(conversation.get("state_version", 0) or 0) + 1,
         "next_turn": next_turn,
         "message_count": int(conversation.get("message_count", 0) or 0) + 1,
@@ -400,12 +389,12 @@ def commit_turn(
         [event],
         event["turn_write_id"],
         metadata_updates=metadata_updates,
-        metadata_remove=["worker_lease_id", "worker_lease_until", "last_error"],
+        metadata_remove=["last_error"],
         expected_status="running",
         expected_metadata={
             "batch_job_id": conversation["batch_job_id"],
             "next_turn": expected_turn,
-            "worker_lease_id": lease_id,
+            "state_version": int(conversation.get("state_version", 0)),
         },
         extra_transact_actions=extra,
     )
@@ -416,7 +405,6 @@ def mark_conversation_terminal(
     terminal_status: str,
     *,
     error: str | None = None,
-    expected_lease_id: str | None = None,
 ) -> bool:
     if terminal_status not in {"failed", "timed_out", "completed"}:
         raise ValueError("invalid conversation terminal status")
@@ -427,18 +415,22 @@ def mark_conversation_terminal(
         ":running": "running",
         ":batch": conversation["batch_job_id"],
         ":updated": now_iso(),
+        ":execution": "terminal",
+        ":outcome": "succeeded" if terminal_status == "completed" else terminal_status,
+        ":expected_status": conversation["status"],
+        ":version": int(conversation.get("state_version", 0)),
     }
     condition = (
-        "batch_job_id = :batch AND #status IN (:queued, :running)"
+        "batch_job_id = :batch AND #status IN (:queued, :running) "
+        "AND #status = :expected_status AND state_version = :version"
     )
-    if expected_lease_id:
-        values[":lease"] = expected_lease_id
-        condition += " AND worker_lease_id = :lease"
-    update_expression = "SET #status = :terminal, updated_at = :updated"
+    update_expression = (
+        "SET #status = :terminal, execution_state = :execution, "
+        "outcome = :outcome, updated_at = :updated"
+    )
     if error:
         values[":error"] = str(error)[:1000]
         update_expression += ", last_error = :error"
-    update_expression += " REMOVE worker_lease_id, worker_lease_until"
 
     batch_action = _terminal_batch_action(
         conversation["batch_job_id"], terminal_status
@@ -521,6 +513,46 @@ def mark_batch_timed_out(batch_job_id: str, now_value_ms: int) -> bool:
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         return False
     return True
+
+
+def save_prompt_reference(batch: dict, lease_id: str, text: str) -> None:
+    key = f"prompt-references/{batch['owner_id']}/{batch['batch_job_id']}/prompt.txt"
+    body = text.encode("utf-8")
+    try:
+        _get_s3().put_object(
+            Bucket=config.AI_BATCH_EXPORT_BUCKET, Key=key, Body=body,
+            ContentType="text/plain; charset=utf-8", IfNoneMatch="*",
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "PreconditionFailed":
+            raise
+        # A retry must retain the first reference, even after a deployment.
+        body = _get_s3().get_object(
+            Bucket=config.AI_BATCH_EXPORT_BUCKET, Key=key,
+        )["Body"].read()
+    _get_batch_table().update_item(
+        Key={"batch_job_id": batch["batch_job_id"]},
+        UpdateExpression="SET prompt_reference_key = :key, prompt_reference_sha256 = :hash",
+        ConditionExpression="provision_lease_id = :lease",
+        ExpressionAttributeValues={
+            ":key": key, ":hash": hashlib.sha256(body).hexdigest(), ":lease": lease_id,
+        },
+    )
+
+
+def read_prompt_reference(batch: dict) -> bytes:
+    key = batch.get("prompt_reference_key")
+    if not key:
+        return (
+            "Prompt reference unavailable: this batch has no initialization-time reference.\n"
+            "Current templates have not been substituted for historical instructions.\n"
+        ).encode("utf-8")
+    body = _get_s3().get_object(
+        Bucket=config.AI_BATCH_EXPORT_BUCKET, Key=key,
+    )["Body"].read()
+    if hashlib.sha256(body).hexdigest() != batch.get("prompt_reference_sha256"):
+        raise ValueError("prompt reference integrity check failed")
+    return body
 
 
 def put_export_object(key: str, body: bytes) -> None:

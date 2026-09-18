@@ -38,6 +38,7 @@ from chatroom_api.lobby import compute_ai_count
 from chatroom_api.settings import (
     resolve_runtime_setting,
 )
+from chatroom_api.prompt_attachments import prepare_setting, AttachmentError
 
 logger = logging.getLogger(__name__)
 
@@ -143,8 +144,10 @@ def close_lobby(lobby_id: str, now_ms: int) -> str:
     # chatroom disappeared (e.g. researcher deleted it mid-cohort).
     chatroom = rds_mod.get_chatroom(chatroom_id)
     if chatroom is not None and chatroom.get("setting") is not None:
-        chatroom_setting = resolve_runtime_setting(chatroom["setting"])
+        chatroom_setting = resolve_runtime_setting(prepare_setting(chatroom, rds_mod))
     else:
+        if lobby.get('has_prompt_attachments'):
+            raise AttachmentError('Chatroom attachment settings are unavailable')
         chatroom_setting = resolve_runtime_setting({
             "target_human_count": lobby.get("target_human_count"),
             "ai_join_strategy": lobby.get("ai_join_strategy"),

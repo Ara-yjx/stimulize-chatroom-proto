@@ -98,6 +98,35 @@ def get_chatroom(chatroom_id: str) -> Optional[dict]:
         cur.close()
 
 
+def resolve_prompt_assets(chatroom):
+    from chatroom_api.prompt_attachments import attachment_ids, IDS_FIELD, AttachmentError
+    setting = chatroom['setting']
+    ids = attachment_ids(setting.get(IDS_FIELD))
+    for p in setting.get('ai_personas', []) or []:
+        if isinstance(p, dict):
+            ids += attachment_ids(p.get(IDS_FIELD))
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {}
+    cur = _get_connection().cursor()
+    try:
+        cur.execute("SELECT a.id, a.format, a.byte_size, a.sha256, a.s3_key, a.details "
+                    "FROM chatroom_asset a JOIN chatroom c ON c.id=a.chatroom_id "
+                    "WHERE a.chatroom_id=%s AND c.owner_id=%s AND a.status='ready' "
+                    "AND c.status='active' AND a.id IN (" + ','.join(['%s'] * len(ids)) + ')',
+                    (chatroom['id'], chatroom['owner_id'], *ids))
+        manifest = {}
+        for row in cur.fetchall():
+            details = row[5] if isinstance(row[5], dict) else json.loads(row[5])
+            manifest[row[0]] = dict(id=row[0], format=row[1], byte_size=row[2],
+                                    sha256=row[3], s3_key=row[4], **details)
+        if set(manifest) != set(ids):
+            raise AttachmentError('Attachments must be ready files from this active chatroom')
+        return manifest
+    finally:
+        cur.close()
+
+
 def write_usage(
     *,
     usage_event_id: str,

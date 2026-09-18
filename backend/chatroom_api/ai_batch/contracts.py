@@ -9,7 +9,8 @@ from uuid import NAMESPACE_URL, uuid5
 
 CONTRACT_VERSION = 1
 BATCH_TIMEOUT_SECONDS = 24 * 60 * 60
-WORKER_LEASE_MS = 11 * 60 * 1000
+WORKER_SLICE_SECONDS = 240
+WORKER_CALL_HEADROOM_MS = 120_000
 PROVISION_LEASE_MS = 11 * 60 * 1000
 EXPORT_LEASE_MS = 16 * 60 * 1000
 
@@ -72,15 +73,6 @@ def export_job_id(batch_id: str, generation: int) -> str:
 
 def provision_message(batch_id: str) -> dict:
     return {"version": CONTRACT_VERSION, "batch_job_id": batch_id}
-
-
-def work_message(batch_id: str, conversation_id_value: str, expected_turn: int) -> dict:
-    return {
-        "version": CONTRACT_VERSION,
-        "batch_job_id": batch_id,
-        "conversation_id": conversation_id_value,
-        "expected_turn": expected_turn,
-    }
 
 
 def export_message(batch_id: str, job_id: str) -> dict:

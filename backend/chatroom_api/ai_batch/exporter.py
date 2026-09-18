@@ -51,6 +51,7 @@ def build_export_archive(batch: dict) -> tuple[bytes, dict]:
     included = []
     omitted = []
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("info/prompt.txt", store.read_prompt_reference(batch))
         for index in range(int(batch["batch_count"])):
             conv_id = conversation_id(batch["batch_job_id"], index)
             conversation = store.get_conversation(conv_id)
@@ -80,6 +81,7 @@ def build_export_archive(batch: dict) -> tuple[bytes, dict]:
             included.append(index)
         manifest = {
             "version": 1,
+            "prompt_reference_sha256": batch.get("prompt_reference_sha256"),
             "batch_job_id": batch["batch_job_id"],
             "chatroom_id": batch["chatroom_id"],
             "status": batch["status"],
