@@ -2,6 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "${PUBLISH_LEGACY_EDITOR:-0}" != "1" ]]; then
+  echo "editor/ is deprecated. Use PUBLISH_LEGACY_EDITOR=1 for an intentional legacy release." >&2
+  echo "For a widget-only build: npm --prefix frontend run build" >&2
+  exit 1
+fi
 EDITOR_DIR="$ROOT_DIR/editor"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 PUBLISH_DIR="${1:-$ROOT_DIR/publish}"

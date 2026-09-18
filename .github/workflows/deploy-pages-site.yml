@@ -2,6 +2,12 @@ name: Deploy Pages Site
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_legacy_editor:
+        description: 'Intentionally republish the deprecated proto editor'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,6 +39,7 @@ jobs:
 
       - name: Build Pages artifact
         env:
+          PUBLISH_LEGACY_EDITOR: ${{ inputs.publish_legacy_editor && '1' || '0' }}
           VITE_MOCK_MGMT_URL: https://9wr63is7x6.execute-api.us-east-2.amazonaws.com/live
           VITE_CHATROOM_API_URL: https://pmvb4orly5.execute-api.us-east-2.amazonaws.com/prod
         run: ./scripts/build_pages_site.sh

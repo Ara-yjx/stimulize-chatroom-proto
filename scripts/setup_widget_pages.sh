@@ -57,6 +57,8 @@ fi
 require_cmd git
 require_cmd gh
 
+[[ "${PUBLISH_LEGACY_EDITOR:-0}" == "1" ]] || fail "editor/ is deprecated; set PUBLISH_LEGACY_EDITOR=1 only for an intentional legacy release"
+
 [[ -x "$ROOT_DIR/$BUILD_SCRIPT" ]] || fail "Build script not found or not executable: $ROOT_DIR/$BUILD_SCRIPT"
 [[ -f "$ROOT_DIR/$WORKFLOW_PATH" ]] || fail "Workflow not found: $ROOT_DIR/$WORKFLOW_PATH"
 
@@ -116,7 +118,7 @@ fi
 
 if [[ "$TRIGGER_WORKFLOW" == "1" ]]; then
   echo "Dispatching workflow: Deploy Pages Site"
-  gh workflow run "Deploy Pages Site" --repo "$REPO_SLUG"
+  gh workflow run "Deploy Pages Site" --repo "$REPO_SLUG" -f publish_legacy_editor=true
 
   if [[ "$WAIT_FOR_RUN" == "1" ]]; then
     sleep 2
