@@ -1,5 +1,8 @@
 # Beta Feature Release
 
+Released on 2026-09-20. See [release worklog](beta-feature-release-worklog-20260920.md)
+for deployed revisions, operational fixes, and verified regression coverage.
+
 ## Environment Boundaries
 
 - All development resources are disposable; beta management EC2 is the exception.
@@ -43,10 +46,14 @@ This is an audit snapshot, not confirmation of release completion.
 
 ## Final Source Cleanup
 
-Release paused for review before any production runtime, EC2, or Pages deployment.
+At the pre-deployment review checkpoint, release paused before runtime, EC2, or Pages deployment.
 Runtime changes through `b15fc12` already reached `origin/main`; management and
 editor changes remain on their release branches (management targets `main`,
 editor targets `master`). Follow-up cleanup does not rewrite published history.
+
+Those release branches have since been merged. The production `cdk.json` now
+keeps `enableAiBatch` and `enablePromptAttachments` enabled, matching the release;
+ordinary synthesis/deployment must not remove these resources or disable attachments.
 
 - Remove the unused matching-reference cost-estimate API; retain actual batch usage.
 - Remove the S3 mock-room fixture loader/publisher and its Lambda permission.

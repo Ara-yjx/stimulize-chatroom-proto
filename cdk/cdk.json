@@ -26,6 +26,8 @@
     "domainName": "",
     "enableCustomDomain": "false",
     "useVpcEndpoints": "false",
-    "chatroomServiceMode": "normal"
+    "chatroomServiceMode": "normal",
+    "enableAiBatch": "true",
+    "enablePromptAttachments": "true"
   }
 }
