@@ -152,7 +152,7 @@ paths:
                 batch_count:
                   type: integer
                   minimum: 1
-                  maximum: 10
+                  maximum: 50
                 client_request_id:
                   type: string
                   maxLength: 100
@@ -190,15 +190,25 @@ paths:
         "200":
           description: Event history and opaque forward cursor
 
-  /api/exportAiConversationBatch/{batch_job_id}:
+  /api/downloadAiConversationBatch/{batch_job_id}:
     post:
       tags: [ai-batch]
-      summary: Build an asynchronous ZIP export of completed conversations
+      summary: Prepare or download a ZIP of completed conversations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                retry_failed:
+                  type: boolean
+                  default: false
+                  description: True only on a new user attempt to restart a failed export
       parameters:
         - $ref: "#/components/parameters/BatchJobId"
       responses:
         "200":
-          description: Export requested, building, or ready
+          description: "data is {status: in_progress} or {status: ready, download_url}; URL expires in 15 minutes"
         "409":
           description: Batch is not terminal
 
@@ -387,20 +397,21 @@ components:
           description: Multi-human lobby wait deadline. One-human mimic-human rooms use simulate_pairing_seconds instead.
         max_message_chars:
           type: integer
+          nullable: true
           minimum: 1
           maximum: 4000
-          default: 400
-          description: AI-only maximum characters in one accepted message.
+          default: null
+          description: Optional AI-only prompt guidance, not enforced. Omit or null for no length instruction.
         max_total_chars:
           type: integer
           minimum: 1
-          maximum: 200000
+          maximum: 500000
           default: 20000
           description: AI-only target total characters. The final message may exceed it.
         max_turns:
           type: integer
           minimum: 1
-          maximum: 200
+          maximum: 1000
           default: 100
           description: AI-only maximum accepted messages per conversation.
 

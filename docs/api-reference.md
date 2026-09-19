@@ -133,11 +133,11 @@ owner-authenticated and asynchronous.
 - `POST /api/getAiConversationBatches`: list the current user's batches.
 - `POST /api/getAiConversationBatch/:batch_job_id`: return counters plus a paged conversation summary (`offset`, `limit<=100`).
 - `POST /api/getAiConversationHistory/:conversation_id`: return owner-only event history using an opaque forward `after` cursor.
-- `POST /api/exportAiConversationBatch/:batch_job_id`: enqueue a ZIP export after the batch is terminal; polling later returns a 15-minute pre-signed URL.
+- `POST /api/downloadAiConversationBatch/:batch_job_id`: prepare/reuse a ZIP for a terminal batch. Returns `data: {status: "in_progress"}` or `{status: "ready", download_url}` (15-minute pre-signed URL). Optional `retry_failed: true` on a new user click restarts a failed export; subsequent polls use false. Batch detail no longer supplies download URLs.
 
 Settings default to `max_message_chars=400`, `max_total_chars=20000`, and
-`max_turns=100`. Current caps are `4000`, `200000`, and `200`. The final
-message may cross the total-character target. `batch_count` is `1..10`, the
+`max_turns=100`. Current caps are `4000`, `500000`, and `1000`. The final
+message may cross the total-character target. `batch_count` is `1..50`, the
 fixed batch deadline is 24 hours, and exports expire after 7 days.
 
 Public rollout remains disabled until the account hard budget cap and the

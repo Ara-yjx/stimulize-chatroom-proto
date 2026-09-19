@@ -1,8 +1,8 @@
 # Feat: Prompt Attachments
 
 Status: implemented and verified locally plus isolated cloud integration (2026-09-13).
-Existing customer deployments and shared RDS remain unchanged. Production release
-and live PostgreSQL usage-ledger verification are separate, explicit steps.
+Existing customer deployments remain unchanged. Shared-RDS asset schema and usage
+verification are complete in isolated dev integration; see the integration worklog.
 
 ## TL;DR
 
@@ -20,22 +20,30 @@ short deployed batch/export flows passed. Files still consume context/input toke
 
 ## User Experience
 
-- Add an ordered attachment list below Additional Prompt and inside each persona
-  card in the maintained `amp-generator-beta` editor, not proto `editor/`.
+- Below AI Behavior Prompt (renamed from Additional Prompt, including personas),
+  show an Attachments label and a read-only filename list styled as one button.
+  Empty placeholder: Upload attachments. Use the maintained editor, not proto `editor/`.
 - Keep text fields: researchers explain how to use a style guide, biography,
   chart or reference. Files supplement rather than replace text.
 - Chatroom files reach every AI; persona files reach only instances assigned that
   persona. Repeated persona assignments inherit the same files. Input isolation
   does not guarantee secrecy: an AI may reveal its material in public messages.
-- Support upload, download, reorder and detach; show validation/model errors and
+- Support upload, download and detach; no manual reorder. Show validation/model errors and
   a batch estimate based on a completed Run once. Block Save/Launch for incomplete/incompatible
   selected files. Each room has an attachment library shared by its prompt and
   all personas; uploads belong to this room, not a global user library.
-- Add attachment opens a modal: Upload new at the top, then a selectable list
-  of uploaded files (name, type, size, selected state), and Add selected/Cancel.
-  Existing selections cannot be duplicated within one prompt. Show upload
-  progress/errors; a successful upload joins the library even if the modal is
-  cancelled. Cancel discards only draft prompt selections, not uploaded files.
+- Clicking the filename list opens all room files oldest first, as checkboxes,
+  with Upload new below. Changes immediately update the editor form; there is
+  no modal Save/Cancel draft. Closing preserves selections. Page Save persists
+  settings; uploads persist immediately and auto-select the uploaded file.
+- The persona's outer filename list shows only persona-owned attachments (or
+  Upload attachments when empty). Inside its modal, selection displays common
+  IDs union persona-only IDs. Common items
+  are checked and disabled, never copied into persona data. Adding a common ID
+  removes overlapping persona references; removing it removes inherited checks,
+  without restoring old explicit choices. Apply normalization on common changes
+  and before Save, including older duplicate data. Existing backend union/limit
+  validation and asset created_at are sufficient; no API/schema change.
 - Remove from prompt only detaches that reference. Add it back from the same
   library without reuploading. One upload can be selected by any three of five
   personas; all reference the same immutable asset ID. No automatic MD5 dedup.
@@ -102,6 +110,32 @@ Implemented POST/action routes, using existing token auth/envelopes:
   and completion_reason. UI multiplies only the reference cost by the new batch size.
 - Existing create/update room APIs validate same-room membership, ownership, readiness, combined limits
   and every effective model. Repeat checks before creating a new run.
+
+### Editor Validation and Model Labels
+
+- For each AI, validate the union of common and its assigned persona's attachment
+  IDs: at most 5 files, 10,000,000 bytes and 10 PDF pages. Reused library IDs count
+  once; different personas' private files are not all added together. Boundary
+  values are allowed. Also retain the 20-distinct-selected-files room limit.
+- Editor explains combined and individual file limits next to the controls,
+  blocks invalid modal selections and rechecks before Save or Run. Management
+  and runtime remain authoritative validators.
+- `getPromptAttachmentCapabilities` exposes `max_effective_files`,
+  `max_effective_bytes`, `max_pdf_pages`, `max_room_files` and `file_limits`.
+  Both model dropdowns use its enabled allowlist for attachment badges, not a
+  separate browser list. Caching badges remain. All effective models must
+  support attachments, including personas not picked for a particular run.
+- Real Bedrock Converse rechecked on 2026-09-19: Sonnet 4.6, Sonnet 4.5, Haiku 4.5,
+  Opus 4.6 and Opus 4.7 accepted the mixed four-format/tool request. Sonnet 4 was
+  again denied as legacy for this account and remains excluded. Local management
+  reads the deployed dev worker's allowlist rather than its old Sonnet-only
+  setting. Production promotion must configure matching management/runtime
+  allowlists; no automatic expansion to untested models. Opus 4.7 omits temperature.
+- AWS permits five documents up to 4.5 MB each, and images up to 3.75 MB/8000 px;
+  our combined-file/byte/page caps are intentionally stricter product limits.
+  Sources: [Converse message limits](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Message.html),
+  [Sonnet 4.6](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4-6.html),
+  [Opus 4.7](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-7.html).
 
 Create an uploading row, write a new immutable object, then mark ready, within
 one bounded transaction holding the room lock. Rollback releases reserved quota;

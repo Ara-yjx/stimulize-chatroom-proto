@@ -44,12 +44,12 @@ quality, then tune prompts if the AIs are too active or too passive.
 
 - Persisted settings use `human_count=0`; "AI-only mode" is an editor control,
   not a second stored source of truth.
-- `mimic_human=true` means each AI acts as a human participant with its assigned
-  persona. The prompt must not falsely claim that the other participants are
-  human.
+- AI-only ignores `mimic_human` and hides its control. Use semi-formal peer
+  discussion, not an assistant persona or instant-message mimicry.
 - Each AI has a unique `ai_participant_id`. Persona `internal_name`, display
   name, model, temperature, and prompt remain labels/configuration on that AI
-  instance. Reused personas still produce distinct AI participants.
+  instance. AI-only requires zero usable personas or at least as many as AIs;
+  choose without replacement when personas are configured. Empty cards are ignored.
 - Server timestamps remain in stored events for ordering and cursors, but
   current time and timing metadata are omitted from AI-only inference prompts.
 - Accepted messages store `timestamp` as a server-clock Unix epoch millisecond
@@ -65,11 +65,25 @@ quality, then tune prompts if the AIs are too active or too passive.
 
 ### Limits and billing
 
+Batch detail includes input/output tokens, estimated USD cost, and recorded
+inference count, refreshed with batch status. Management verifies ownership,
+then aggregates RDS usage by owner, chatroom, and `raw_usage_json.batch_job_id`.
+This includes recorded silent/discarded responses and all conversations, not
+just the displayed page or completed exports. Empty recorded usage returns zero;
+missing API support displays "Unavailable". Costs are estimates, not AWS bills,
+and recent usage writes may lag. No new table or schema migration is required.
+
 The editor exposes:
 
-- `max_message_chars`, default `400`
-- `max_total_chars`, default `20000`
-- `max_turns`, default `100`, maximum `200`
+- `max_message_chars`, optional prompt guidance, default `null`
+- `max_total_chars` (Max characters), default `20000`, maximum `500000`
+- `max_turns` (Max messages), default `100`, maximum `1000`
+- `batch_count`, maximum `50` conversations per batch.
+
+These are positive integer configuration limits, enforced by the editor and
+management API before batch creation. The provisioner revalidates the snapshot
+before creating any conversations; invalid batches become `validation_failed`.
+The character limit remains a completion target: the last message may exceed it.
 
 `max_turns` is a successful-completion and quality target; the deadline is the
 main safety bound. We should not optimize
@@ -152,13 +166,13 @@ No paid comparison experiment has been run for this estimate.
 
 Each batch inference reconstructs a complete Bedrock Converse request:
 
-1. System: platform conversation instructions and examples, selected by
-   mimic-human behavior.
+1. System: dedicated AI-only rules. Two AIs alternate without silence examples;
+   3+ include speak/silence examples and a forced-response variant when needed.
 2. Initial user prefix: topic, this AI's persona, participant names, own name,
    and optional chatroom Additional Prompt; then a cache checkpoint.
 3. Dynamic context: the full current conversation as formatted history, followed
    by its role-mapped messages (`assistant` for this AI, `user` for others).
-4. A continuation/correction instruction when needed, plus the `speak` tool
+4. Current message/character progress and a continuation instruction, plus the `speak` tool
    schema and model/temperature settings. Two-AI turns require one message.
 
 This is not a stateful Bedrock conversation or a delta-only request: the complete
@@ -167,7 +181,7 @@ Historical messages after our explicit checkpoint are not deliberately cached by
 that checkpoint. The duplicate history representation is current behavior, not
 a requirement; evaluating its removal is separate from the cache comparison.
 
-**Implemented locally:** ZIP exports include one `info/prompt.txt` per batch,
+**Implemented locally:** new batch ZIP exports include one `info/prompt.md` per batch,
 not a prompt JSON or per-inference payloads. The goal is to help researchers
 understand behavior by reading the full fixed instructions and examples.
 The file explains the request's construction order: shared system text,
@@ -205,14 +219,20 @@ Previously generated ZIPs remain unchanged until a new export is generated.
 The chatroom editor keeps its existing Basics, Model and Prompt, and AI
 Personas sections.
 
-- Add an "AI-only mode" toggle. It maps to `human_count=0`.
+- Basics Mode radio: AI+Human / AI+AI; the latter maps to `human_count=0`.
 - Hide human-only participant controls and keep AI Count.
-- Keep Mimic human with the semantics above.
+- Hide Mimic human; its stored legacy value has no AI-only prompt effect.
 - Remove the chatroom-level AI nickname field; per-persona display names remain.
-- Replace the interactive Misc fields with Max message length, Conversation
-  length, and Max turns.
-- Warn when persona count is lower than AI count because the same persona will
-  be assigned to more than one AI instance.
+- Replace the interactive Misc fields with Max messages and Max characters,
+  followed by optional Max message length (prompt guidance only).
+- Insufficient non-empty personas show a red error and disable Save & start
+  once/batch, not Save. Provisioner validates the immutable snapshot before
+  prompt storage, conversation creation, or workflow dispatch. Invalid batches
+  settle atomically as `validation_failed` with `last_error`, all queued/running/
+  unfinished counts zero, and failed_count equal to requested batch size.
+  No conversation rows are fabricated. Duplicate delivery is a no-op; fix settings
+  and create a new batch. Detail/history display the error; download is disabled.
+  A prior partially provisioned batch must not be overwritten by this fast path.
 - Hide Generate Embed Script and Widget Preview.
 
 Add a Start conversation section:
@@ -279,7 +299,7 @@ when their messages are discarded after the deadline.
    still requires cooperative state/deadline checks.
 3. **Step Functions, fixed per-message loop:** simpler execution visibility,
    but `for expected_message_count: invoke()` confuses attempts with accepted
-   messages. Silence, correction, and retries make them different. A step per
+   messages. Silence and retries make them different. A step per
    model call also moves speaker policy into infrastructure. Rejected.
 4. **Step Functions, loop until terminal (chosen):** workflow schedules worker
    slices, worker owns AI policy and persists progress. Re-read actual progress
@@ -302,7 +322,7 @@ An immutable `deadline_at` starts at batch creation. Any of these stops work:
 - Non-recoverable inference failure or exhausted execution retries: `failed`.
 - Future: token budget, without changing the orchestration model.
 
-Before **every** provider call (including silent candidates and corrections),
+Before **every** provider call (including silent candidates and retries),
 check deadline. After inference, check again before accepting output. Expired
 results are dropped; do not start another call. The final application-clock
 check is immediately before transaction construction, not a promise that DDB
@@ -366,7 +386,7 @@ and export endpoints. It derives `owner_id` from the authenticated user,
 validates chatroom ownership, writes the batch snapshot, and sends one
 provisioning message using its EC2 instance role. A Provisioner Lambda then
 creates conversation metadata and fans out the work; the HTTP request does not
-try to provision up to 10 conversations synchronously. This avoids another
+try to provision up to 50 conversations synchronously. This avoids another
 internal HTTP hop while keeping partial provisioning retryable. The current
 service token remains useful for worker calls to internal credits APIs, but it
 is not user identity.
@@ -416,7 +436,7 @@ hours and is not user-configurable.
 
 ### Initial operational limits
 
-- `batch_count`: `1..10`.
+- `batch_count`: `1..50`.
 - One worker invocation processes one accepted turn. Silence and retries do not
   count as turns.
 - Batch timeout: 24 hours from batch creation.
@@ -427,10 +447,10 @@ hours and is not user-configurable.
 - Initial worker maximum concurrency: 10; increase it only after observing
   Bedrock throttling and completion latency.
 
-A maximum-size default batch has 10 conversations, 100 turns each, and two AIs,
-so it performs about 1,000 model invocations. At concurrency 10 and roughly 4-8
-seconds per invocation, model time is about 7-14 minutes; queueing, retries,
-and throttling make 10-30 minutes a reasonable expectation. A 24-hour deadline
+A maximum-size batch with default conversation limits has 50 conversations,
+100 messages each, and two AIs, or up to about 5,000 model invocations.
+At concurrency 10 and roughly 4-8 seconds per invocation, model time is about
+34-67 minutes, before queueing, retries, and throttling. A 24-hour deadline
 provides wide headroom for slower models and three-plus-AI silence checks while
 still terminating abandoned work.
 
@@ -578,7 +598,7 @@ POST /api/createAiConversationBatch
 POST /api/getAiConversationBatches
 POST /api/getAiConversationBatch/<batch_job_id>
 POST /api/getAiConversationHistory/<conversation_id>
-POST /api/exportAiConversationBatch/<batch_job_id>
+POST /api/downloadAiConversationBatch/<batch_job_id>
 ```
 
 Create accepts `chatroom_id`, `batch_count`, and `client_request_id`; Start once
@@ -647,10 +667,25 @@ One work invocation attempts one accepted turn:
 
 The AI-only output contract is zero or one message: zero is allowed only during
 an optional three-plus-AI candidate attempt. A speaking or forced attempt must
-produce exactly one message. `max_message_chars` is enforced in the tool schema;
-one corrective retry is allowed for an over-length result, after which the
-conversation fails. Every provider invocation, including silence and corrective
-retries, records usage and participates in the billing gate.
+produce exactly one message. `max_message_chars` is an optional prompt-only
+suggestion, not a tool-schema constraint or reason for correction/failure.
+Every provider invocation, including silence and retries, records usage and
+participates in the billing gate.
+
+### Conversation Limits (2026-09-19)
+
+- Max message length is optional: null/omitted means no message-length instruction.
+  Do not truncate or retry long messages. Provider output-token limits remain a
+  technical safeguard, not the conversation's business limit.
+- Editor order: Max messages, Max characters. Keep API keys `max_turns` and
+  `max_total_chars`; either terminates the conversation. Count only accepted AI
+  messages/content (not system events, silence, or failed calls). The last message
+  may exceed the character target; preserve it intact. Timeout/dispatch caps remain.
+- Each inference gets dynamic progress after the cache checkpoint, e.g.
+  `Conversation progress: 12/100 messages; 3000/10000 characters used.`
+- Static AI-only rules instruct the model to finish its points and naturally
+  conclude as either limit approaches, avoiding new topics near the limit.
+  This is guidance, not guaranteed closure; no extra forced final round.
 
 Lease ownership prevents overlapping workers, while the expected turn and
 transaction prevent duplicate visible events. A provider call may still be
@@ -785,7 +820,7 @@ Exceptional FAILED/TIMED_OUT/ABORTED execution
 
 - 24-hour business deadline from batch creation; 25-hour workflow hard timeout.
   Expired work is rejected by both workflow and worker, including retries and
-  correction calls. The extra hour is cleanup headroom, not inference budget.
+  retry calls. The extra hour is cleanup headroom, not inference budget.
 - Worker soft slice: 240 seconds; Lambda hard timeout: 600 seconds; ASL Task
   timeout: 660 seconds. Do not start a call with less than 120 seconds Lambda
   time remaining. Deadline-aware Bedrock connection/read limits: 5/90 seconds.
@@ -899,3 +934,62 @@ python -m pytest tests/test_ai_batch_workflow_integration.py::test_live_twenty_m
   exercised. API/tick code/config snapshots were unchanged.
 - Private evidence and downloads: `.local/sfn-cloud-verification/`. Test rows,
   usage and exports are retained; no customer histories were rewritten.
+
+### Batch History in the Editor (2026-09-19)
+
+- Save & start navigates in the current tab. History column: Conversations.
+  Detail Refresh is icon-only; Download conversation data keeps a fixed label.
+  The single download API prepares/reuses the archive and returns in_progress
+  or ready + download_url. Poll every 3s while loading; stop after 3 consecutive
+  failures or 3 minutes (15s per request), show Arco Message error, and unlock
+  retry. A new click sends retry_failed=true; later polls do not restart failed
+  exports. Abort client polling on navigation. Download automatically when ready.
+
+- At the bottom of AI-only editing, list this chatroom's runs newest first:
+  local time, size, status, and View details in a new tab. Include single runs,
+  Refresh, Load more, loading/empty/error states. Refresh after creating a run;
+  fetching history never starts inference or saves settings.
+- Extend existing `POST /api/getAiConversationBatches` with optional
+  `{chatroom_id, limit, cursor}`. Response: `{batches, next_cursor}` in the normal
+  envelope. Existing owner-wide requests remain supported. Authorize room
+  ownership; bind cursors to the owner and room. Default editor page size: 20.
+- Reuse `owner-created-index` with a room filter, following sparse DynamoDB pages
+  for at most 10 queries per request. A still-sparse page can be empty with a
+  continuation cursor; preserve Load more. No new table, index or migration.
+- Before the run buttons: "We recommend running one conversation to assess
+  quality and cost before starting a batch." This is advice, not a prerequisite.
+- Verified locally against dev DDB/RDS: authenticated room-filtered pagination,
+  invalid-cursor rejection, browser Refresh and detail-tab navigation, and
+  desktop/mobile layout. Focused management tests: 23; editor chatroom tests: 55;
+  TypeScript and production build passed. No customer deployment or new inference
+  batch was started for these UI checks (separate small model-capability probes ran).
+
+### Release Follow-up: Consistent Beta Management Backend
+
+Editor refinement: Basics contains a Mode radio (AI+Human / AI+AI); the persisted
+setting still derives mode from participant counts. New batch conversations use
+slot-based default display names (`Participant_001`, `Participant_002`, ...),
+preserving custom persona names and immutable identity IDs. Human-AI naming and
+existing conversation snapshots are unchanged. Model menus retain provider
+groups, with newer/flagship choices first; this is a curated order, not a benchmark.
+
+AI-only batches do not generate avatars or write avatar fields to messages.
+Newly generated JSON exports strip legacy avatars from participants and events;
+stored histories and already-built ZIPs are not rewritten. Human-AI behavior is
+unchanged. AI-only persona reuse is now prohibited by launch validation. Without
+configured names, every instance uses its slot default. Explicitly duplicated
+display names still use the existing collision fallback; internal names receive
+unique suffixes independently.
+
+- TODO before closing this feature: route all EC2-backed APIs in hosted
+  `stimulize-beta` to beta EC2, including login and general APIs, not only
+  chatroom management. Its current bundle mixes prod general APIs with beta
+  chatroom management. Set explicit build-time endpoints for both clients.
+- Beta EC2 is for participant-user feature testing and must not connect to
+  Stripe. Billing/subscription parity is not a release gate for this environment.
+  Gate the switch on auth/refresh and participant-feature API/configuration
+  readiness; verify the complete participant browser flow. Keep Stripe-backed
+  controls unavailable in the beta UI rather than falling back to production.
+  Do not switch `stimulize.org` or implicitly change the Lambda runtime endpoint.
+- Beta EC2 still shares data resources with production; endpoint consistency
+  does not provide database isolation. This is pending, not deployed.
