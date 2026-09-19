@@ -1,6 +1,7 @@
 """Unit coverage for resumable tick fencing combined with prepaid credits."""
 
 from copy import deepcopy
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -51,6 +52,12 @@ def _seed_resumable_conversation():
     assert status == 200
     mock_rds._chatrooms[CHATROOM["id"]] = deepcopy(CHATROOM)
     conversation = mock_dynamo.get_conversation(body["conversation_id"])
+    # Exercise credit/fencing behavior after human input, not the empty-room
+    # opening silence gate.
+    mock_dynamo.append_events(body['conversation_id'], CHATROOM['id'], [{
+        'type': 'message', 'role': 'human', 'content': 'Hello',
+        'timestamp': int(time.time() * 1000) - 1000, 'episode_number': 1,
+    }])
     ai_participant_id = next(
         participant["ai_participant_id"]
         for participant in conversation["participants"]

@@ -31,11 +31,12 @@ from chatroom_api.constants import TICK_DEDUPE_WINDOW_MS
 CHATROOM_ID = "scid_pbt-tick-idempotency"
 
 
-def _seed_active_conversation(now_iso: str = "2025-01-01T00:00:00+00:00") -> str:
+def _seed_active_conversation(now_iso: str = "2023-11-14T22:12:20+00:00") -> str:
     """Reset shared mocks and seed a single active conversation. Returns the id.
 
     Layout: 1 human + 1 AI participant, ``status="active"``, ``last_tick_at=0``,
-    no prior events. ``chatroom_setting`` carries no ``max_duration_seconds``
+    no prior events, started one minute before the test clock (past the opening
+    silence gate). ``chatroom_setting`` carries no ``max_duration_seconds``
     so the tick handler doesn't end the conversation on the
     max-duration-check branch.
     """

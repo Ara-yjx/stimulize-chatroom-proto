@@ -66,6 +66,38 @@ def _seed(*, max_duration_seconds=None, started_at_ms=None, setting_overrides=No
     return cid, started_at_ms
 
 
+@pytest.mark.parametrize('elapsed_ms', [0, 5000, 19999])
+def test_empty_conversation_waits_twenty_seconds_before_inference(elapsed_ms):
+    cid, started = _seed()
+    with patch.object(tick_handler.time, 'time', return_value=(started + elapsed_ms) / 1000), \
+         patch.object(tick_handler, 'invoke_speak_tool') as inference, \
+         patch.object(tick_handler, 'run_gate') as gate:
+        result = tick_handler.handle_tick({'conversation_id': cid})
+    assert result == {'status': 'skipped', 'reason': 'initial_silence_window'}
+    inference.assert_not_called()
+    gate.assert_not_called()
+
+
+@pytest.mark.parametrize('elapsed_ms,event_type', [(20000, None), (5000, 'message'), (5000, 'system')])
+def test_opening_window_boundary_and_real_messages(elapsed_ms, event_type):
+    from types import SimpleNamespace
+    cid, started = _seed()
+    if event_type:
+        mock_dynamo.append_events(cid, CHATROOM_ID, [{
+            'type': event_type, 'role': 'human' if event_type == 'message' else 'system',
+            'session_id': 'h1', 'content': 'Hello', 'timestamp': started + 1000,
+        }])
+    with patch.object(tick_handler.time, 'time', return_value=(started + elapsed_ms) / 1000), \
+         patch.object(tick_handler, 'run_gate', return_value=SimpleNamespace(skip=True, reason='normal_gate')) as gate:
+        result = tick_handler.handle_tick({'conversation_id': cid})
+    if event_type == 'system':
+        assert result['reason'] == 'initial_silence_window'
+        gate.assert_not_called()
+    else:
+        assert result['reason'] == 'normal_gate'
+        gate.assert_called_once()
+
+
 def test_max_duration_enforcement_flips_to_ended_and_skips_bedrock():
     cid, started_at_ms = _seed(max_duration_seconds=10)
     # now is far past started_at + 10s

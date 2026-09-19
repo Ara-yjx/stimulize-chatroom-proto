@@ -469,6 +469,16 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
             return {"status": "ended"}
 
     # --- Step 3: gate. -----------------------------------------------------
+    # Prompt-only silence guidance still allowed immediate opening greetings.
+    # Give humans the first 20 seconds before any AI inference in an empty
+    # conversation. System events do not count as messages; once anyone sends
+    # a chat message, normal response/silence rules apply instead.
+    opening_started_ms = _iso_to_ms(started_at) if started_at else None
+    if (opening_started_ms is not None and now_ms - opening_started_ms < 20_000
+            and not any(event.get('type') == 'message' for event in visible_history)):
+        _log_tick(conversation_id, 'skipped', reason='initial_silence_window')
+        return {'status': 'skipped', 'reason': 'initial_silence_window'}
+
     # The exact single-assistant preset promises a reply after each human
     # message. Skip only the generic silence window for that case; every other
     # room keeps the normal gate unchanged.
