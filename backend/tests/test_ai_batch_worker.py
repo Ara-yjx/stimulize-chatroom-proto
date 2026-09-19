@@ -80,9 +80,12 @@ def test_three_ai_force_path_has_at_most_ai_count_invocations(monkeypatch) -> No
     assert calls[-1][1] is True
 
 
-def test_process_work_keeps_advancing_persisted_progress(monkeypatch) -> None:
+@pytest.mark.parametrize('max_messages,max_chars,expected_count', [(4, 20000, 4), (100, 6, 2)])
+def test_process_work_keeps_advancing_persisted_progress(monkeypatch, max_messages, max_chars, expected_count) -> None:
     batch = _batch()
+    batch['settings_snapshot'].update(max_turns=max_messages, max_total_chars=max_chars)
     conversation = _conversation()
+    conversation['participants'][0]['avatar'] = {'emojiText': 'legacy'}
     committed = []
     monkeypatch.setattr(config, "AI_BATCH_ENABLED", True)
     monkeypatch.setattr(worker.store, "get_batch", lambda _id: batch)
@@ -110,10 +113,12 @@ def test_process_work_keeps_advancing_persisted_progress(monkeypatch) -> None:
     })
 
     assert result == {"terminal": True, "outcome": "succeeded"}
-    assert len(committed) == 4
+    assert len(committed) == expected_count
+    assert all(event['content'] == 'hello' for event in committed)
     assert committed[0]["content"] == "hello"
     assert committed[0]["timestamp"] == 1000
     assert "authored_at" not in committed[0]
+    assert all('avatar' not in event for event in committed)
 
 
 def test_terminal_reinvocation_does_not_infer(monkeypatch) -> None:
@@ -134,3 +139,52 @@ def test_terminal_reinvocation_does_not_infer(monkeypatch) -> None:
     })
 
     assert result == {"terminal": True, "outcome": "succeeded"}
+
+
+@pytest.mark.parametrize('guidance', [None, 3])
+def test_message_length_is_prompt_only_without_correction(monkeypatch, guidance):
+    batch = _batch()
+    batch['settings_snapshot']['max_message_chars'] = guidance
+    calls = []
+    monkeypatch.setattr(worker, 'credits_allow', lambda _: True)
+    monkeypatch.setattr(worker, '_build_request', lambda *a, **kw: ('model', 0.7, [], []))
+    monkeypatch.setattr(worker.store, 'now_ms', lambda: 1000)
+    monkeypatch.setattr(worker, 'record_bedrock_usage', lambda **kw: None)
+    def invoke(*args, **kwargs):
+        calls.append(kwargs)
+        return {'messages': ['This message deliberately exceeds the suggested length.']}
+    monkeypatch.setattr(worker, 'invoke_speak_tool', invoke)
+    text = worker._invoke_candidate(batch, _conversation(), _participants(2)[0], [], require_message=True, attempt=0)
+    assert text == 'This message deliberately exceeds the suggested length.'
+    assert len(calls) == 1
+    assert calls[0].get('max_message_chars') is None
+    assert calls[0]['max_messages'] == 1
+
+
+def test_progress_is_dynamic_after_cache_and_absent_guidance_is_omitted(monkeypatch):
+    import json
+    monkeypatch.setattr(worker, 'build_bedrock_system_blocks', lambda *a, **kw: [{'text': 'static'}])
+    monkeypatch.setattr(worker, 'build_bedrock_messages', lambda *a, **kw: [])
+    monkeypatch.setattr(worker, 'supports_bedrock_prompt_cache', lambda _: True)
+    monkeypatch.setattr(worker, 'build_bedrock_cache_prefix_message', lambda *a, **kw: {
+        'role': 'user', 'content': [{'text': 'cached rules'}, {'cachePoint': {'type': 'default'}}]})
+    monkeypatch.setattr(worker, 'attach_for_inference', lambda messages, *a: messages)
+    setting = {**_batch()['settings_snapshot'], 'max_message_chars': None, 'max_turns': 100, 'max_total_chars': 10000}
+    _, _, system, messages = worker._build_request(_conversation(message_count=12, total_chars=3000), setting, _participants(2)[0], [], require_message=True)
+    contents = [block for msg in messages for block in msg['content']]
+    cache_index = next(i for i, b in enumerate(contents) if 'cachePoint' in b)
+    progress_index = next(i for i, b in enumerate(contents) if 'Conversation progress' in b.get('text', ''))
+    assert progress_index > cache_index
+    assert '12/100 messages; 3000/10000 characters used' in contents[progress_index]['text']
+    assert 'Aim for' not in json.dumps(messages)
+    assert 'progress' not in json.dumps(system)
+    setting['max_message_chars'] = 50
+    _, _, _, messages = worker._build_request(_conversation(), setting, _participants(2)[0], [], require_message=True)
+    assert 'Aim for at most 50 characters' in json.dumps(messages)
+
+
+@pytest.mark.parametrize('mimic,required', [(True, True), (False, True), (False, False)])
+def test_ai_only_scaffold_includes_conclusion_guidance(mimic, required):
+    from chatroom_api.prompts.speech_scaffold import get_scaffold_for_mode
+    assert get_scaffold_for_mode('ai_only', mimic_human=mimic, require_response=required).startswith('As either conversation limit approaches')
+    assert 'As either conversation limit approaches' not in get_scaffold_for_mode('group', mimic_human=mimic, require_response=required)

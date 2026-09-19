@@ -65,6 +65,8 @@ def build_ai_participants(
     existing_participants: Iterable[dict] = (),
     ai_id_factory: Callable[[int], str] | None = None,
     rng: random.Random | None = None,
+    sequential_nicknames: bool = False,
+    include_avatars: bool = True,
 ) -> list[dict]:
     """Build normalized AI participants for lobby and batch conversations."""
     default_model_id = str(chatroom_setting.get("model_id") or "").strip()
@@ -130,6 +132,13 @@ def build_ai_participants(
         preferred_nickname = normalize_ai_nickname(selected.get("nickname"))
         if preferred_nickname and preferred_nickname not in used_nicknames:
             nickname = preferred_nickname
+        elif sequential_nicknames:
+            # Batch display names are stable by slot; identity IDs stay unchanged.
+            number = index + 1
+            nickname = f"Participant_{number:03d}"
+            while nickname in used_nicknames:
+                number += 1
+                nickname = f"Participant_{number:03d}"
         elif use_assistant_names:
             nickname = (
                 room_ai_nickname
@@ -141,16 +150,18 @@ def build_ai_participants(
                 nickname = f"Participant{random_source.randint(1000, 9999)}"
                 if nickname not in used_nicknames:
                     break
-        available = [emoji for emoji in EMOJI_POOL if emoji not in used_emojis]
-        if not available:
-            available = list(EMOJI_POOL)
-        avatar = {"emojiText": random_source.choice(available)}
+        avatar = None
+        if include_avatars:
+            available = [emoji for emoji in EMOJI_POOL if emoji not in used_emojis]
+            if not available:
+                available = list(EMOJI_POOL)
+            avatar = {"emojiText": random_source.choice(available)}
+            used_emojis.add(avatar["emojiText"])
         used_nicknames.add(nickname)
-        used_emojis.add(avatar["emojiText"])
         participants.append({
             "ai_participant_id": make_id(index),
             "nickname": nickname,
-            "avatar": avatar,
+            **({"avatar": avatar} if include_avatars else {}),
             "role": "ai",
             "persona": selected.get("persona", ""),
             **({'prompt_attachment_ids': list(selected['prompt_attachment_ids'])}

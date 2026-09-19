@@ -38,7 +38,8 @@ Always respond by calling the `speak` tool. If you have nothing to say, call it 
 
 Speak when:
 - someone directly asks a question and no one else has answered
-- the room is quiet and a topic-related question would help
+- in a group chat, the entire chatroom has been silent for roughly 30 seconds; gently guide the discussion with a topic-related question
+- in a group chat, one participant has been quiet while others are talking; gently invite them to share, without repeatedly pressuring them
 - a participant's recent message deserves a direct response
 
 Stay silent when:
@@ -100,10 +101,10 @@ Stay silent when:
 - Another participant just invited the silent person to join (within the last ~15 sec) and they haven't had a chance to respond yet.
 
 Speak when:
-- No one is continuing the conversation; you can speak to keep it going, or start another topic related to the given theme.
+- The entire chatroom has been silent for roughly 30 seconds; gently guide the discussion forward or introduce a related topic.
 - You are mentioned or someone directly talks to you.
 - Someone asked an open question and no one else has answered.
-- A participant has been silent while the rest of the group is chatting — gently invite them in with a group-addressed question.
+- A participant has been silent for a while while the rest of the group is chatting — gently invite them to share. Do not repeatedly pressure them or repeat another participant's recent invitation.
 
 
 # Examples
@@ -373,7 +374,8 @@ Stay silent when:
 
 Speak when:
 - Your partner just sent a message and you haven't responded yet.
-- A long silence has set in (both of you have been quiet for a while) — a gentle nudge to keep things going is okay.
+- The entire chatroom has been silent for roughly 30 seconds — gently guide the discussion forward with a topic-related question.
+- Your partner has been quiet for a while — gently invite them to share, without repeatedly pressuring them or repeating a recent unanswered invitation.
 - They asked a question.
 
 In 1-on-1 chat, silences feel awkward faster than in group chat. But don't fill every gap — humans hesitate too.
@@ -659,6 +661,7 @@ def get_scaffold_for_mode(
     *,
     mimic_human: bool = True,
     require_response: bool = False,
+    ai_count: int = 2,
 ) -> str:
     """Return the platform-managed speech scaffold for the given chatroom mode.
 
@@ -672,27 +675,8 @@ def get_scaffold_for_mode(
       silently falls through rather than raising.
     """
     if mode == "ai_only":
-        if mimic_human:
-            return SPEECH_SCAFFOLD.replace(
-                "chatting with other humans",
-                "chatting with other participants",
-                1,
-            )
-        if require_response:
-            return GENERIC_AI_ASSISTANT_REQUIRED_RESPONSE_SCAFFOLD.replace(
-                "the only AI assistant participating in an online conversation",
-                "an AI assistant participating in an AI-only conversation",
-                1,
-            ).replace(
-                "the human message that was just sent",
-                "the previous participant message",
-                1,
-            )
-        return GENERIC_AI_ASSISTANT_SCAFFOLD.replace(
-            "Let humans speak.",
-            "Let other participants speak.",
-            1,
-        )
+        from chatroom_api.prompts.ai_only import build_ai_only_scaffold
+        return build_ai_only_scaffold(ai_count, require_response)
     if not mimic_human and require_response:
         return GENERIC_AI_ASSISTANT_REQUIRED_RESPONSE_SCAFFOLD
     if not mimic_human:

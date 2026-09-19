@@ -16,7 +16,7 @@ EXPORT_LEASE_MS = 16 * 60 * 1000
 
 BATCH_EXECUTABLE_STATUSES = frozenset({"provisioning", "running"})
 BATCH_TERMINAL_STATUSES = frozenset({
-    "completed", "partial_failure", "failed", "timed_out",
+    "completed", "partial_failure", "failed", "timed_out", "validation_failed",
 })
 CONVERSATION_TERMINAL_STATUSES = frozenset({
     "completed", "failed", "timed_out",

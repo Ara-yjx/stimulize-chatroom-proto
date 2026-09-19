@@ -27,7 +27,7 @@ def test_reference_contains_full_scaffold_order_and_effective_settings():
     assert get_scaffold_for_mode("ai_only", require_response=True).strip() in text
     assert text.index("STEP 1") < text.index("STEP 2") < text.index("CACHE BOUNDARY") < text.index("STEP 3")
     for expected in ("Plan ahead", "Be curious", "Discuss campus life", "Effective temperature: 0.0",
-                     "Effective model: model", "Maximum turns: 100", "not each inference request"):
+                     "Effective model: model", "Max messages: 100", "not each inference request"):
         assert expected in text
     assert len(prompt_reference.source_hash()) == 64
 
@@ -37,7 +37,7 @@ def test_assistant_multiai_includes_both_scaffold_variants():
     row["settings_snapshot"].update(ai_count=3, mimic_human=False, ai_personas=[])
     text = prompt_reference.render_prompt_reference(row)
     for required in (True, False):
-        assert get_scaffold_for_mode("ai_only", mimic_human=False, require_response=required).strip() in text
+        assert get_scaffold_for_mode("ai_only", ai_count=3, mimic_human=False, require_response=required).strip() in text
 
 
 def test_storage_is_create_only_and_retry_keeps_first_content(monkeypatch):
@@ -66,7 +66,7 @@ def test_archive_reuses_exact_saved_bytes_and_detects_corruption(monkeypatch, tm
         path = tmp_path / "export.zip"
         path.write_bytes(archive_bytes)
         with zipfile.ZipFile(path) as archive:
-            assert archive.read("info/prompt.txt") == original
+            assert archive.read("info/prompt.md") == original
             assert "info/prompt.json" not in archive.namelist()
     s3.get_object.side_effect = lambda **kw: {"Body": io.BytesIO(b"corrupted")}
     with pytest.raises(ValueError, match="integrity"):
@@ -80,3 +80,14 @@ def test_legacy_notice_and_storage_failure(monkeypatch):
     monkeypatch.setattr(store, "_get_s3", lambda: s3)
     with pytest.raises(ClientError):
         store.save_prompt_reference(batch(), "lease", "text")
+
+
+def test_markdown_fences_preserve_user_prompt_with_backticks():
+    row = batch()
+    row['settings_snapshot']['additional_prompt'] = 'Use ```text\nexamples\n``` safely.'
+    text = prompt_reference.render_prompt_reference(row)
+    assert text.startswith('# AI Conversation Prompt Reference\n')
+    assert '````text\n' in text
+    assert '\n````\n' in text
+    assert '## STEP 5' in text
+    assert '```text\nConversation progress:' in text

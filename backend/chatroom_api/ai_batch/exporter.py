@@ -40,9 +40,7 @@ def _render_text(events: list[dict]) -> str:
             label = f"{sender} ({internal_name})" if internal_name else sender
         else:
             label = "System"
-        lines.append(
-            f"[{event.get('timestamp', '')}] {label}: {event.get('content', '')}"
-        )
+        lines.append(f"{label}: {event.get('content', '')}")
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -51,7 +49,10 @@ def build_export_archive(batch: dict) -> tuple[bytes, dict]:
     included = []
     omitted = []
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("info/prompt.txt", store.read_prompt_reference(batch))
+        reference = store.read_prompt_reference(batch)
+        # Preserve old immutable references as TXT; new references are Markdown.
+        extension = 'md' if reference.startswith(b'# AI Conversation Prompt Reference') else 'txt'
+        archive.writestr(f"info/prompt.{extension}", reference)
         for index in range(int(batch["batch_count"])):
             conv_id = conversation_id(batch["batch_job_id"], index)
             conversation = store.get_conversation(conv_id)
@@ -61,7 +62,9 @@ def build_export_archive(batch: dict) -> tuple[bytes, dict]:
                     "status": (conversation or {}).get("status", "missing"),
                 })
                 continue
-            events = store.query_history(conv_id)
+            # Legacy batch records may contain avatars; omit them without rewriting history.
+            events = [{k: v for k, v in event.items() if k != "avatar"}
+                      for event in store.query_history(conv_id)]
             prefix = f"conversations/{index + 1:04d}"
             archive.writestr(
                 f"{prefix}.json",
@@ -69,7 +72,8 @@ def build_export_archive(batch: dict) -> tuple[bytes, dict]:
                     {
                         "batch_index": index,
                         "conversation_id": conv_id,
-                        "participants": conversation.get("participants", []),
+                        "participants": [{k: v for k, v in participant.items() if k != "avatar"}
+                                         for participant in conversation.get("participants", [])],
                         "events": events,
                     },
                     default=_json_default,

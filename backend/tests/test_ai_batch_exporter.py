@@ -22,7 +22,7 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
         if conversation_id == exporter.conversation_id("batch", 0):
             return {
                 "status": "completed",
-                "participants": [{"nickname": "AI", "internal_name": "condition"}],
+                "participants": [{"nickname": "AI", "internal_name": "condition", "avatar": {"emojiText": "legacy"}}],
             }
         return {"status": "failed"}
 
@@ -33,6 +33,7 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
         "sender": "AI",
         "internal_name": "condition",
         "content": "hello",
+        "avatar": {"emojiText": "legacy"},
     }])
 
     body, manifest = exporter.build_export_archive(batch)
@@ -46,11 +47,22 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
         assert "conversations/0001.txt" in names
         assert "conversations/0002.json" not in names
         text = archive.read("conversations/0001.txt").decode()
-        assert "AI (condition): hello" in text
+        assert text == "AI (condition): hello\n"
         saved_conversation = json.loads(archive.read("conversations/0001.json"))
+        assert 'avatar' not in saved_conversation['participants'][0]
+        assert 'avatar' not in saved_conversation['events'][0]
         saved_timestamp = saved_conversation["events"][0]["timestamp"]
         assert saved_timestamp == 1789147117914
         assert isinstance(saved_timestamp, int)
         assert "authored_at" not in saved_conversation["events"][0]
         saved_manifest = json.loads(archive.read("manifest.json"))
         assert saved_manifest["outcome_counts"]["failed_count"] == 1
+
+
+def test_text_export_omits_timestamps_for_all_event_types() -> None:
+    assert exporter._render_text([
+        {"type": "system", "timestamp": 123, "content": "Conversation started"},
+        {"type": "message", "timestamp": 456, "sender": "Alex", "content": "Hi"},
+        {"type": "message", "timestamp": 789, "content": "Hello\nthere"},
+    ]) == "System: Conversation started\nAlex: Hi\nParticipant: Hello\nthere\n"
+    assert exporter._render_text([]) == ""

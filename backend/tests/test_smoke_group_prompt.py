@@ -231,11 +231,11 @@ def test_ai_only_scaffolds_do_not_claim_other_participants_are_human() -> None:
     )
 
     assert "chatting with other humans" not in mimic
-    assert "chatting with other participants" in mimic
+    assert "exchanging ideas with peers" in mimic
     assert "Let humans speak" not in assistant
-    assert "Let other participants speak" in assistant
+    assert mimic == assistant
     assert "human message" not in required
-    assert "previous participant message" in required
+    assert "Take turns" in required
 
 
 @pytest.mark.parametrize("model_id", [

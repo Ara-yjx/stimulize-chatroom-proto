@@ -131,6 +131,22 @@ def acquire_provision_lease(
     return True
 
 
+def fail_validation(batch_job_id: str, lease_id: str, error: str, batch_count: int) -> None:
+    # No conversations exist on this path. Settle all requested slots atomically.
+    _get_batch_table().update_item(
+        Key={'batch_job_id': batch_job_id},
+        UpdateExpression=('SET #status = :failed, last_error = :error, updated_at = :updated, '
+                          'queued_count = :zero, running_count = :zero, unfinished_count = :zero, '
+                          'failed_count = :count REMOVE provision_lease_id, provision_lease_until'),
+        ConditionExpression=('#status = :provisioning AND provision_lease_id = :lease '
+                             'AND attribute_not_exists(prompt_reference_key)'),
+        ExpressionAttributeNames={'#status': 'status'},
+        ExpressionAttributeValues={':failed': 'validation_failed', ':error': error,
+            ':updated': now_iso(), ':zero': 0, ':count': batch_count,
+            ':provisioning': 'provisioning', ':lease': lease_id},
+    )
+
+
 def finish_provision(batch_job_id: str, lease_id: str) -> bool:
     table = _get_batch_table()
     try:

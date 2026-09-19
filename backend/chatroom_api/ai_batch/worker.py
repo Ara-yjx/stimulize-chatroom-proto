@@ -65,13 +65,8 @@ def _history_block(events: list[dict]) -> str:
     return "\n".join(lines) if lines else "(empty)"
 
 
-def _trigger_message(*, require_message: bool, correction: bool = False) -> dict:
-    if correction:
-        text = (
-            "Your previous output exceeded the configured message length. "
-            "Send exactly one shorter non-empty message now."
-        )
-    elif require_message:
+def _trigger_message(*, require_message: bool) -> dict:
+    if require_message:
         text = "Continue the conversation now with exactly one non-empty message."
     else:
         text = (
@@ -88,7 +83,6 @@ def _build_request(
     history: list[dict],
     *,
     require_message: bool,
-    correction: bool = False,
 ) -> tuple[str, float, list[dict], list[dict]]:
     ai_id = participant_id(participant)
     if not ai_id:
@@ -134,11 +128,19 @@ def _build_request(
             require_response=require_message,
         )
         messages = prepend_cache_prefix_message(messages, prefix)
-    if correction or not messages or messages[-1]["role"] == "assistant":
-        messages = [*messages, _trigger_message(
-            require_message=require_message,
-            correction=correction,
-        )]
+    # Progress changes every accepted message and must stay after the cache prefix.
+    trigger = _trigger_message(require_message=require_message)
+    progress = (
+        f"Conversation progress: {conversation.get('message_count', 0)}/{setting['max_turns']} messages; "
+        f"{conversation.get('total_chars', 0)}/{setting['max_total_chars']} characters used."
+    )
+    if setting.get('max_message_chars') is not None:
+        progress += f" Aim for at most {setting['max_message_chars']} characters in your message."
+    trigger['content'].insert(0, {'text': progress})
+    if messages and messages[-1]['role'] == 'user':
+        messages = [*messages[:-1], {**messages[-1], 'content': [*messages[-1]['content'], *trigger['content']]}]
+    else:
+        messages = [*messages, trigger]
     messages = attach_for_inference(messages, setting, participant)
     return model_id, float(temperature), system, messages
 
@@ -157,7 +159,6 @@ def _invoke_candidate(
     if not credits_allow(owner_id):
         raise TerminalConversationError("insufficient credits")
     setting = dict(batch["settings_snapshot"])
-    max_chars = int(setting["max_message_chars"])
     model_id, temperature, system, messages = _build_request(
         conversation,
         setting,
@@ -173,7 +174,6 @@ def _invoke_candidate(
         messages,
         temperature=temperature,
         require_message=require_message,
-        max_message_chars=max_chars,
         max_messages=1,
         before_attempt=before_attempt or (lambda: _check_deadline(batch)),
     )
@@ -207,60 +207,7 @@ def _invoke_candidate(
         return None
     if len(resolved_messages) != 1:
         raise TerminalConversationError("model returned more than one message")
-    text = resolved_messages[0]
-    if len(text) <= max_chars:
-        return text
-
-    if not credits_allow(owner_id):
-        raise TerminalConversationError("insufficient credits before correction")
-    model_id, temperature, system, messages = _build_request(
-        conversation,
-        setting,
-        participant,
-        history,
-        require_message=True,
-        correction=True,
-    )
-    correction_at = store.now_ms()
-    correction_id = uuid4().hex
-    corrected = invoke_speak_tool(
-        model_id,
-        system,
-        messages,
-        temperature=temperature,
-        require_message=True,
-        max_message_chars=max_chars,
-        max_messages=1,
-        before_attempt=before_attempt or (lambda: _check_deadline(batch)),
-    )
-    corrected_messages = [
-        str(message).strip()
-        for message in (corrected.get("messages") or [])
-        if str(message).strip()
-    ]
-    record_bedrock_usage(
-        usage_event_id=correction_id,
-        owner_id=owner_id,
-        chatroom_id=str(batch["chatroom_id"]),
-        conversation_id=conversation["conversation_id"],
-        ai_participant_id=participant_id(participant) or "",
-        model_id=model_id,
-        result=corrected,
-        invoked_at_ms=correction_at,
-        extra_raw_usage={
-            "ai_batch": True,
-            "batch_job_id": batch["batch_job_id"],
-            "expected_turn": int(conversation["next_turn"]),
-            "candidate_attempt": attempt,
-            "length_correction": True,
-            "messages_count": len(corrected_messages),
-            "temperature": temperature,
-        },
-    )
-    _check_deadline(batch)
-    if len(corrected_messages) != 1 or len(corrected_messages[0]) > max_chars:
-        raise TerminalConversationError("model exceeded message length after correction")
-    return corrected_messages[0]
+    return resolved_messages[0]
 
 
 def _choose_message(batch: dict, conversation: dict, history: list[dict], *, before_attempt=None) -> tuple[dict, str]:
@@ -398,7 +345,6 @@ def _process_work(body: dict, context=None) -> dict:
                 "role": "ai",
                 "ai_participant_id": participant_id(participant),
                 "internal_name": participant.get("internal_name"),
-                "avatar": participant.get("avatar"),
                 "content": text,
                 "timestamp": timestamp,
                 "created_at": store.now_iso(),

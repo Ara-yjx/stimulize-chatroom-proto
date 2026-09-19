@@ -19,7 +19,9 @@ def test_ai_only_setting_preserves_zero_humans_and_batch_limits() -> None:
     assert setting["ai_strategy_value"] == 3
     assert setting["max_wait_seconds"] == 0
     assert setting["resumable"] is False
-    assert setting["max_message_chars"] == 400
+    assert setting["max_message_chars"] is None
+    assert resolve_runtime_setting({'max_message_chars': None})['max_message_chars'] is None
+    assert resolve_runtime_setting({'max_message_chars': 400})['max_message_chars'] == 400
     assert setting["max_total_chars"] == 20_000
     assert setting["max_turns"] == 100
 

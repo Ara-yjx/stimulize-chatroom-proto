@@ -151,9 +151,9 @@ def resolve_runtime_setting(setting: dict | None) -> dict:
     if human_count == 0:
         normalized["resumable"] = False
 
-    normalized["max_message_chars"] = max(
-        1,
-        _coerce_int(normalized.get("max_message_chars", 400), 400),
+    normalized["max_message_chars"] = (
+        max(1, _coerce_int(normalized["max_message_chars"], 400))
+        if normalized.get("max_message_chars") is not None else None
     )
     normalized["max_total_chars"] = max(
         1,

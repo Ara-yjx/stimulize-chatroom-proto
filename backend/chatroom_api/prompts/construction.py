@@ -37,11 +37,13 @@ def build_static_prefix_block(
     *,
     mimic_human: bool = True,
     require_response: bool = False,
+    ai_count: int = 2,
 ) -> str:
     return get_scaffold_for_mode(
         mode,
         mimic_human=mimic_human,
         require_response=require_response,
+        ai_count=ai_count,
     )
 
 
@@ -100,6 +102,7 @@ def build_prompt_blocks(
             mode,
             mimic_human=bool(chatroom_setting.get("mimic_human", True)),
             require_response=require_response,
+            ai_count=int(chatroom_setting.get('ai_count', 2)),
         ),
         "semi_static_setup": build_semi_static_setup_blocks(
             chatroom_setting,
@@ -179,6 +182,7 @@ def build_bedrock_system_blocks(
             mode,
             mimic_human=bool(chatroom_setting.get("mimic_human", True)),
             require_response=require_response,
+            ai_count=int(chatroom_setting.get('ai_count', 2)),
         )
     }]
 
