@@ -8,8 +8,8 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { AiConversationBatchStack } from "../lib/ai-conversation-batch-stack";
 
 
-function makeStack(keepLegacyWorkQueues = false) {
-  const app = new App({ context: { keepLegacyWorkQueues: String(keepLegacyWorkQueues) } });
+function makeStack() {
+  const app = new App();
   const upstream = new Stack(app, "Upstream");
   const conversations = new dynamodb.Table(upstream, "Conversations", {
     partitionKey: { name: "conversation_id", type: dynamodb.AttributeType.STRING },
@@ -29,15 +29,6 @@ function makeStack(keepLegacyWorkQueues = false) {
 
 
 describe("AiConversationBatchStack", () => {
-  it("can retain legacy queues without a worker trigger during cutover", () => {
-    const template = Template.fromStack(makeStack(true));
-    template.resourceCountIs("AWS::SQS::Queue", 7);
-    template.resourceCountIs("AWS::Lambda::EventSourceMapping", 2);
-    template.hasResource("AWS::SQS::Queue", {
-      Properties: Match.objectLike({ QueueName: "stimulize-chatroom-ai-batch-dev-test-work-dlq.fifo" }),
-      DeletionPolicy: "Retain", UpdateReplacePolicy: "Retain",
-    });
-  });
   it("creates isolated queues, handlers, exports, and an owner GSI", () => {
     const template = Template.fromStack(makeStack());
 

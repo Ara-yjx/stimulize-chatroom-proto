@@ -40,3 +40,23 @@ Dedicated `stimulize-beta-management-profile` is attached. Batch is enabled but
 still references `stimulize-chatroom-ai-batch-dev-yjx12`; attachments are not
 configured. No nonempty Stripe environment keys were found in `.env`.
 This is an audit snapshot, not confirmation of release completion.
+
+## Final Source Cleanup
+
+Release paused for review before any production runtime, EC2, or Pages deployment.
+Runtime changes through `b15fc12` already reached `origin/main`; management and
+editor changes remain on their release branches (management targets `main`,
+editor targets `master`). Follow-up cleanup does not rewrite published history.
+
+- Remove the unused matching-reference cost-estimate API; retain actual batch usage.
+- Remove the S3 mock-room fixture loader/publisher and its Lambda permission.
+  Cloud human-AI integration uses the real RDS adapter; local/unit mocks remain.
+- Remove the completed FIFO-to-Step-Functions migration's legacy-queue toggle.
+  This source cleanup does not delete retained AWS queues or other dev resources.
+- Update integration checks for the single download API, Markdown prompt export,
+  timestamp-free TXT, and create-without-navigation editor behavior.
+- Use the stable widget URL by default, not the temporary resume Pages repo.
+- Keep numeric history compatibility, immutable historical export support,
+  reusable isolated test stacks, and test mocks. These still have consumers.
+- Disable billing navigation/routes only in the beta build. Other builds retain
+  existing billing behavior; this is not a server-side authorization mechanism.

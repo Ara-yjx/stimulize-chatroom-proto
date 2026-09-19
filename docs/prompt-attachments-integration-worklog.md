@@ -74,7 +74,12 @@ may incur small storage/PITR charges. Future cleanup must name these exact stack
 and buckets, inspect contents, and account for retained buckets/log groups. Never
 use an unqualified default CDK destroy/deploy against the main application.
 
-## Reproduce Locally
+## Historical Local Setup
+
+The S3 fixture-publishing path below was retired in the 2026-09-20 cleanup.
+Use the loopback shared-RDS integration server for deployed human-AI checks;
+unit tests continue to seed the in-memory RDS adapter directly. Old resource
+names in this worklog are test evidence, not production deployment targets.
 
 Use `cdk/bin/attachments-dev.ts` with a unique `devPrefix=stimulize-attachment-dev-*`,
 `rdsHost=` and `useProdRds=false`. Inspect the synthesized resource names and diff

@@ -104,10 +104,8 @@ Implemented POST/action routes, using existing token auth/envelopes:
   including ready files no longer selected by any prompt.
 - `/api/getPromptAssetDownload/<id>`: authorize through the owning chatroom,
   then return `{url}`, valid five minutes with the original filename. No standalone delete-asset route.
-- `/api/getAiConversationCostEstimate`: JSON `{chatroom_id}`; returns a matching
-  `{reference, generation_hash}` or `reference: null`. Reference fields are
-  conversation_id, estimated_cost_usd, message_count, total_chars, inference_count
-  and completion_reason. UI multiplies only the reference cost by the new batch size.
+- `/api/getAiConversationBatch/<id>` includes recorded token/cost totals. The
+  removed matching-reference estimate UI/API is not part of the release.
 - Existing create/update room APIs validate same-room membership, ownership, readiness, combined limits
   and every effective model. Repeat checks before creating a new run.
 
@@ -337,7 +335,12 @@ random labels. Budget separate per-AI warmups, not guaranteed cross-conversation
 reuse. Five-minute expiry, routing and eviction can add writes. Cached content
 still occupies context.
 
-### Run Once, Then Estimate Batch (Decision: 2026-09-13)
+### Historical: Matching-Reference Estimate (Superseded 2026-09-20)
+
+The matching-reference UI and endpoint below were removed. Current behavior is
+to recommend Test once and display each batch's actual recorded usage/cost;
+there is no automatic configuration matching or projected-batch-cost lookup.
+The remaining text records the original design rationale, not active behavior.
 
 Use only an observed completed run, not PDF size, page count, assumed token
 counts, or a pre-inference CountTokens call, to estimate batch inference cost.
@@ -392,7 +395,7 @@ silently truncating material. CountTokens support is not a prerequisite for this
 feature. Storage/transport costs are separate and not included in the run-based
 inference estimate.
 
-Extend `info/prompt.txt` with ordered names, scope, hashes, format and rendering
+Extend `info/prompt.md` with ordered names, scope, hashes, format and rendering
 policy; inline bounded TXT. Describe binary inputs without inventing textual
 equivalents. Original binary export can wait. This remains an initialization
 reference, not every inference's actual request.

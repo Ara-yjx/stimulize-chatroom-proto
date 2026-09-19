@@ -48,21 +48,6 @@ export class AiConversationBatchStack extends Stack {
     const prefix = props.resourcePrefix;
     const useMockRds = props.useMockRds ?? false;
     const removalPolicy = props.removalPolicy ?? RemovalPolicy.RETAIN;
-    // Keep old queued work available for diagnosis during the orchestration cutover.
-    if (this.node.tryGetContext("keepLegacyWorkQueues") === "true") {
-      const legacyDlq = new sqs.Queue(this, "WorkDlq", {
-        queueName: `${prefix}-work-dlq.fifo`, fifo: true,
-        retentionPeriod: Duration.days(14), encryption: sqs.QueueEncryption.SQS_MANAGED,
-        removalPolicy: RemovalPolicy.RETAIN,
-      });
-      new sqs.Queue(this, "WorkQueue", {
-        queueName: `${prefix}-work.fifo`, fifo: true, contentBasedDeduplication: false,
-        visibilityTimeout: Duration.minutes(12), retentionPeriod: Duration.days(14),
-        encryption: sqs.QueueEncryption.SQS_MANAGED,
-        deadLetterQueue: { queue: legacyDlq, maxReceiveCount: 5 },
-        removalPolicy: RemovalPolicy.RETAIN,
-      });
-    }
     const rdsHost = this.node.tryGetContext("rdsHost") as string;
     const rdsPort = (this.node.tryGetContext("rdsPort") as string) || "5432";
     const rdsDatabase = (this.node.tryGetContext("rdsDatabase") as string) || "stimulize";

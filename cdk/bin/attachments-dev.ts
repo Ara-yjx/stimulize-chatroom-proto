@@ -65,10 +65,6 @@ for (const fn of [api.lambdaFunction, tick.lambdaFunction, batch.provisioner, ba
   ].join(','));
   bucket.grantRead(fn, 'assets/*');
 }
-for (const fn of sharedRds ? [] : [api.lambdaFunction, tick.lambdaFunction]) {
-  fn.addEnvironment('DEV_CHATROOM_FIXTURES_KEY', 'fixtures/rooms.json');
-  bucket.grantRead(fn, 'fixtures/rooms.json');
-}
 if (app.node.tryGetContext('enableDevHeartbeat') === 'true') {
   new TickHeartbeatStack(app, `${id}Heartbeat`, { env, tickHandler: tick.lambdaFunction,
     conversationTable: metadata.table, functionName: `${prefix}-heartbeat`, intervalSeconds: 8 });

@@ -8,27 +8,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
-import os
-import json
-
-
-def _fixture_rooms():
-    """Optional server-written fixtures for an isolated deployed integration test."""
-    key = os.environ.get('DEV_CHATROOM_FIXTURES_KEY', '')
-    if not key:
-        return None
-    from chatroom_api import config
-    if not config.USE_MOCK_RDS or not config.PROMPT_ATTACHMENT_BUCKET.startswith('stimulize-attachment-dev-') or key != 'fixtures/rooms.json':
-        raise RuntimeError('Refusing non-isolated fixture configuration')
-    import boto3
-    body = boto3.client('s3').get_object(Bucket=config.PROMPT_ATTACHMENT_BUCKET, Key=key)['Body']
-    try:
-        raw = body.read(1000001)
-    finally:
-        body.close()
-    if len(raw) > 1000000:
-        raise ValueError('Fixture manifest too large')
-    return json.loads(raw)
 
 # --- Seed data ---
 
@@ -60,15 +39,12 @@ _usage_records: list[dict] = []
 
 def get_chatroom(chatroom_id: str) -> Optional[dict]:
     """Return a chatroom dict by ID, or None if not found."""
-    rooms = _fixture_rooms()
-    return (rooms if rooms is not None else _chatrooms).get(chatroom_id)
+    return _chatrooms.get(chatroom_id)
 
 
 def resolve_prompt_assets(chatroom):
-    rooms = _fixture_rooms()
-    if rooms is None:
-        raise RuntimeError('Mock attachment fixtures are not configured')
-    return rooms[chatroom['id']]['setting']['_prompt_asset_manifest']
+    # Tests seed the same server-owned manifest used by the real RDS adapter.
+    return _chatrooms[chatroom['id']]['setting']['_prompt_asset_manifest']
 
 
 def write_usage(

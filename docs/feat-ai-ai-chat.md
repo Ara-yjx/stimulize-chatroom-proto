@@ -913,7 +913,7 @@ python -m pytest tests/test_ai_batch_workflow_integration.py::test_live_twenty_m
   status. Existing unfinished FIFO jobs are not automatically resumed by SFN.
   Preflight found two stale running test batches and two legacy DLQ messages.
   They remain as diagnostic evidence, not active SFN work.
-- Deploy with `keepLegacyWorkQueues=true` during this cutover: preserve the
+- Historical cutover used `keepLegacyWorkQueues=true` (removed after migration): preserve the
   existing FIFO/DLQ with RETAIN, but remove their worker event-source mapping.
   Review pending work before any later cleanup; do not redrive it into the new
   direct-invocation handler. CDK diff contained no DDB/S3 replacement.
