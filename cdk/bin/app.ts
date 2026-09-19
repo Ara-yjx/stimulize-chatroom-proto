@@ -9,6 +9,7 @@ import { TickHandlerStack } from "../lib/tick-handler-stack";
 import { TickHeartbeatStack } from "../lib/tick-heartbeat-stack";
 import { ConversationEventStack } from "../lib/conversation-event-stack";
 import { parseChatroomServiceMode } from "../lib/chatroom-service-mode";
+import { AiConversationBatchStack } from "../lib/ai-conversation-batch-stack";
 
 const app = new cdk.App();
 
@@ -49,7 +50,7 @@ const tickHandlerStack = new TickHandlerStack(app, "TickHandlerStack", {
   serviceMode: chatroomServiceMode,
 });
 
-new ChatroomApiStack(app, "ChatroomApiStack", {
+const apiStack = new ChatroomApiStack(app, "ChatroomApiStack", {
   env,
   table: conversationStack.table,
   lobbyTable: lobbyStack.table,
@@ -59,6 +60,48 @@ new ChatroomApiStack(app, "ChatroomApiStack", {
   eventTableName,
   serviceMode: chatroomServiceMode,
 });
+
+// Opt-in release wiring. Dev entry points remain independent and disposable.
+const attachmentEnabled = app.node.tryGetContext('enablePromptAttachments') === 'true';
+const batchEnabled = app.node.tryGetContext('enableAiBatch') === 'true';
+const attachmentFunctions = [apiStack.lambdaFunction, tickHandlerStack.lambdaFunction];
+if (batchEnabled) {
+  const metadata = new ConversationTableStack(app, 'BatchConversationTableStack', {
+    env, tableName: 'chatroom-batch-conversations', removalPolicy: cdk.RemovalPolicy.RETAIN,
+    pointInTimeRecovery: true, deletionProtection: true,
+    stream: cdk.aws_dynamodb.StreamViewType.KEYS_ONLY,
+  });
+  const events = new ConversationEventStack(app, 'BatchConversationEventStack', {
+    env, metadataTable: metadata.table, eventTableName: 'chatroom-batch-events',
+    cleanupFunctionName: 'chatroom-batch-event-cleanup', removalPolicy: cdk.RemovalPolicy.RETAIN,
+    deletionProtection: true,
+  });
+  const batch = new AiConversationBatchStack(app, 'AiConversationBatchStack', {
+    env, conversationTable: metadata.table, eventTable: events.eventTable,
+    resourcePrefix: 'stimulize-chatroom-batch', removalPolicy: cdk.RemovalPolicy.RETAIN,
+    deletionProtection: true,
+  });
+  attachmentFunctions.push(batch.provisioner, batch.worker, batch.exporter);
+}
+if (attachmentEnabled) {
+  const assets = new cdk.Stack(app, 'ChatroomAssetsStack', { env });
+  const bucket = new cdk.aws_s3.Bucket(assets, 'Assets', {
+    blockPublicAccess: cdk.aws_s3.BlockPublicAccess.BLOCK_ALL,
+    encryption: cdk.aws_s3.BucketEncryption.S3_MANAGED, enforceSSL: true,
+    removalPolicy: cdk.RemovalPolicy.RETAIN,
+  });
+  new cdk.CfnOutput(assets, 'AttachmentBucket', { value: bucket.bucketName });
+  for (const fn of attachmentFunctions) {
+    fn.addEnvironment('PROMPT_ATTACHMENTS_ENABLED', 'true');
+    fn.addEnvironment('PROMPT_ATTACHMENT_BUCKET', bucket.bucketName);
+    fn.addEnvironment('PROMPT_ATTACHMENT_MODELS', [
+      'global.anthropic.claude-sonnet-4-6', 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      'global.anthropic.claude-haiku-4-5-20251001-v1:0', 'global.anthropic.claude-opus-4-7',
+      'global.anthropic.claude-opus-4-6-v1',
+    ].join(','));
+    bucket.grantRead(fn, 'assets/*');
+  }
+}
 
 new TickHeartbeatStack(app, "TickHeartbeatStack", {
   env,
