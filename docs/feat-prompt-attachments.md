@@ -206,6 +206,12 @@ Native admission limits, using conservative decimal bytes (not MiB):
 - TXT: **100,000 UTF-8 bytes** product cap, not an AWS document limit;
   we decode it into text blocks. Reject invalid/binary content; allow UTF-8 BOM.
 - No encrypted PDFs, animation or silent conversion.
+- Upload validation returns specific error codes and actionable messages for
+  size, page count, encryption, unreadable PDF structure, invalid text and image
+  constraints. HTTP 400 validation errors are distinct from later inference
+  failures. Logs record the validation code, not file contents. A file below
+  the size limit can still fail another constraint; do not label every PDF
+  failure as a size error or relax parsing without a reproducible failing file.
   Images: at most 8000 pixels per edge and 16 MP, with bounded decoding.
 - Shared plus selected-persona files: five original files and ten PDF pages per
   request (conservative product caps, not AWS's mixed-file/page quotas).

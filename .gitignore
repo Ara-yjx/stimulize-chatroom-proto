@@ -69,3 +69,4 @@ backend/dev_dumps/
 
 .obsidian/
 .local/
+.playwright-cli/

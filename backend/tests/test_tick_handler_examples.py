@@ -148,6 +148,20 @@ def test_bedrock_fatal_error_updates_projection_and_appends_system_event():
     assert projection["last_result"] == "error"
 
 
+def test_output_error_records_usage_and_error_projection():
+    cid, started = _seed()
+    with patch.object(tick_handler.time, 'time', return_value=started / 1000 + 30), \
+         patch.object(tick_handler, 'invoke_speak_tool', return_value={
+             'messages': [], 'output_error': 'missing_tool_call',
+             'input_tokens': 10, 'output_tokens': 30, 'stop_reason': 'end_turn',
+         }):
+        result = tick_handler.handle_tick({'conversation_id': cid})
+    assert result['error_type'] == 'missing_tool_call'
+    assert mock_dynamo.get_conversation(cid)['ai_tick_state_by_participant_id']['ai_001']['last_result'] == 'error'
+    assert len(mock_rds._usage_records) == 1
+    assert not any(e.get('role') == 'ai' for e in mock_dynamo.get_events(cid))
+
+
 def test_bedrock_resource_not_found_falls_back_to_default_model():
     cid, started_at_ms = _seed()
     now_seconds = (started_at_ms / 1000) + 60

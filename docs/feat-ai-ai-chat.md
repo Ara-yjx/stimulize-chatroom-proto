@@ -675,6 +675,10 @@ participates in the billing gate.
 ### Conversation Limits (2026-09-19)
 
 - Max message length is optional: null/omitted means no message-length instruction.
+  Editor and management validation accept 1-1,000 characters when provided;
+  existing settings are never silently clamped. The shared Bedrock speak request
+  has a 2,048-output-token safety budget (including tool formatting), even when
+  message-length guidance is absent. Characters and tokens are not equivalent.
   Do not truncate or retry long messages. Provider output-token limits remain a
   technical safeguard, not the conversation's business limit.
 - Editor order: Max messages, Max characters. Keep API keys `max_turns` and

@@ -703,6 +703,10 @@ def format_topic_block(topic_instruction: str) -> str:
     return f"# Chatroom topic\n\n{text}"
 
 
+class SpeechOutputError(ValueError):
+    """A provider response violated the speak protocol; this is not silence."""
+
+
 def parse_speak_tool_call(response) -> list[str]:
     """Extract the list of messages from a Bedrock Converse `speak` tool call.
 
@@ -720,32 +724,32 @@ def parse_speak_tool_call(response) -> list[str]:
           ...
         }
 
-    Returns the ``messages`` list when shape and types match. Returns ``[]``
-    (interpreted as "stay silent") for any malformed shape — never raises.
-    Used by ``tick_handler.py`` and by ``bedrock_client.py``.
+    Only an explicit, well-formed empty messages array means silence. Missing
+    tool calls and malformed arguments must not masquerade as a silent choice:
+    Gemma plaintext tool notation previously caused repeated invisible replies.
+    Do not repair arbitrary model text with regex or execute its tool notation.
     """
     try:
         content_blocks = response["output"]["message"]["content"]
     except (KeyError, TypeError):
-        return []
+        raise SpeechOutputError("missing_content") from None
 
     if not isinstance(content_blocks, list):
-        return []
+        raise SpeechOutputError("invalid_content")
 
-    for block in content_blocks:
-        if not isinstance(block, dict):
-            continue
-        tool_use = block.get("toolUse")
-        if not isinstance(tool_use, dict):
-            continue
-        tool_input = tool_use.get("input")
-        if not isinstance(tool_input, dict):
-            continue
-        messages = tool_input.get("messages")
-        if not isinstance(messages, list):
-            return []
-        if not all(isinstance(m, str) for m in messages):
-            return []
-        return messages
-
-    return []
+    tools = [block['toolUse'] for block in content_blocks
+             if isinstance(block, dict) and 'toolUse' in block]
+    if not tools:
+        raise SpeechOutputError("missing_tool_call")
+    if len(tools) != 1:
+        raise SpeechOutputError("multiple_tool_calls")
+    tool = tools[0]
+    if not isinstance(tool, dict) or tool.get('name') != 'speak':
+        raise SpeechOutputError("unexpected_tool")
+    arguments = tool.get('input')
+    if not isinstance(arguments, dict) or not isinstance(arguments.get('messages'), list):
+        raise SpeechOutputError("invalid_tool_arguments")
+    messages = arguments['messages']
+    if not all(isinstance(message, str) and message.strip() for message in messages):
+        raise SpeechOutputError("invalid_messages")
+    return messages

@@ -7,6 +7,7 @@ from chatroom_api.prompts.speech_scaffold import (
     get_scaffold_for_mode,
 )
 from chatroom_api.settings import is_single_human_single_ai_assistant_room
+from chatroom_api.prompts.speech_protocol import uses_json_speech, render_json_scaffold
 
 
 BEDROCK_PROMPT_CACHE_MODEL_IDS = frozenset({
@@ -38,13 +39,15 @@ def build_static_prefix_block(
     mimic_human: bool = True,
     require_response: bool = False,
     ai_count: int = 2,
+    model_id: str = '',
 ) -> str:
-    return get_scaffold_for_mode(
+    scaffold = get_scaffold_for_mode(
         mode,
         mimic_human=mimic_human,
         require_response=require_response,
         ai_count=ai_count,
     )
+    return render_json_scaffold(scaffold) if uses_json_speech(model_id) else scaffold
 
 
 def build_semi_static_setup_blocks(
@@ -96,6 +99,7 @@ def build_prompt_blocks(
     history_block: str,
     participant_nicknames: list[str] | None = None,
     require_response: bool = False,
+    model_id: str | None = None,
 ) -> dict[str, str | list[str]]:
     return {
         "static_prefix": build_static_prefix_block(
@@ -103,6 +107,7 @@ def build_prompt_blocks(
             mimic_human=bool(chatroom_setting.get("mimic_human", True)),
             require_response=require_response,
             ai_count=int(chatroom_setting.get('ai_count', 2)),
+            model_id=model_id or chatroom_setting.get('model_id', ''),
         ),
         "semi_static_setup": build_semi_static_setup_blocks(
             chatroom_setting,
@@ -135,6 +140,7 @@ def build_system_prompt(
     history_block: str,
     participant_nicknames: list[str] | None = None,
     require_response: bool = False,
+    model_id: str | None = None,
 ) -> str:
     blocks = build_prompt_blocks(
         mode,
@@ -144,6 +150,7 @@ def build_system_prompt(
         history_block,
         participant_nicknames=participant_nicknames,
         require_response=require_response,
+        model_id=model_id,
     )
     parts: list[str] = [str(blocks["static_prefix"])]
     parts.extend(blocks["semi_static_setup"])
@@ -175,6 +182,7 @@ def build_bedrock_system_blocks(
                 history_block,
                 participant_nicknames=participant_nicknames,
                 require_response=require_response,
+                model_id=model_id,
             )
         }]
     return [{

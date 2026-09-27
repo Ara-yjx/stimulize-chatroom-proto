@@ -131,6 +131,19 @@ export function appendErrorBubble(content: string): void {
   scrollToBottom();
 }
 
+export function updateDiagnosticBubble(key: string, content: string): void {
+  if (!_$messages) return;
+  let bubble = _$messages.find(".stim-inference-diagnostic").filter(
+    (_index, element) => _$(element).attr("data-diagnostic-key") === key
+  );
+  if (!bubble.length) {
+    bubble = _$("<div class='stim-msg stim-msg-system stim-msg-error stim-inference-diagnostic'><span class='stim-bubble'></span></div>")
+      .attr("data-diagnostic-key", key).appendTo(_$messages);
+  }
+  bubble.find(".stim-bubble").text(content);
+  scrollToBottom();
+}
+
 export function updateTimerBar(text: string): void {
   if (!_$timer) return;
   _$timer.show().text(text);

@@ -102,8 +102,8 @@ def run_gate(
        visible (``max(visible_at)`` over their last batch is ``<= now``).
     5. If empty: skip with ``reason="all_candidates_typing"``. If there are no
        AI participants at all: skip with ``reason="no_ai_participants"``.
-    6. Pick the AI with the smallest ``last_speak_at_by_session`` value
-       (defaulting to 0 if absent), breaking ties by ``session_id`` ascending.
+    6. Pick the least recently evaluated AI, falling back to last speech for
+       older rows, breaking ties by participant ID.
     """
     participants = conv.get("participants", []) or []
     ai_participants = [p for p in participants if p.get("role") == "ai"]
@@ -155,10 +155,14 @@ def run_gate(
     if not candidates:
         return Decision(skip=True, reason="all_candidates_typing")
 
-    # 6. fairness: smallest last_speak_at, tie-break by session_id ascending.
+    # Rotate after silence AND error, not just speech. Otherwise one silent or
+    # incompatible model keeps its oldest speech time and starves every other AI.
+    # Speech/typing cooldowns above remain independent of candidate fairness.
     def _sort_key(ai: Dict[str, Any]):
         session_id = participant_id(ai) or ""
-        return (int(last_speak_map.get(session_id, 0) or 0), session_id)
+        state = (conv.get('ai_tick_state_by_participant_id') or {}).get(session_id, {})
+        evaluated = state.get('last_evaluated_at', last_speak_map.get(session_id, 0))
+        return (int(evaluated or 0), session_id)
 
     candidates.sort(key=_sort_key)
     chosen = candidates[0]

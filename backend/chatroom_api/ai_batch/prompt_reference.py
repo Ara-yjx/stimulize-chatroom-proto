@@ -6,7 +6,8 @@ import hashlib
 import re
 from pathlib import Path
 
-from chatroom_api.prompts.construction import build_semi_static_setup_blocks
+from chatroom_api.prompts.construction import build_semi_static_setup_blocks, build_static_prefix_block
+from chatroom_api.prompts.speech_protocol import uses_json_speech
 from chatroom_api.prompts.speech_scaffold import get_scaffold_for_mode
 from chatroom_api.settings import normalize_persona_entries
 
@@ -24,6 +25,7 @@ def source_hash() -> str:
     digest = hashlib.sha256()
     for name in (
         "prompts/speech_scaffold.py", "prompts/ai_only.py", "prompts/construction.py",
+        "prompts/speech_protocol.py", "prompts/json_speech.py",
         "ai_batch/prompt_reference.py", "ai_batch/worker.py",
         "conversation.py", "settings.py", "bedrock_client.py",
         "ai_participants.py", "prompt_attachments.py",
@@ -87,6 +89,18 @@ def render_prompt_reference(batch: dict) -> str:
             f"- Effective temperature: {persona.get('temperature') if persona.get('temperature') is not None else temperature}", "",
             "Setup text:", "",
         ])
+        effective_model = persona.get('model_id') or model
+        if uses_json_speech(effective_model):
+            lines.extend([
+                'This model uses JSON text, not native tools. Its platform rules replace the STEP 1 tool variant:',
+                '', code_block(build_static_prefix_block(
+                    'ai_only', ai_count=count, require_response=required, model_id=effective_model,
+                ).strip()), '',
+            ])
+            if count > 2:
+                lines.extend(['Forced-response variant:', '', code_block(build_static_prefix_block(
+                    'ai_only', ai_count=count, require_response=True, model_id=effective_model,
+                ).strip()), ''])
         setup = build_semi_static_setup_blocks(
                 setting, persona.get("persona") or "", "[selected AI name]",
                 ["[selected AI name]", "[other participant names]"],
@@ -132,7 +146,8 @@ def render_prompt_reference(batch: dict) -> str:
         code_block("Continue the conversation now with exactly one non-empty message."), "",
         "Long messages are not truncated or retried solely because of this guidance.",
         "", "## STEP 5 - Response Contract", "",
-        "A separate speak tool definition requires a messages array containing the response.",
+        "Native-tool models receive a separate speak tool definition requiring a messages array.",
+        "JSON-text models instead return that messages array in a JSON object; no tool definition is sent.",
         "At most one message is accepted per call; mandatory turns cannot return an empty array.",
         "The application extracts the message text for the conversation history.",
     ])

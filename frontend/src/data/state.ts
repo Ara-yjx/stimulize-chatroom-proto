@@ -4,6 +4,7 @@ import type {
   ChatroomSetting,
   ConversationEvent,
   InitOptions,
+  InferenceDiagnostic,
   LobbyState,
   SessionInfo,
 } from "./types";
@@ -40,6 +41,9 @@ export class ChatroomState {
   private _timerInterval: ReturnType<typeof setInterval> | null = null;
   private _chatStartTime = 0;
   private _prefetchedEvents: ConversationEvent[] = [];
+  private _prefetchedDiagnostics: InferenceDiagnostic[] = [];
+  private _seenDiagnostics = new Set<string>();
+  private _diagnosticCounts = new Map<string, number>();
   private _historyBeforeCursor: string | null = null;
   private _hasOlderHistory = false;
   private _endNotified = false;
@@ -55,6 +59,7 @@ export class ChatroomState {
   private _onMessage: OnMessageCallback[] = [];
   private _onSystemEvent: OnSystemEventCallback[] = [];
   private _onError: OnErrorCallback[] = [];
+  private _onDiagnostic: Array<(key: string, content: string) => void> = [];
   private _onSessionReady: OnSessionReadyCallback[] = [];
   private _onTimerTick: OnTimerTickCallback[] = [];
   private _onLobbyUpdate: OnLobbyUpdateCallback[] = [];
@@ -67,6 +72,7 @@ export class ChatroomState {
   onMessage(cb: OnMessageCallback): void { this._onMessage.push(cb); }
   onSystemEvent(cb: OnSystemEventCallback): void { this._onSystemEvent.push(cb); }
   onError(cb: OnErrorCallback): void { this._onError.push(cb); }
+  onDiagnostic(cb: (key: string, content: string) => void): void { this._onDiagnostic.push(cb); }
   onSessionReady(cb: OnSessionReadyCallback): void { this._onSessionReady.push(cb); }
   onTimerTick(cb: OnTimerTickCallback): void { this._onTimerTick.push(cb); }
   onLobbyUpdate(cb: OnLobbyUpdateCallback): void { this._onLobbyUpdate.push(cb); }
@@ -111,6 +117,9 @@ export class ChatroomState {
     this._pollFailingSince = null;
     this._sawLobby = false;
     this._seenRemoteMessageKeys.clear();
+    this._seenDiagnostics.clear();
+    this._diagnosticCounts.clear();
+    this._prefetchedDiagnostics = [];
     this._pendingOptimisticMessages = [];
     this._historyBeforeCursor = null;
     this._hasOlderHistory = false;
@@ -164,8 +173,9 @@ export class ChatroomState {
 
       // Start at the newest page. Resume support can then prepend older pages
       // without replaying an unbounded conversation through the live endpoint.
-      const history = await fetchHistory(this._apiBaseUrl, this.token, null);
+      const history = await fetchHistory(this._apiBaseUrl, this.token, null, 50, this._initOptions?.debug === true);
       this._prefetchedEvents = history.events || [];
+      this._prefetchedDiagnostics = history.diagnostics || [];
       this.liveCursor = history.latest_cursor || null;
       this._historyBeforeCursor = history.next_before || null;
       this._hasOlderHistory = history.has_more;
@@ -180,6 +190,8 @@ export class ChatroomState {
       this._processEvent(evt);
     }
     this._prefetchedEvents = [];
+    this._prefetchedDiagnostics.forEach((diagnostic) => this._emitDiagnostic(diagnostic));
+    this._prefetchedDiagnostics = [];
   }
 
   hasOlderHistory(): boolean {
@@ -191,10 +203,13 @@ export class ChatroomState {
     const page = await fetchHistory(
       this._apiBaseUrl,
       this.token,
-      this._historyBeforeCursor
+      this._historyBeforeCursor,
+      50,
+      this._initOptions?.debug === true
     );
     this._historyBeforeCursor = page.next_before || null;
     this._hasOlderHistory = page.has_more;
+    page.diagnostics?.forEach((diagnostic) => this._emitDiagnostic(diagnostic));
 
     const messages: ChatMessage[] = [];
     for (const event of page.events || []) {
@@ -312,7 +327,7 @@ export class ChatroomState {
 
   private async _poll(): Promise<void> {
     try {
-      const resp = await pollMessages(this._apiBaseUrl, this.token, this.liveCursor);
+      const resp = await pollMessages(this._apiBaseUrl, this.token, this.liveCursor, this._initOptions?.debug === true);
 
       // Poll success — clear reconnect state
       if (this._pollFailingSince !== null) {
@@ -330,6 +345,7 @@ export class ChatroomState {
       }
 
       if (resp.next_after) this.liveCursor = resp.next_after;
+      resp.diagnostics?.forEach((diagnostic) => this._emitDiagnostic(diagnostic));
 
       // Process visible events before deciding whether a soft-ended
       // conversation has fully drained its prescheduled history.
@@ -423,6 +439,7 @@ export class ChatroomState {
   }
 
   private _eventToMessage(evt: ConversationEvent): ChatMessage | null {
+    if (this._isInferenceDiagnostic(evt)) return null;
     if (evt.type === "error") {
       return {
         event_id: evt.event_id,
@@ -448,6 +465,14 @@ export class ChatroomState {
   }
 
   private _renderEvent(evt: ConversationEvent): void {
+    // Also hide old server error events during a rolling deployment. They must
+    // never enter research history/ED, even when the preview displays them.
+    if (this._isInferenceDiagnostic(evt)) {
+      this._emitDiagnostic({event_id: evt.event_id, timestamp: evt.timestamp,
+        code: evt.content.replace(/^Chatroom server error:\s*/, ""),
+        ai_participant_id: evt.ai_participant_id, ai_name: "AI"});
+      return;
+    }
     if (evt.type === "system") {
       if (this._isDuplicate(evt)) return;
       this._rememberEvent(evt);
@@ -501,6 +526,25 @@ export class ChatroomState {
       this.chatHistory.push(msg);
       this._onMessage.forEach((cb) => cb(msg, this.isSelfMessage(msg)));
     }
+  }
+
+  private _isInferenceDiagnostic(event: ConversationEvent): boolean {
+    return (event.type === "system" || event.type === "error") &&
+      (event.subtype === "inference_error" || event.content.startsWith("Chatroom server error:"));
+  }
+
+  private _emitDiagnostic(diagnostic: InferenceDiagnostic): void {
+    if (this._initOptions?.debug !== true) return;
+    const code = /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(diagnostic.code)
+      ? diagnostic.code : "inference_error";
+    const key = `${diagnostic.ai_participant_id || diagnostic.ai_name}:${code}`;
+    const id = diagnostic.event_id || `${key}:${diagnostic.timestamp}`;
+    if (this._seenDiagnostics.has(id)) return;
+    this._seenDiagnostics.add(id);
+    const count = (this._diagnosticCounts.get(key) || 0) + 1;
+    this._diagnosticCounts.set(key, count);
+    const content = `${diagnostic.ai_name}: ${code}${count > 1 ? ` (${count} occurrences)` : ""}`;
+    this._onDiagnostic.forEach((cb) => cb(key, content));
   }
 
   // --- Timer ---
