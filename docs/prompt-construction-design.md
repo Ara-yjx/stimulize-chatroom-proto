@@ -44,13 +44,27 @@ semi-formal peer-discussion scaffold (see below).
 Human-AI mimic prompts and multi-participant assistant prompts allow a gentle
 topic nudge after the **whole room** has been silent for roughly 30 seconds.
 They separately invite a quiet participant to share, without repeated pressure
-or duplicating a recent invitation. These are model guidelines, not a forced
-30-second timer; inference cadence and typing delay affect visible timing.
+or duplicating a recent invitation. The live tick now computes room-wide silence
+from the last visible human/AI message (or current conversation/episode start).
+At 30 seconds it explicitly requests a new topic-related question or idea and
+requires a non-empty response. System events do not reset this clock. The
+existing least-recently-evaluated AI rotation is unchanged, not random; a failed
+attempt rotates on the next tick. Inference cadence and typing delay still
+affect when the participant sees the reply. The single-human/single-AI non-mimic
+assistant remains separate: one follow-up after 60 seconds, then wait for human
+input. AI-only batches are unaffected.
 
-The human-AI tick additionally skips inference during the first 20 seconds
+When a live tick needs a synthetic user-side trigger (empty history or history
+ending on this AI, or a room-silence nudge), the trigger identifies itself as a scheduled check, not a
+participant message. Visible history supplies the latest author's relation to
+this AI and elapsed seconds; the trigger discourages repeating an already-given
+answer without forcing silence. Existing required-answer and single-assistant idle-follow-up
+policies remain unchanged. AI-only batch scheduling is unaffected.
+
+The human-AI tick additionally skips inference during the first 30 seconds
 when there are no chat messages (system events do not count). Any human/AI
-message lifts this opening-only gate; at 20 seconds normal eligibility resumes,
-not forced speech. Duration expiry still takes precedence. AI-only batch workers
+message lifts this opening-only gate; at 30 seconds normal eligibility resumes
+with the applicable nudge policy. Duration expiry still takes precedence. AI-only batch workers
 are unaffected.
 
 Isolated-dev opening-gate check (2026-09-20): empty-room ticks at 0/8/16s

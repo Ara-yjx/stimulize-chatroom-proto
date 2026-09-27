@@ -66,8 +66,8 @@ def _seed(*, max_duration_seconds=None, started_at_ms=None, setting_overrides=No
     return cid, started_at_ms
 
 
-@pytest.mark.parametrize('elapsed_ms', [0, 5000, 19999])
-def test_empty_conversation_waits_twenty_seconds_before_inference(elapsed_ms):
+@pytest.mark.parametrize('elapsed_ms', [0, 5000, 20000, 29999])
+def test_empty_conversation_waits_thirty_seconds_before_inference(elapsed_ms):
     cid, started = _seed()
     with patch.object(tick_handler.time, 'time', return_value=(started + elapsed_ms) / 1000), \
          patch.object(tick_handler, 'invoke_speak_tool') as inference, \
@@ -78,7 +78,7 @@ def test_empty_conversation_waits_twenty_seconds_before_inference(elapsed_ms):
     gate.assert_not_called()
 
 
-@pytest.mark.parametrize('elapsed_ms,event_type', [(20000, None), (5000, 'message'), (5000, 'system')])
+@pytest.mark.parametrize('elapsed_ms,event_type', [(30000, None), (5000, 'message'), (5000, 'system')])
 def test_opening_window_boundary_and_real_messages(elapsed_ms, event_type):
     from types import SimpleNamespace
     cid, started = _seed()
@@ -96,6 +96,32 @@ def test_opening_window_boundary_and_real_messages(elapsed_ms, event_type):
     else:
         assert result['reason'] == 'normal_gate'
         gate.assert_called_once()
+
+
+@pytest.mark.parametrize('last_role', ['human', 'ai'])
+@pytest.mark.parametrize('elapsed,expected_nudge', [(29999, False), (30000, True)])
+def test_room_nudge_reaches_inference_without_duplicate_user_roles(last_role, elapsed, expected_nudge):
+    cid, started = _seed(setting_overrides={'human_count': 1, 'ai_count': 2, 'mimic_human': True})
+    mock_dynamo.append_events(cid, CHATROOM_ID, [{
+        'type': 'message', 'role': last_role,
+        'session_id': 'h1' if last_role == 'human' else 'ai_001',
+        'content': 'Earlier thought', 'timestamp': started + 1000,
+    }])
+    captured = {}
+
+    def invoke(model, system, messages, **kwargs):
+        captured.update(messages=messages, **kwargs)
+        return {'messages': ['A new question'], 'input_tokens': 1, 'output_tokens': 1}
+
+    with patch.object(tick_handler.time, 'time', return_value=(started + 1000 + elapsed) / 1000), \
+         patch.object(tick_handler, 'invoke_speak_tool', side_effect=invoke):
+        assert tick_handler.handle_tick({'conversation_id': cid})['status'] == 'spoke'
+    assert captured['require_message'] is expected_nudge
+    roles = [m['role'] for m in captured['messages']]
+    assert roles[0] == 'user'
+    assert all(a != b for a, b in zip(roles, roles[1:]))
+    text = str(captured['messages'])
+    assert ('Break the silence now' in text) is expected_nudge
 
 
 def test_max_duration_enforcement_flips_to_ended_and_skips_bedrock():

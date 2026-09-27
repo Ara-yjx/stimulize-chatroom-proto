@@ -37,6 +37,7 @@ from chatroom_api.bedrock_client import (
 from chatroom_api.constants import (
     IDLE_FOLLOW_UP_AFTER_MS,
     MIN_SILENCE_MS,
+    ROOM_SILENCE_NUDGE_AFTER_MS,
     TICK_DEDUPE_WINDOW_MS,
 )
 from chatroom_api.conversation import build_bedrock_messages
@@ -44,7 +45,7 @@ from chatroom_api.cursors import decode_cursor, InvalidCursorError
 from chatroom_api.delays import pick_delays_ms
 from chatroom_api.gate import run_gate
 from chatroom_api.event_store import ConditionalWriteFailed
-from chatroom_api.participants import participant_id
+from chatroom_api.participants import event_author_id, participant_id
 from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
 from chatroom_api.prompts.construction import (
     base_bedrock_model_id as _base_bedrock_model_id,
@@ -325,18 +326,48 @@ def _split_resumable_history(conv: dict) -> tuple[list[dict], list[dict]]:
     )
 
 
+def _room_silence_ms(conv: dict, now_ms: int) -> int | None:
+    # STML-18/19: waiting hints alone left Scout silent beyond 30s. Use the
+    # last visible chat message (not system events) to request a new contribution;
+    # retain the gate's fair rotation rather than selecting a random AI.
+    setting = conv.get("chatroom_setting") or {}
+    if is_single_human_single_ai_assistant_room(setting):
+        return None  # This preset retains its separate 60-second, one-follow-up policy.
+    if int(setting.get("human_count", setting.get("target_human_count", 1))) == 0:
+        return None
+    started_at = (conv.get("active_episode_started_at") if conv.get("resumable")
+                  else conv.get("started_at"))
+    start = _iso_to_ms(started_at)
+    times = [int(e.get("visible_at", e.get("timestamp", 0)) or 0)
+             for e in _visible_message_events(conv, now_ms)]
+    if not start and not times:
+        return None
+    return max(0, now_ms - max([start, *times]))
+
+
 def _build_tick_trigger_message(
     *,
+    conv: dict | None = None,
+    candidate_id: str | None = None,
+    now_ms: int | None = None,
     require_response: bool = False,
     idle_follow_up: bool = False,
     model_id: str = '',
+    room_silence_ms: int | None = None,
 ) -> dict:
     """Return the thin user-side trigger appended when history ends on assistant.
 
     The trigger stays separate from the system prompt so the provider request
     remains well-formed even when visible history is empty.
     """
-    if idle_follow_up:
+    if room_silence_ms is not None and room_silence_ms >= ROOM_SILENCE_NUDGE_AFTER_MS:
+        instruction = (
+            f"The whole chatroom has been quiet for {room_silence_ms // 1000} seconds. "
+            "Break the silence now with one brief, genuinely new topic-related "
+            "question or idea. Do not repeat an earlier answer or invitation. "
+            "Always call the `speak` tool with at least one non-empty message."
+        )
+    elif idle_follow_up:
         instruction = (
             "The human has not replied for about a minute. Send one brief, "
             "natural check-in now, such as asking whether they are still there "
@@ -354,6 +385,35 @@ def _build_tick_trigger_message(
             "Always call the `speak` tool. If you choose silence, call "
             "it with an empty messages array."
         )
+    # Scout repeated an already answered question on successive timer ticks.
+    # Explain the trigger using actual visible history, without forcing silence:
+    # a quiet room may still warrant a genuinely new follow-up.
+    context = ["This is a scheduled check, not a new participant message."]
+    if conv is not None and now_ms is not None:
+        visible = _visible_message_events(conv, now_ms)
+        if visible:
+            latest = visible[-1]
+            seconds = max(0, round((now_ms - int(
+                latest.get("visible_at", latest.get("timestamp", 0)) or 0
+            )) / 1000))
+            if candidate_id and event_author_id(latest) == candidate_id:
+                context.append(
+                    f"The latest actual chat message was yours, sent {seconds} seconds ago. "
+                    "No other participant has sent a new chat message since."
+                )
+            else:
+                context.append(
+                    f"The latest actual chat message was from another participant, "
+                    f"sent {seconds} seconds ago."
+                )
+        else:
+            context.append("There are no visible chat messages yet.")
+    context.append(
+        "Do not repeat an answer already given. Consider the elapsed time and "
+        "whether there is a genuinely new contribution worth sending, following "
+        "the conversation's silence and follow-up instructions."
+    )
+    instruction = " ".join(context) + " " + instruction
     from chatroom_api.prompts.speech_protocol import uses_json_speech
     if uses_json_speech(model_id):
         instruction = instruction.replace('Always call the `speak` tool', 'Return a JSON object')
@@ -480,11 +540,11 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
 
     # --- Step 3: gate. -----------------------------------------------------
     # Prompt-only silence guidance still allowed immediate opening greetings.
-    # Give humans the first 20 seconds before any AI inference in an empty
+    # Give humans the first 30 seconds before any AI inference in an empty
     # conversation. System events do not count as messages; once anyone sends
     # a chat message, normal response/silence rules apply instead.
     opening_started_ms = _iso_to_ms(started_at) if started_at else None
-    if (opening_started_ms is not None and now_ms - opening_started_ms < 20_000
+    if (opening_started_ms is not None and now_ms - opening_started_ms < ROOM_SILENCE_NUDGE_AFTER_MS
             and not any(event.get('type') == 'message' for event in visible_history)):
         _log_tick(conversation_id, 'skipped', reason='initial_silence_window')
         return {'status': 'skipped', 'reason': 'initial_silence_window'}
@@ -556,6 +616,9 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
         chatroom_setting,
         now_ms,
     )
+    room_silence_ms = _room_silence_ms(runtime_conv, now_ms)
+    room_nudge = (room_silence_ms is not None
+                  and room_silence_ms >= ROOM_SILENCE_NUDGE_AFTER_MS)
 
     completed_events, current_episode_events = _split_resumable_history(runtime_conv)
     bedrock_runtime_conv = runtime_conv
@@ -602,19 +665,41 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
             prefix_message,
         )
 
+    # An AI may open an otherwise empty room after the silence nudge. On its
+    # next tick, its own first utterance maps to assistant; Bedrock rejects that
+    # as the first role. Preserve the utterance and add neutral framing only.
+    if bedrock_messages and bedrock_messages[0]["role"] == "assistant":
+        bedrock_messages = [{
+            "role": "user",
+            "content": [{"text": (
+                "The following messages are prior chat history, not a new "
+                "participant request. Continue using the chatroom instructions."
+            )}],
+        }, *bedrock_messages]
+
     # Bedrock requires ``messages`` to start with the user role and cannot end
     # with the assistant role. If our visible-message history is empty or
     # ends with the candidate AI's own utterance, append a thin user
     # "trigger" so the call is well-formed and the model has a clear cue to
     # call the speak tool. Mirrors ``experiment/group-poc.js``.
-    if not bedrock_messages or bedrock_messages[-1]["role"] == "assistant":
-        bedrock_messages = (bedrock_messages or []) + [
-            _build_tick_trigger_message(
+    if room_nudge or not bedrock_messages or bedrock_messages[-1]["role"] == "assistant":
+        trigger = _build_tick_trigger_message(
+                conv=runtime_conv,
+                candidate_id=candidate_session_id,
+                now_ms=now_ms,
                 require_response=require_response,
                 idle_follow_up=idle_follow_up,
                 model_id=model_id,
+                room_silence_ms=room_silence_ms,
             )
-        ]
+        # Another participant's last message already has user role; keep roles
+        # alternating while distinguishing the timer instruction in its own block.
+        if bedrock_messages and bedrock_messages[-1]["role"] == "user":
+            bedrock_messages[-1] = {"role": "user", "content": [
+                *bedrock_messages[-1]["content"], *trigger["content"],
+            ]}
+        else:
+            bedrock_messages = (bedrock_messages or []) + [trigger]
 
     def record_inference_error(err):
         tick_state = {
@@ -676,7 +761,7 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
         bedrock_messages = attach_for_inference(bedrock_messages, chatroom_setting, candidate_participant or {})
         result = _invoke_with_model_fallback(
             model_id, system_prompt, bedrock_messages, temperature=temperature,
-            require_message=require_response or idle_follow_up,
+            require_message=require_response or idle_follow_up or room_nudge,
         )
     except BedrockInferenceError as err:
         return record_inference_error(err)
