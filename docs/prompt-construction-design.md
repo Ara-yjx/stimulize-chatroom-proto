@@ -73,6 +73,35 @@ heartbeat. When the approximate wait is reached, it requires a non-empty
 check-in and marks the resulting event as `message_kind=idle_follow_up`; another
 follow-up is not required until the human speaks again.
 
+## Output Contract and Scheduling
+
+Model-specific input/output protocol decisions and the Gemma/Llama investigation
+are in [Bedrock Speech Protocols](./bedrock-speech-protocol-design.md). The JSON
+text path is deployed with scoped regression evidence in the release worklog; native tool
+use and forced named-tool selection must not be assumed for every listed model.
+
+Shared human-AI and batch inference selects native `speak` tools or strict JSON
+text by model ID, with a 2048-output-token budget including serialization.
+Only platform-owned examples/rules are converted; researcher text is unchanged.
+This replaces the prototype's 512-token
+budget; it is separate from optional `max_message_chars` prompt guidance
+(`null`, or 1..1000 characters). A blank character setting does not remove the
+provider token budget or impose a 1000-character output cap.
+
+Only a valid `speak` call with `messages: []` means intentional silence, and only
+when silence is allowed. Missing tool calls, invalid fields and undecodable
+truncation are explicit output errors. Do not interpret tool-looking plain text
+as a tool call. Usable truncated text is accepted, even mid-sentence: messaging
+limits can cut off a contribution, and retrying it would duplicate speech/cost.
+Batch workers retry an empty/undecodable truncation once within the deadline;
+both invocations retain their usage records.
+
+Human-AI candidate rotation uses the last evaluation time, not only the last
+actual speech time, so a silent or failing AI cannot starve other candidates.
+Existing eligibility/cooldown rules still apply. Errors are excluded from model
+history. Structured logs record the error code, model, AI, request ID, stop
+reason and token counts, without recording prompt or message content.
+
 ## Bedrock Prompt Caching
 
 Supported Anthropic Claude and Amazon Nova models use Bedrock Converse API

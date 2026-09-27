@@ -34,6 +34,9 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
         "internal_name": "condition",
         "content": "hello",
         "avatar": {"emojiText": "legacy"},
+    }, {
+        "type": "system", "subtype": "inference_error",
+        "content": "Chatroom server error: missing_tool_call", "timestamp": 2,
     }])
 
     body, manifest = exporter.build_export_archive(batch)
@@ -49,6 +52,8 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
         text = archive.read("conversations/0001.txt").decode()
         assert text == "AI (condition): hello\n"
         saved_conversation = json.loads(archive.read("conversations/0001.json"))
+        assert len(saved_conversation['events']) == 1
+        assert 'missing_tool_call' not in archive.read("conversations/0001.json").decode()
         assert 'avatar' not in saved_conversation['participants'][0]
         assert 'avatar' not in saved_conversation['events'][0]
         saved_timestamp = saved_conversation["events"][0]["timestamp"]

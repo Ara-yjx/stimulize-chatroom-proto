@@ -158,6 +158,7 @@ paths:
               - type: string
               - type: integer
           description: Opaque `next_after` cursor, or legacy epoch-ms compatibility value.
+        - $ref: "#/components/parameters/PreviewDebug"
       responses:
         "200":
           description: Events since timestamp
@@ -178,6 +179,8 @@ paths:
                   next_pending_at:
                     type: integer
                     nullable: true
+                  diagnostics:
+                    $ref: "#/components/schemas/InferenceDiagnostics"
                   conversation_status:
                     type: string
                     enum: [active, inactive, ended]
@@ -208,6 +211,7 @@ paths:
       security:
         - bearerAuth: []
       parameters:
+        - $ref: "#/components/parameters/PreviewDebug"
         - name: before
           in: query
           schema:
@@ -238,6 +242,8 @@ paths:
                   latest_cursor:
                     type: string
                     nullable: true
+                  diagnostics:
+                    $ref: "#/components/schemas/InferenceDiagnostics"
                   has_more:
                     type: boolean
         "401":
@@ -246,6 +252,14 @@ paths:
           description: Resumable connection was superseded by a newer login
 
 components:
+  parameters:
+    PreviewDebug:
+      name: debug
+      in: query
+      description: Set to 1 for sanitized preview diagnostics, separate from events. Not an authorization boundary.
+      schema:
+        type: string
+        enum: ["1"]
   securitySchemes:
     bearerAuth:
       type: http
@@ -253,6 +267,24 @@ components:
       bearerFormat: JWT
 
   schemas:
+    InferenceDiagnostics:
+      type: array
+      description: Only present for debug=1; never included in participant events or exports.
+      items:
+        type: object
+        properties:
+          event_id:
+            type: string
+          timestamp:
+            type: integer
+            format: int64
+          code:
+            type: string
+          ai_participant_id:
+            type: string
+            nullable: true
+          ai_name:
+            type: string
     Avatar:
       type: object
       properties:

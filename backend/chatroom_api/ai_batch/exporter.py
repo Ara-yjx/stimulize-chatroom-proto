@@ -10,6 +10,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from chatroom_api import config
+from chatroom_api.diagnostics import is_inference_diagnostic
 from chatroom_api.ai_batch import store
 from chatroom_api.ai_batch.contracts import (
     BATCH_TERMINAL_STATUSES,
@@ -64,7 +65,8 @@ def build_export_archive(batch: dict) -> tuple[bytes, dict]:
                 continue
             # Legacy batch records may contain avatars; omit them without rewriting history.
             events = [{k: v for k, v in event.items() if k != "avatar"}
-                      for event in store.query_history(conv_id)]
+                      for event in store.query_history(conv_id)
+                      if not is_inference_diagnostic(event)]
             prefix = f"conversations/{index + 1:04d}"
             archive.writestr(
                 f"{prefix}.json",

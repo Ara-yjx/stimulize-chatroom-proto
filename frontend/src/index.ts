@@ -5,6 +5,7 @@ import {
   appendBubble,
   appendSystemBubble,
   appendErrorBubble,
+  updateDiagnosticBubble,
   updateTimerBar,
 } from "./ui/renderer";
 import { renderPairingScreen, showLobbyAborted } from "./ui/pairing";
@@ -168,6 +169,9 @@ export async function init(options: InitOptions): Promise<void> {
     appendErrorBubble(content);
     writeToED(state!.getCurrentEpisodeHistory(), state!.getCurrentEpisodeHistoryText());
   });
+
+  // Diagnostics are preview-only UI, deliberately outside history and ED.
+  state.onDiagnostic(updateDiagnosticBubble);
 
   state.onConversationEnded(() => {
     // The backend emits the terminal system event. This callback only applies

@@ -11,10 +11,13 @@ Beta delta vs v2 (tasks 3.3, 3.4, 3.5):
   the response carries a ``lobby`` block describing the open lobby;
   ``aborted`` lobbies surface as ``LobbyAbortedException`` so
   ``handler.py`` can map them to HTTP 410.
-Tick diagnostics are CloudWatch-only and never returned by this module.
+Inference errors are excluded from events; debug polling/history returns a
+separate sanitized diagnostics projection. Other tick diagnostics stay in logs.
 """
 
 from __future__ import annotations
+
+from chatroom_api.diagnostics import is_inference_diagnostic, public_diagnostics
 
 import json
 import logging
@@ -113,6 +116,10 @@ def _decorate_with_avatar(events: list[dict], avatar_map: dict) -> list[dict]:
     """Project events onto the wire shape, looking up avatars by sender."""
     decorated: list[dict] = []
     for e in events:
+        # Filter at the API boundary too, so cached older widgets cannot expose
+        # technical failures or export them as participant research data.
+        if is_inference_diagnostic(e):
+            continue
         sender = e.get("sender")
         item = {
             "event_id": e.get("event_id"),
@@ -309,6 +316,7 @@ def handle_chat_messages(
                 return (400, {"error": "invalid_cursor"})
         return (200, {
             "events": _decorate_with_avatar(page["events"], _avatar_map_for(conv)),
+            **public_diagnostics(page["events"], qp.get('debug') == '1'),
             "next_after": page.get("next_after"),
             "has_more": page["has_more"],
             "next_pending_at": next_pending_at,
@@ -394,4 +402,5 @@ def handle_chat_history(
     return (200, {
         **page,
         "events": _decorate_with_avatar(page["events"], _avatar_map_for(conv)),
+        **public_diagnostics(page["events"], qp.get('debug') == '1'),
     })

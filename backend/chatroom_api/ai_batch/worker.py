@@ -15,8 +15,9 @@ from chatroom_api.ai_batch.contracts import (
     turn_write_id,
 )
 from chatroom_api.ai_batch.scheduler import candidates_for_turn, forced_candidate
-from chatroom_api.bedrock_client import BedrockInferenceError, invoke_speak_tool
+from chatroom_api.bedrock_client import BedrockInferenceError, invoke_speak_tool, log_speak_result
 from chatroom_api.conversation import build_bedrock_messages
+from chatroom_api.diagnostics import is_inference_diagnostic
 from chatroom_api.prompt_attachments import attach_for_inference
 from chatroom_api.inference_usage import credits_allow, record_bedrock_usage
 from chatroom_api.participants import participant_id
@@ -65,7 +66,7 @@ def _history_block(events: list[dict]) -> str:
     return "\n".join(lines) if lines else "(empty)"
 
 
-def _trigger_message(*, require_message: bool) -> dict:
+def _trigger_message(*, require_message: bool, model_id: str = '') -> dict:
     if require_message:
         text = "Continue the conversation now with exactly one non-empty message."
     else:
@@ -73,6 +74,12 @@ def _trigger_message(*, require_message: bool) -> dict:
             "Decide whether you should contribute the next message. Call speak "
             "with one message, or an empty array to stay silent."
         )
+    from chatroom_api.prompts.speech_protocol import uses_json_speech
+    if uses_json_speech(model_id):
+        text = text.replace('Call speak with one message, or an empty array to stay silent.',
+                            'Return {"messages": ["Your message"]}, or {"messages": []} to stay silent.')
+        if require_message:
+            text += ' Return only a JSON object with exactly one non-empty string in its messages array.'
     return {"role": "user", "content": [{"text": text}]}
 
 
@@ -99,6 +106,7 @@ def _build_request(
     if temperature is None:
         temperature = 0.7
 
+    history = [event for event in history if not is_inference_diagnostic(event)]
     runtime_conv = {**conversation, "events": history}
     history_text = _history_block(history)
     nicknames = [
@@ -129,7 +137,7 @@ def _build_request(
         )
         messages = prepend_cache_prefix_message(messages, prefix)
     # Progress changes every accepted message and must stay after the cache prefix.
-    trigger = _trigger_message(require_message=require_message)
+    trigger = _trigger_message(require_message=require_message, model_id=model_id)
     progress = (
         f"Conversation progress: {conversation.get('message_count', 0)}/{setting['max_turns']} messages; "
         f"{conversation.get('total_chars', 0)}/{setting['max_total_chars']} characters used."
@@ -145,7 +153,7 @@ def _build_request(
     return model_id, float(temperature), system, messages
 
 
-def _invoke_candidate(
+def _invoke_candidate_once(
     batch: dict,
     conversation: dict,
     participant: dict,
@@ -154,6 +162,7 @@ def _invoke_candidate(
     require_message: bool,
     attempt: int,
     before_attempt=None,
+    recovery_attempt=0,
 ) -> str | None:
     owner_id = str(batch["owner_id"])
     if not credits_allow(owner_id):
@@ -177,6 +186,9 @@ def _invoke_candidate(
         max_messages=1,
         before_attempt=before_attempt or (lambda: _check_deadline(batch)),
     )
+    log_speak_result(result, model_id, conversation_id=conversation["conversation_id"],
+                     ai_participant_id=participant_id(participant) or "",
+                     recovery_attempt=recovery_attempt)
     resolved_messages = [
         str(message).strip()
         for message in (result.get("messages") or [])
@@ -198,9 +210,15 @@ def _invoke_candidate(
             "candidate_attempt": attempt,
             "messages_count": len(resolved_messages),
             "temperature": temperature,
+            "output_error": result.get("output_error"),
+            "stop_reason": result.get("stop_reason"),
+            "truncated": bool(result.get("truncated")),
+            "recovery_attempt": recovery_attempt,
         },
     )
     _check_deadline(batch)
+    if result.get("output_error"):
+        raise BedrockInferenceError(result["output_error"], "Invalid speak output", retryable=False)
     if not resolved_messages:
         if require_message:
             raise TerminalConversationError("model returned silence when a message was required")
@@ -208,6 +226,22 @@ def _invoke_candidate(
     if len(resolved_messages) != 1:
         raise TerminalConversationError("model returned more than one message")
     return resolved_messages[0]
+
+
+def _invoke_candidate(batch, conversation, participant, history, *, require_message,
+                      attempt, before_attempt=None):
+    # Accept usable truncated speech as-is. Only an unrecoverable truncated tool
+    # payload gets one recovery attempt; both attempts retain their usage records.
+    for recovery_attempt in range(2):
+        try:
+            return _invoke_candidate_once(
+                batch, conversation, participant, history,
+                require_message=require_message, attempt=attempt,
+                before_attempt=before_attempt, recovery_attempt=recovery_attempt,
+            )
+        except BedrockInferenceError as exc:
+            if exc.error_type != "truncated_without_message" or recovery_attempt:
+                raise
 
 
 def _choose_message(batch: dict, conversation: dict, history: list[dict], *, before_attempt=None) -> tuple[dict, str]:

@@ -1,6 +1,50 @@
 from chatroom_api import config
 from chatroom_api.ai_batch import worker
+from chatroom_api.bedrock_client import BedrockInferenceError
 import pytest
+
+
+@pytest.mark.parametrize('error,expected_calls', [('truncated_without_message', 2), ('missing_tool_call', 1)])
+def test_output_recovery_is_bounded_and_accounts_for_every_call(monkeypatch, error, expected_calls):
+    monkeypatch.setattr(worker, 'credits_allow', lambda _: True)
+    monkeypatch.setattr(worker, '_build_request', lambda *a, **kw: ('model', 0.7, '', []))
+    monkeypatch.setattr(worker.store, 'now_ms', lambda: 100)
+    monkeypatch.setattr(worker, 'invoke_speak_tool', lambda *a, **kw: {
+        'messages': [], 'output_error': error, 'output_tokens': 512})
+    usage = []
+    monkeypatch.setattr(worker, 'record_bedrock_usage', lambda **kw: usage.append(kw))
+    with pytest.raises(BedrockInferenceError, match=error):
+        worker._invoke_candidate(_batch(), _conversation(), _participants(2)[0], [],
+                                 require_message=True, attempt=1)
+    assert len(usage) == expected_calls
+    assert len({item['usage_event_id'] for item in usage}) == expected_calls
+
+
+def test_usable_truncated_speech_is_not_retried(monkeypatch):
+    monkeypatch.setattr(worker, 'credits_allow', lambda _: True)
+    monkeypatch.setattr(worker, '_build_request', lambda *a, **kw: ('model', 0.7, '', []))
+    monkeypatch.setattr(worker.store, 'now_ms', lambda: 100)
+    monkeypatch.setattr(worker, 'invoke_speak_tool', lambda *a, **kw: {
+        'messages': ['unfinished but usable'], 'truncated': True, 'output_tokens': 512})
+    usage = []
+    monkeypatch.setattr(worker, 'record_bedrock_usage', lambda **kw: usage.append(kw))
+    assert worker._invoke_candidate(_batch(), _conversation(), _participants(2)[0], [],
+                                   require_message=True, attempt=1) == 'unfinished but usable'
+    assert len(usage) == 1
+
+
+def test_empty_truncation_can_recover_once(monkeypatch):
+    monkeypatch.setattr(worker, 'credits_allow', lambda _: True)
+    monkeypatch.setattr(worker, '_build_request', lambda *a, **kw: ('model', 0.7, '', []))
+    monkeypatch.setattr(worker.store, 'now_ms', lambda: 100)
+    results = iter([{'messages': [], 'output_error': 'truncated_without_message'},
+                    {'messages': ['recovered']}])
+    monkeypatch.setattr(worker, 'invoke_speak_tool', lambda *a, **kw: next(results))
+    usage = []
+    monkeypatch.setattr(worker, 'record_bedrock_usage', lambda **kw: usage.append(kw))
+    assert worker._invoke_candidate(_batch(), _conversation(), _participants(2)[0], [],
+                                   require_message=True, attempt=1) == 'recovered'
+    assert [u['extra_raw_usage']['recovery_attempt'] for u in usage] == [0, 1]
 
 
 def _participants(count: int) -> list[dict]:

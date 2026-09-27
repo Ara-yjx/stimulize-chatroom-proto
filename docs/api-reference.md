@@ -31,8 +31,9 @@ Response: `{ events, next_after, has_more }`
 ### GET /chat/messages?after={cursor}
 Poll participant-visible events forward. `after` is normally the opaque
 `next_after` returned by the previous response. Numeric epoch-ms values remain
-temporarily accepted for cached pre-cutover widgets. Internal tick diagnostics
-are not stored as history events.
+temporarily accepted for cached pre-cutover widgets. Technical inference errors
+are stored as `system/inference_error` events in the event table, but filtered
+out of participant-facing `events` (including send responses).
 
 Headers: `Authorization: Bearer <jwt>`
 Response:
@@ -61,6 +62,14 @@ Status codes:
 
 The stream includes all episodes; episode is optional event metadata, never a
 query or key dimension.
+
+Preview may pass `debug=1` to `/chat/messages` and `/chat/history`. Responses
+add `diagnostics: [{event_id, timestamp, code, ai_participant_id, ai_name}]`;
+errors remain excluded from `events`. Cursors still advance over diagnostic
+events, including pages with no visible messages. This flag is not an auth
+boundary: only sanitized codes/identity metadata are exposed, never exception
+details or prompts. Diagnostics do not enter model context, Qualtrics ED or
+exported chat history. Ordinary system notices remain visible.
 
 ---
 
@@ -136,7 +145,9 @@ owner-authenticated and asynchronous.
 - `POST /api/downloadAiConversationBatch/:batch_job_id`: prepare/reuse a ZIP for a terminal batch. Returns `data: {status: "in_progress"}` or `{status: "ready", download_url}` (15-minute pre-signed URL). Optional `retry_failed: true` on a new user click restarts a failed export; subsequent polls use false. Batch detail no longer supplies download URLs.
 
 Settings default to `max_message_chars=400`, `max_total_chars=20000`, and
-`max_turns=100`. Current caps are `4000`, `500000`, and `1000`. The final
+`max_turns=100`. Current caps are `1000`, `500000`, and `1000`. Message-length
+guidance may be `null`; all speech requests still have a 2048-output-token
+provider budget, including tool formatting. The final
 message may cross the total-character target. `batch_count` is `1..50`, the
 fixed batch deadline is 24 hours, and exports expire after 7 days.
 
@@ -286,6 +297,11 @@ The widget discovers global `Qualtrics.SurveyEngine`, prefers `setJSEmbeddedData
 5. **Lobby aborted** (multi-human wait, 410) — "No one else joined this chatroom." + "Reconnect" button
 
 ### Error states
+
+Editor preview initializes the widget with `debug: true`. It displays inference
+diagnostics separately, coalescing repeated errors per AI/code with an occurrence
+count. Normal embeds leave this option unset; cached widgets also receive no
+technical errors in their ordinary `events` array.
 
 - **Failed to connect**: chatroom ID invalid or backend unreachable. Shows inline error.
 - **Session expired**: JWT expired (3h TTL). Shows error bubble.

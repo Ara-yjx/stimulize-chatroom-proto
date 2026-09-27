@@ -80,6 +80,8 @@ export interface InitOptions {
   participantId?: string;
   apiBaseUrl?: string;
   beta?: boolean;
+  /** Editor-only display of sanitized inference diagnostics. Not authorization. */
+  debug?: boolean;
 }
 
 export interface SessionInfo {
@@ -115,6 +117,7 @@ export interface SendMessageResponse {
 }
 
 export interface PollMessagesResponse {
+  diagnostics?: InferenceDiagnostic[];
   events: ConversationEvent[];
   next_after?: string | null;
   has_more?: boolean;
@@ -124,8 +127,17 @@ export interface PollMessagesResponse {
 }
 
 export interface HistoryPageResponse {
+  diagnostics?: InferenceDiagnostic[];
   events: ConversationEvent[];
   next_before?: string | null;
   latest_cursor?: string | null;
   has_more: boolean;
+}
+
+export interface InferenceDiagnostic {
+  event_id?: string;
+  timestamp: number;
+  code: string;
+  ai_participant_id?: string;
+  ai_name: string;
 }

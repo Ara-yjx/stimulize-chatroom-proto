@@ -39,11 +39,12 @@ export async function sendMessage(
 export async function pollMessages(
   apiBaseUrl: string,
   token: string,
-  after: string | number | null
+  after: string | number | null,
+  debug = false
 ): Promise<PollMessagesResponse> {
   const value = after ?? 0;
   return _$.ajax({
-    url: `${apiBaseUrl}/chat/messages?after=${encodeURIComponent(String(value))}`,
+    url: `${apiBaseUrl}/chat/messages?after=${encodeURIComponent(String(value))}${debug ? '&debug=1' : ''}`,
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -53,13 +54,14 @@ export async function fetchHistory(
   apiBaseUrl: string,
   token: string,
   before: string | null,
-  limit = 50
+  limit = 50,
+  debug = false
 ): Promise<HistoryPageResponse> {
   const query = before
     ? `?before=${encodeURIComponent(before)}&limit=${limit}`
     : `?limit=${limit}`;
   return _$.ajax({
-    url: `${apiBaseUrl}/chat/history${query}`,
+    url: `${apiBaseUrl}/chat/history${query}${debug ? '&debug=1' : ''}`,
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
   });

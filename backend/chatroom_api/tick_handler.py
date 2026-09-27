@@ -27,10 +27,12 @@ from typing import Optional
 from uuid import uuid4
 
 from chatroom_api import config, credits_client, resumable
+from chatroom_api.diagnostics import is_inference_diagnostic
 from chatroom_api._providers import get_event_store_provider
 from chatroom_api.bedrock_client import (
     BedrockInferenceError,
     invoke_speak_tool,
+    log_speak_result,
 )
 from chatroom_api.constants import (
     IDLE_FOLLOW_UP_AFTER_MS,
@@ -327,6 +329,7 @@ def _build_tick_trigger_message(
     *,
     require_response: bool = False,
     idle_follow_up: bool = False,
+    model_id: str = '',
 ) -> dict:
     """Return the thin user-side trigger appended when history ends on assistant.
 
@@ -351,6 +354,12 @@ def _build_tick_trigger_message(
             "Always call the `speak` tool. If you choose silence, call "
             "it with an empty messages array."
         )
+    from chatroom_api.prompts.speech_protocol import uses_json_speech
+    if uses_json_speech(model_id):
+        instruction = instruction.replace('Always call the `speak` tool', 'Return a JSON object')
+        instruction = instruction.replace('If you choose silence, call it with an empty messages array.',
+                                          'If you choose silence, return {"messages": []}.')
+        instruction += ' Use only the messages array field, with strings for messages.'
     return {
         "role": "user",
         "content": [{"text": instruction}],
@@ -410,7 +419,8 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
 
     chatroom_id = conv.get("chatroom_id")
     chatroom_setting = conv.get("chatroom_setting") or {}
-    visible_history = history_store.query_prompt_events(conversation_id, now_ms)
+    visible_history = [event for event in history_store.query_prompt_events(conversation_id, now_ms)
+                       if not is_inference_diagnostic(event)]
     runtime_conv = {**conv, "events": visible_history}
     states = dict(conv.get("ai_tick_state_by_participant_id") or {})
     legacy_last_speak = dict(conv.get("last_speak_at_by_session") or {})
@@ -602,19 +612,11 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
             _build_tick_trigger_message(
                 require_response=require_response,
                 idle_follow_up=idle_follow_up,
+                model_id=model_id,
             )
         ]
 
-    try:
-        bedrock_messages = attach_for_inference(bedrock_messages, chatroom_setting, candidate_participant or {})
-        result = _invoke_with_model_fallback(
-            model_id,
-            system_prompt,
-            bedrock_messages,
-            temperature=temperature,
-            require_message=require_response or idle_follow_up,
-        )
-    except BedrockInferenceError as err:
+    def record_inference_error(err):
         tick_state = {
             **states.get(candidate_session_id, {}),
             "last_completed_tick_id": uuid4().hex,
@@ -633,6 +635,9 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                 [{
                     "type": "system",
                     "subtype": "inference_error",
+                    "error_code": err.error_type,
+                    "ai_participant_id": candidate_session_id,
+                    "ai_name": candidate_nickname,
                     "sender": "System",
                     "role": "system",
                     "content": f"Chatroom server error: {err.error_type}",
@@ -667,6 +672,15 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
         )
         return {"status": "bedrock_error", "error_type": err.error_type}
 
+    try:
+        bedrock_messages = attach_for_inference(bedrock_messages, chatroom_setting, candidate_participant or {})
+        result = _invoke_with_model_fallback(
+            model_id, system_prompt, bedrock_messages, temperature=temperature,
+            require_message=require_response or idle_follow_up,
+        )
+    except BedrockInferenceError as err:
+        return record_inference_error(err)
+
     authored_at_ms = _now_ms()
     messages = (result.get("messages", []) or [])[:MAX_AI_BUBBLES_PER_TICK]
     if len(result.get("messages", []) or []) > MAX_AI_BUBBLES_PER_TICK:
@@ -680,6 +694,8 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
     cache_read_input_tokens = result.get("cache_read_input_tokens", 0)
     cache_write_input_tokens = result.get("cache_write_input_tokens", 0)
     resolved_model_id = result.get("resolved_model_id") or model_id
+    log_speak_result(result, resolved_model_id, conversation_id=conversation_id,
+                     ai_participant_id=candidate_session_id)
     provider = "bedrock"
 
     usage_event_id = f"{conversation_id}:{now_ms}:{candidate_session_id}"
@@ -719,6 +735,9 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                 raw_usage_json={
                     "bedrock_invoked": True,
                     "messages_count": len(messages),
+                    "output_error": result.get("output_error"),
+                    "stop_reason": result.get("stop_reason"),
+                    "truncated": bool(result.get("truncated")),
                     "cache_read_input_tokens": cache_read_input_tokens,
                 "cache_write_input_tokens": cache_write_input_tokens,
                 "temperature": temperature,
@@ -742,6 +761,13 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                     )
     except Exception as usage_exc:
         logger.warning("tick: usage write failed for conversation %s: %s", conversation_id, usage_exc)
+
+    # Malformed output is an error, not silence, but the invocation still costs
+    # tokens and must be accounted for before updating the scheduling state.
+    if result.get("output_error"):
+        return record_inference_error(BedrockInferenceError(
+            result["output_error"], "Invalid speak output", retryable=False,
+        ))
 
     # --- Step 5: wait, then persist output and compact tick projection. -----
     # Delayed AI messages are intentionally absent from DynamoDB until their
