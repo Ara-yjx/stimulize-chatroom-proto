@@ -38,6 +38,7 @@ def _reset_state(monkeypatch):
     monkeypatch.setattr(config, "USE_MOCK_LOBBY", True)
     monkeypatch.setattr(config, "STIMULIZE_API_URL", "https://stimulize.example.com")
     monkeypatch.setattr(config, "STIMULIZE_API_TOKEN", "test-token")
+    monkeypatch.setattr(config, "CHATROOM_BALANCE_ENFORCEMENT_ENABLED", True)
     mock_dynamo.reset()
     mock_lobby.reset()
     mock_rds._usage_records.clear()
@@ -92,13 +93,15 @@ def test_insufficient_credits_skip_resumable_inference():
     assert mock_dynamo.get_conversation(conversation_id)["status"] == "active"
 
 
-def test_allowed_credits_write_resumable_message_usage_and_debit_once():
+@pytest.mark.parametrize("enforce", [True, False])
+def test_allowed_credits_write_resumable_message_usage_and_debit_once(monkeypatch, enforce):
+    monkeypatch.setattr(config, "CHATROOM_BALANCE_ENFORCEMENT_ENABLED", enforce)
     conversation_id, ai_participant_id = _seed_resumable_conversation()
 
     with patch.object(tick_handler, "run_gate", return_value=_gate_for(ai_participant_id)), \
          patch.object(tick_handler, "_requires_response_after_human", return_value=False), \
          patch.object(tick_handler, "pick_delays_ms", return_value=[0]), \
-         patch.object(tick_handler.credits_client, "check_credits", return_value=True), \
+         patch.object(tick_handler.credits_client, "check_credits", return_value=enforce) as check, \
          patch.object(tick_handler.credits_client, "debit_usage") as debit, \
          patch.object(tick_handler, "invoke_speak_tool", return_value={
              "messages": ["Let us reflect on that."],
@@ -108,6 +111,7 @@ def test_allowed_credits_write_resumable_message_usage_and_debit_once():
         result = tick_handler.handle_tick({"conversation_id": conversation_id})
 
     assert result["status"] == "spoke"
+    assert check.call_count == int(enforce)
     assert len(mock_rds._usage_records) == 1
     usage = mock_rds._usage_records[0]
     debit.assert_called_once()

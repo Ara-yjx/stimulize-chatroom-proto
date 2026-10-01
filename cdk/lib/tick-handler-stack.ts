@@ -10,6 +10,7 @@ import {
 import { Construct } from "constructs";
 import { backendPythonCode } from "./backend-code";
 import { ChatroomServiceMode } from "./chatroom-service-mode";
+import { configureChatroomCredits } from "./chatroom-credits";
 
 export interface TickHandlerStackProps extends StackProps {
   conversationTable: dynamodb.ITable;
@@ -101,6 +102,8 @@ export class TickHandlerStack extends Stack {
         TICK_HANDLER_LOCAL: "false",
       },
     });
+
+    configureChatroomCredits(this, this.lambdaFunction);
 
     // --------------- IAM ---------------
 

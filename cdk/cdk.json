@@ -27,6 +27,7 @@
     "enableCustomDomain": "false",
     "useVpcEndpoints": "false",
     "chatroomServiceMode": "normal",
+    "chatroomBalanceEnforcement": "false",
     "enableAiBatch": "true",
     "enablePromptAttachments": "true"
   }

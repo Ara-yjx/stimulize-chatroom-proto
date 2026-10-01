@@ -24,6 +24,29 @@ python dev_server.py
 ```
 Runs on `http://localhost:5001`. Local development can use mock DynamoDB/RDS/lobby env vars or shared RDS credentials, depending on the test.
 
+### Ledger recording and balance enforcement
+
+- Empty `STIMULIZE_API_URL`: no credit HTTP calls; RDS usage recording continues.
+- Configured `STIMULIZE_API_URL` and service credentials: record inference debits,
+  including at zero or negative balance. Deploy the management backend's full-cost
+  debit implementation first; its older implementation clamps debits to balance.
+- `CHATROOM_BALANCE_ENFORCEMENT_ENABLED=false` (default): neither human-AI ticks
+  nor AI-AI workers check balance before inference. Ledger failures are logged
+  without stopping the conversation.
+- Set the flag to `true` to enable the existing pre-inference credit check when
+  the API URL is configured. No URL still means local/free mode.
+
+This does not backfill historical clamped debits. Before deployment, inspect the
+actual RDS wallet/ledger constraints for any non-negative balance restriction;
+local SQLite tests cannot establish the live database schema.
+
+CDK uses `stimulizeApiUrl` and `chatroomBalanceEnforcement` context for tick/batch
+worker only. Supply each stack's `StimulizeApiToken` NoEcho parameter privately;
+never put the token in context files or Git. The production app records against
+production management without enforcement. Override `-c stimulizeApiUrl=` for
+disposable dev stacks that must not write the shared ledger. Do not revert the
+management debit implementation to balance-clamping once negative balances exist.
+
 ## Test
 ```bash
 pytest tests/

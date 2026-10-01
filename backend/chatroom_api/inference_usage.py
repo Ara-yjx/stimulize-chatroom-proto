@@ -13,9 +13,14 @@ from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
 logger = logging.getLogger(__name__)
 
 
-def credits_allow(owner_id: str | int) -> bool:
-    if not config.STIMULIZE_API_URL:
+def credits_allow(owner_id: str | int | None) -> bool:
+    # Record incurred costs even at zero/negative balance. Only an explicit
+    # enforcement opt-in may prevent an inference; ledger writes stay enabled.
+    if not config.CHATROOM_BALANCE_ENFORCEMENT_ENABLED or not config.STIMULIZE_API_URL:
         return True
+    if owner_id is None:
+        logger.warning("credit check: missing owner_id; skipping inference")
+        return False
     return credits_client.check_credits(owner_id)
 
 

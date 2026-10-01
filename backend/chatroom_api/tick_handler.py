@@ -44,6 +44,7 @@ from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.cursors import decode_cursor, InvalidCursorError
 from chatroom_api.delays import pick_delays_ms
 from chatroom_api.gate import run_gate
+from chatroom_api.inference_usage import credits_allow
 from chatroom_api.event_store import ConditionalWriteFailed
 from chatroom_api.participants import event_author_id, participant_id
 from chatroom_api.pricing import estimate_cost_usd, is_unknown_pricing_key
@@ -579,18 +580,9 @@ def _handle_owned_tick(conversation_id: str, tick_id: str, now_ms: int) -> dict:
                 lookup_exc,
             )
 
-    if config.STIMULIZE_API_URL:
-        allowed = False
-        if owner_id is None:
-            logger.warning(
-                "tick: owner_id missing for chatroom %s; skipping inference",
-                chatroom_id,
-            )
-        else:
-            allowed = credits_client.check_credits(owner_id)
-        if not allowed:
-            _log_tick(conversation_id, "skipped", reason="insufficient_credits")
-            return {"status": "skipped", "reason": "insufficient_credits"}
+    if not credits_allow(owner_id):
+        _log_tick(conversation_id, "skipped", reason="insufficient_credits")
+        return {"status": "skipped", "reason": "insufficient_credits"}
 
     candidate_session_id = decision.candidate_session_id
     candidate_nickname = decision.candidate_nickname or "Participant"

@@ -525,7 +525,8 @@ def test_delayed_message_is_dropped_when_duration_elapses_during_wait(monkeypatc
     assert len(mock_rds._usage_records) == 1
 
 
-def test_insufficient_credits_skips_bedrock():
+def test_insufficient_credits_skips_bedrock(monkeypatch):
+    monkeypatch.setattr(config, "CHATROOM_BALANCE_ENFORCEMENT_ENABLED", True)
     cid, _ = _seed()
 
     with patch.object(config, "STIMULIZE_API_URL", "https://stimulize.example.com"), \
@@ -541,7 +542,9 @@ def test_insufficient_credits_skips_bedrock():
     assert mock_rds._usage_records == []
 
 
-def test_allowed_credits_runs_bedrock_then_write_usage_and_debit():
+@pytest.mark.parametrize("enforce", [True, False])
+def test_allowed_credits_runs_bedrock_then_write_usage_and_debit(monkeypatch, enforce):
+    monkeypatch.setattr(config, "CHATROOM_BALANCE_ENFORCEMENT_ENABLED", enforce)
     cid, started_at_ms = _seed()
     now_ms = started_at_ms + 60_000
     order: list[str] = []
@@ -549,7 +552,7 @@ def test_allowed_credits_runs_bedrock_then_write_usage_and_debit():
     def _check(owner_id):
         order.append("check")
         assert owner_id == "u"
-        return True
+        return enforce
 
     def _invoke(*_args, **_kwargs):
         order.append("bedrock")
@@ -581,7 +584,7 @@ def test_allowed_credits_runs_bedrock_then_write_usage_and_debit():
         result = tick_handler.handle_tick({"conversation_id": cid})
 
     assert result["status"] == "spoke"
-    assert order == ["check", "bedrock", "write", "debit"]
+    assert order == (["check"] if enforce else []) + ["bedrock", "write", "debit"]
     assert len(mock_rds._usage_records) == 1
     usage = mock_rds._usage_records[0]
     assert usage["usage_event_id"] == f"{cid}:{now_ms}:ai_001"

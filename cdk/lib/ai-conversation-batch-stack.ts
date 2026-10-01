@@ -21,6 +21,7 @@ import {
 import { Construct } from "constructs";
 import { backendPythonCode } from "./backend-code";
 import { conversationWorkflow, conversationRecovery } from "./ai-conversation-workflow";
+import { configureChatroomCredits } from "./chatroom-credits";
 
 export interface AiConversationBatchStackProps extends StackProps {
   conversationTable: dynamodb.ITable;
@@ -162,6 +163,7 @@ export class AiConversationBatchStack extends Stack {
         }),
       },
     });
+    configureChatroomCredits(this, this.worker);
     this.exporter = new lambda.Function(this, "Exporter", {
       functionName: `${prefix}-exporter`,
       runtime: lambda.Runtime.PYTHON_3_12,

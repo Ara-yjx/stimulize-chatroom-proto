@@ -13,6 +13,12 @@ import { AiConversationBatchStack } from "../lib/ai-conversation-batch-stack";
 
 const app = new cdk.App();
 
+// Only the production entry point defaults to recording usage in the ledger.
+// Disposable dev entry points do not inherit this endpoint from cdk.json.
+if (app.node.tryGetContext("stimulizeApiUrl") === undefined) {
+  app.node.setContext("stimulizeApiUrl", "https://q15bwdgudf.execute-api.us-east-2.amazonaws.com/live");
+}
+
 const env: cdk.Environment = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
   region: process.env.CDK_DEFAULT_REGION,
