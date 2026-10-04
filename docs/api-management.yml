@@ -418,8 +418,9 @@ components:
           type: boolean
           description: >-
             AI-only unanimous early completion. Optional; runtime treats absence
-            as true. Management validates present values strictly without adding
-            a default to stored settings or batch snapshots. Human-AI ignores it.
+            as false for legacy compatibility. The editor explicitly sets true
+            for new rooms. Management validates present values strictly without
+            adding a default to stored settings or batch snapshots. Human-AI ignores it.
 
     Chatroom:
       type: object

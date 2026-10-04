@@ -93,11 +93,12 @@ def test_native_multiple_actions_and_json_duplicate_keys_fail_loudly():
 
 
 def test_defaults_are_strict_and_rules_are_ai_only_without_rewriting_researcher_prompts():
-    assert early_completion_enabled({}) is True
+    assert early_completion_enabled({}) is False
     for invalid in (None, 0, 1, 'true', 'false'):
         with pytest.raises(ValueError, match='allow_early_completion'):
             early_completion_enabled({'allow_early_completion': invalid})
-    setting = {'ai_count': 2, 'topic_instruction': 'Researcher says agreeToEnd() verbatim', 'model_id': 'google.gemma-3-27b-it'}
+    setting = {'ai_count': 2, 'topic_instruction': 'Researcher says agreeToEnd() verbatim', 'model_id': 'google.gemma-3-27b-it',
+               'allow_early_completion': True}
     prompt = build_system_prompt('ai_only', setting, '', 'A', '')
     assert '{"action":"agree_to_end"}' in prompt
     assert 'Researcher says agreeToEnd() verbatim' in prompt
@@ -106,3 +107,13 @@ def test_defaults_are_strict_and_rules_are_ai_only_without_rewriting_researcher_
     for mode, configured in [('ai_only', {'allow_early_completion': False}), ('group', {}), ('one_on_one', {})]:
         prompt = build_system_prompt(mode, {**setting, **configured}, '', 'A', '')
         assert 'agree_to_end' not in prompt and 'agreeToEnd' not in prompt
+
+
+@pytest.mark.parametrize('model', ['global.anthropic.claude-sonnet-4-6', 'google.gemma-3-27b-it'])
+def test_missing_flag_preserves_legacy_prompt_for_native_and_json_models(model):
+    setting = {'ai_count': 3, 'model_id': model}
+    legacy = build_system_prompt('ai_only', setting, '', 'A', '')
+    disabled = build_system_prompt('ai_only', {**setting, 'allow_early_completion': False}, '', 'A', '')
+    assert legacy == disabled
+    assert 'agreeToEnd' not in legacy and 'agree_to_end' not in legacy
+    assert 'allow_early_completion' not in setting

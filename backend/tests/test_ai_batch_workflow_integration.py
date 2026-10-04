@@ -86,6 +86,7 @@ def runtime(monkeypatch):
             "deadline_at": now + 3600000, "batch_count": 1, "queued_count": 1, "running_count": 0,
             "unfinished_count": 1, "completed_count": 0, "failed_count": 0, "timed_out_count": 0,
             "settings_snapshot": {"model_id": "test-model", "temperature": "0.7", "mimic_human": True,
+                                  "allow_early_completion": True,
                                   "max_turns": 20, "max_total_chars": 20000, "max_message_chars": 400},
         }
         ddb.Table("batches").put_item(Item=batch)
@@ -250,10 +251,12 @@ def test_late_consent_is_paid_but_never_accepted(runtime, monkeypatch):
     assert store.get_batch('batch')['completed_count'] == 0
 
 
-@pytest.mark.parametrize('enabled,chars,reason', [(False, 20000, 'max_messages'), (True, 1, 'max_characters')])
+@pytest.mark.parametrize('enabled,chars,reason', [(None, 20000, 'max_messages'), (False, 20000, 'max_messages'), (True, 1, 'max_characters')])
 def test_switch_and_limits_stop_without_final_confirmation(runtime, monkeypatch, enabled, chars, reason):
     batch = store.get_batch('batch')
     batch['settings_snapshot'].update(allow_early_completion=enabled, max_turns=3, max_total_chars=chars)
+    if enabled is None:
+        del batch['settings_snapshot']['allow_early_completion']
     runtime.ddb.Table('batches').put_item(Item=batch)
     calls = []
     def speech(*args, **kwargs):
@@ -266,6 +269,32 @@ def test_switch_and_limits_stop_without_final_confirmation(runtime, monkeypatch,
     assert len(runtime.usage) == (3 if not enabled else 1)
     if not enabled:
         assert all(not call['allow_agreement'] for call in calls)
+    assert store.get_batch('batch')['settings_snapshot'] == batch['settings_snapshot']
+
+
+def test_running_legacy_batch_without_flag_keeps_speech_only_path(runtime, monkeypatch):
+    from chatroom_api.ai_batch.contracts import turn_write_id
+    batch = store.get_batch('batch')
+    del batch['settings_snapshot']['allow_early_completion']
+    batch['settings_snapshot']['max_turns'] = 3
+    runtime.ddb.Table('batches').put_item(Item=batch)
+    assert store.start_conversation('batch', store.get_conversation('conversation'))
+    store.commit_turn(store.get_conversation('conversation'), {
+        'type': 'message', 'content': 'Existing opening', 'timestamp': runtime.clock[0],
+        'ai_participant_id': 'ai-0', 'turn_write_id': turn_write_id('conversation', 0),
+    })
+
+    def speech(*args, **kwargs):
+        assert not kwargs['allow_agreement']
+        return runtime.infer(*args, **kwargs)
+
+    monkeypatch.setattr(worker, 'invoke_speak_tool', speech)
+    monkeypatch.setattr(worker, 'next_decision', lambda *_: pytest.fail('Legacy batch used new scheduler'))
+    worker.lambda_handler({'batch_job_id': 'batch', 'conversation_id': 'conversation'})
+    assert [event['ai_participant_id'] for event in store.query_history('conversation')] == ['ai-0', 'ai-1', 'ai-0']
+    assert store.get_conversation('conversation')['completion_reason'] == 'max_messages'
+    assert len(runtime.usage) == 2
+    assert store.get_batch('batch')['settings_snapshot'] == batch['settings_snapshot']
 
 
 def test_committed_consent_then_crash_is_not_repeated(definition, runtime, monkeypatch):

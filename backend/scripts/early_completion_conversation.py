@@ -149,6 +149,7 @@ def main() -> None:
     args = parser.parse_args()
     setting = json.loads(args.settings.read_text()) if args.settings else {
         'human_count': 0, 'ai_count': 2, 'model_id': args.model, 'temperature': 0.7,
+        'allow_early_completion': True,
         'max_turns': 8, 'max_total_chars': 2000, 'max_message_chars': 180,
         'topic_instruction': 'Choose one practical way a library could reduce electricity use, explaining its main trade-off.',
     }

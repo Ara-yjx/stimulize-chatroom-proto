@@ -16,6 +16,7 @@ def batch():
         "created_at": "2026-09-12T00:00:00Z", "batch_count": 0, "status": "completed",
         "settings_snapshot": {
             "ai_count": 2, "human_count": 0, "model_id": "model", "temperature": 0.7,
+            "allow_early_completion": True,
             "topic_instruction": "Discuss campus life", "additional_prompt": "Be curious",
             "ai_personas": [{"internal_name": "planner", "persona": "Plan ahead", "temperature": 0}],
         },

@@ -12,8 +12,8 @@ class InferenceDecision:
 
 
 def early_completion_enabled(setting: dict) -> bool:
-    """Resolve the runtime default without mutating the settings snapshot/hash."""
-    value = setting.get('allow_early_completion', True)
+    """Keep legacy rooms/batches disabled; new rooms explicitly opt in via editor."""
+    value = setting.get('allow_early_completion', False)
     if not isinstance(value, bool):
         raise ValueError('allow_early_completion must be a boolean')
     return value

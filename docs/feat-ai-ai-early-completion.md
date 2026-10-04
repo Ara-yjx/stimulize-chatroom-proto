@@ -21,11 +21,17 @@ Existing character threshold, deadline and workflow limits remain in force.
 
 ## Room Setting and Rollout
 
-Decided: add `setting.allow_early_completion`, a boolean defaulting to `true`.
-Editor label: "Allow early completion", shown only for AI-only rooms. An existing
-room without the field also defaults to enabled for future batches; explicit
-`false` keeps the old prompt, speech-only protocol and scheduling path. Human-AI
-ignores this setting. It lives in the existing JSON setting, not a new SQL column.
+Decided: add optional boolean `setting.allow_early_completion`. Editor label:
+"Allow early completion", shown only for AI-only rooms.
+
+- **New rooms:** editor defaults the control on and explicitly saves `true`.
+- **Existing rooms and batch snapshots:** missing means `false`, preserving the
+  old prompt, speech-only protocol and scheduling path. Loading/saving an old
+  room must not silently opt it in; its editor control starts off.
+- **Explicit values:** `true` enables the feature; `false` disables it. Runtime
+  reads only the batch snapshot, so changing a room does not change an old batch.
+
+Human-AI ignores this setting. It lives in existing JSON, not a new SQL column.
 
 Management already preserves unknown top-level setting fields, copies the setting
 into `settings_snapshot`, and returns conversation metadata without a field
@@ -33,19 +39,17 @@ allowlist. Add a shared optional-boolean type check on room create/update and
 batch creation; reject strings, numbers and null with a field-specific error.
 Do not add a default in management or refactor other setting validation.
 
-Editor sends an explicit boolean. Runtime owns the new field's strict boolean
-validation and missing-value default (`true`), reading only the batch snapshot,
-never current room settings. Validate before inference; invalid API-supplied
+Editor sends an explicit boolean. Runtime owns strict boolean validation and
+the missing-value default (`false`). Validate before inference; invalid API-supplied
 values also fail provisioner validation before any conversation is created.
 Do not rewrite raw snapshots/request hashes to insert defaults.
 
-**Release gate still to confirm:** missing defaults to true for old snapshots
-too; it cannot also mean "old batch, remain disabled" without a separate marker.
-The simplest proposed rollout is a coordinated no-new-batches window after all
-existing work is terminal, then runtime before editor. If uninterrupted in-flight
-legacy batches are required, explicitly design a runtime compatibility marker
-before deployment. Do not silently switch active batches. No env switch or SQL
-migration is needed.
+**Rollout:** deploy runtime before exposing the editor control. Missing-field
+batches stay on the legacy path without a migration or execution marker; do not
+rewrite them to add the field. Inspect active work before updating the shared
+runtime, particularly any snapshots already containing explicit `true`. A blanket
+drain is not required solely for missing-field compatibility. No env switch or
+SQL migration is needed.
 
 ## Options and Decision
 
@@ -269,10 +273,14 @@ in the manifest, so they do not receive a successful-completion TXT footer.
    and JSON paths, readiness withdrawn by speech, no-ready limit completion and
    a human-AI regression. Test batches stay tiny and under one minute. Inspect
    actual downloaded TXT/JSON/prompt.md, completion reasons, usage/ledger and
-   workflow status; clean up test rooms. Preserve active customer batches and
-   agree the release gate above, then deploy runtime and editor.
+   workflow status; clean up test rooms. Preserve active customer batches using
+   the compatibility rules above, then deploy runtime and editor.
 
 ### Acceptance Evidence (2026-10-04)
+
+The cloud evidence below predates the missing-field correction to `false`.
+Do not treat the earlier missing-field cloud run as proof of legacy compatibility;
+verify that separately with the corrected candidate before release.
 
 - Candidate commits: runtime `890a66a`, management `21cddc7`, editor `217c449`
   plus the browser-verified wrapping fix `afbcda0`. All remain on local
@@ -316,8 +324,8 @@ in the manifest, so they do not receive a successful-completion TXT footer.
   of the three automatic deleted-table system backups; they expire on 2026-11-08.
   No running temporary infrastructure remains.
 
-Remaining release work: agree the no-new-batches/drain window above, then release
-runtime before editor. Raw responses, identifiers and downloaded test data stay
+Remaining release work: verify missing-field compatibility and inspect active
+batches, then release runtime before editor. Raw responses, identifiers and downloaded test data stay
 in gitignored local artifacts, not this document.
 
 ## Main Risks and Mitigations
@@ -336,10 +344,10 @@ in gitignored local artifacts, not this document.
   boundaries can otherwise complete too early, lose decisions or double-count.
   Guard every action with history revision, running status and incremented state
   version; transact last-ready acceptance with terminal state and batch counters.
-- **Default/rollout drift:** missing means true in runtime, including old
-  snapshots. Test missing/true/false/invalid values at both management entry points
-  and provisioning; use the agreed release gate or explicit legacy execution marker.
-  Do not claim snapshot immutability alone protects missing-field defaults.
+- **Default/rollout drift:** new editor rooms explicitly opt in, but missing means
+  false for stored rooms and snapshots. Test existing-room load/save, in-flight
+  legacy batches, explicit true/false and invalid values. Management must preserve
+  absence; runtime must not rewrite snapshots or request hashes.
 - **Cost and liveness:** confirmation adds paid calls; duplicate inferences may
   still occur on retry even when commits are idempotent. Preserve usage/ledger,
   bounded recovery and before/after-inference terminal checks. Monitor readiness
