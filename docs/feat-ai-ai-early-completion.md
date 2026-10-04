@@ -1,7 +1,7 @@
 # Feat: AI-AI Early Completion
 
-Status: implemented and verified in an isolated cloud stack (2026-10-04).
-Not released to live runtime, management or hosted editor.
+Status: live batch runtime and beta management/editor released and verified
+(2026-10-04). Production management/editor follow the tested source merges.
 Tracking: [STML-32](https://linear.app/petryyy/issue/STML-32/).
 Baseline: [AI-AI Chat](./feat-ai-ai-chat.md). This extends AI-only batch workers,
 not the human-AI heartbeat/tick handler.
@@ -276,7 +276,20 @@ in the manifest, so they do not receive a successful-completion TXT footer.
    workflow status; clean up test rooms. Preserve active customer batches using
    the compatibility rules above, then deploy runtime and editor.
 
-### Acceptance Evidence (2026-10-04)
+### Live Release Checks (2026-10-04)
+
+- Released runtime `d67094a`, management `21cddc7`, editor `e474086`.
+  Only batch Lambda code changed; human-AI API/tick, heartbeat, environment
+  variables, billing settings and table schemas remained unchanged.
+- Missing field and explicit `false` completed at `max_messages`; native-tool
+  2/3-AI runs and a Gemma JSON run completed at `all_ai_agreed_to_end`.
+- Hosted beta browser verified legacy rooms remain off, new rooms explicitly
+  opt in, save/test-once, completion details and actual ZIP download. TXT/JSON
+  completion reasons and usage passed; human-AI send/reply also passed.
+- Test runs were single-conversation and under one minute. No global batch
+  pause, payment test or customer-room changes. Raw evidence stays local.
+
+### Isolated Acceptance Evidence (2026-10-04)
 
 The cloud evidence below predates the missing-field correction to `false`.
 Do not treat the earlier missing-field cloud run as proof of legacy compatibility;

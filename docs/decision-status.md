@@ -111,7 +111,7 @@ This file records decisions that came from implementation/debug discussions afte
 
 ### AI-only Early Completion Release
 
-- [Implemented; isolated cloud verified, not live](./feat-ai-ai-early-completion.md):
+- [Live batch runtime and beta verified; production UI rollout follows source merges](./feat-ai-ai-early-completion.md):
   `agreeToEnd` (`agree_to_end` in JSON/state), speaking invalidates prior confirmations, and the last speaker
   confirms last. Derive scheduling from accepted tick history, with no stored
   permutation and no change to no-ready scheduling or human-AI runtime behavior.
