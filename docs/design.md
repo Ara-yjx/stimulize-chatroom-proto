@@ -245,6 +245,12 @@ If a lobby reaches `aborted` (no humans remained at deadline, or pruning left 0 
 
 #### Async AI conversation flow ("tick" model)
 
+This section describes human-AI runtime ticks. AI-only batches have a separate
+worker scheduler; planned [early completion](./feat-ai-ai-early-completion.md)
+derives candidates from tick results and ends only after all AIs confirm the
+latest history, with the last speaker checked last. It leaves human-AI behavior
+and the no-ready AI-only scheduling policy unchanged.
+
 The naive "user sends message → all AIs reply" pattern doesn't fit group mode (multiple AIs talking over each other) or human-like timing (silent pauses, follow-up messages). Replace it with a **tick** model: a periodic event per active conversation that decides whether some AI should speak now. Same model serves group and 1-on-1.
 
 **Hybrid gate + tool-use:**

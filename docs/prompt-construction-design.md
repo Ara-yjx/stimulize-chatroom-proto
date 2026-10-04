@@ -41,6 +41,12 @@ wall-clock and relative-age text because speaker order is worker-managed rather
 than heartbeat-managed. AI-only mode ignores `mimic_human` and uses its own
 semi-formal peer-discussion scaffold (see below).
 
+Planned [AI-AI early completion](./feat-ai-ai-early-completion.md) adds an explicit
+`agreeToEnd` action, distinct from temporary silence, with equivalent native
+tool/JSON protocols. Tick-history-derived selection checks the last speaker last;
+new speech invalidates old confirmations. This is not implemented and does not
+change the human-AI rules below; no-ready AI-only scheduling must remain compatible.
+
 Human-AI mimic prompts and multi-participant assistant prompts allow a gentle
 topic nudge after the **whole room** has been silent for roughly 30 seconds.
 They separately invite a quiet participant to share, without repeated pressure
