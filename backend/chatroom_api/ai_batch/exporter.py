@@ -12,6 +12,7 @@ from uuid import uuid4
 from chatroom_api import config
 from chatroom_api.diagnostics import is_inference_diagnostic
 from chatroom_api.ai_batch import store
+from chatroom_api.ai_batch.completion import completion_footer
 from chatroom_api.ai_batch.contracts import (
     BATCH_TERMINAL_STATUSES,
     EXPORT_LEASE_MS,
@@ -77,13 +78,15 @@ def build_export_archive(batch: dict) -> tuple[bytes, dict]:
                         "participants": [{k: v for k, v in participant.items() if k != "avatar"}
                                          for participant in conversation.get("participants", [])],
                         "events": events,
+                        "completion_reason": conversation.get('completion_reason'),
                     },
                     default=_json_default,
                     indent=2,
                     ensure_ascii=False,
                 ),
             )
-            archive.writestr(f"{prefix}.txt", _render_text(events))
+            # A reason belongs to the export footer, not model/participant history.
+            archive.writestr(f"{prefix}.txt", _render_text(events) + completion_footer(conversation.get('completion_reason')) + '\n')
             included.append(index)
         manifest = {
             "version": 1,

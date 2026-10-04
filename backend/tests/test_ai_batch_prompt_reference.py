@@ -16,6 +16,7 @@ def batch():
         "created_at": "2026-09-12T00:00:00Z", "batch_count": 0, "status": "completed",
         "settings_snapshot": {
             "ai_count": 2, "human_count": 0, "model_id": "model", "temperature": 0.7,
+            "allow_early_completion": True,
             "topic_instruction": "Discuss campus life", "additional_prompt": "Be curious",
             "ai_personas": [{"internal_name": "planner", "persona": "Plan ahead", "temperature": 0}],
         },
@@ -24,7 +25,7 @@ def batch():
 
 def test_reference_contains_full_scaffold_order_and_effective_settings():
     text = prompt_reference.render_prompt_reference(batch())
-    assert get_scaffold_for_mode("ai_only", require_response=True).strip() in text
+    assert get_scaffold_for_mode("ai_only", require_response=True, allow_early_completion=True).strip() in text
     assert text.index("STEP 1") < text.index("STEP 2") < text.index("CACHE BOUNDARY") < text.index("STEP 3")
     for expected in ("Plan ahead", "Be curious", "Discuss campus life", "Effective temperature: 0.0",
                      "Effective model: model", "Max messages: 100", "not each inference request"):
@@ -34,7 +35,7 @@ def test_reference_contains_full_scaffold_order_and_effective_settings():
 
 def test_assistant_multiai_includes_both_scaffold_variants():
     row = batch()
-    row["settings_snapshot"].update(ai_count=3, mimic_human=False, ai_personas=[])
+    row["settings_snapshot"].update(ai_count=3, mimic_human=False, ai_personas=[], allow_early_completion=False)
     text = prompt_reference.render_prompt_reference(row)
     for required in (True, False):
         assert get_scaffold_for_mode("ai_only", ai_count=3, mimic_human=False, require_response=required).strip() in text

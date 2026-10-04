@@ -130,6 +130,12 @@ error, but failures are not necessarily independent and still consume usage.
 
 ## Protocol Contract and Integration
 
+The speech contract below remains the baseline. [AI-AI early completion](./feat-ai-ai-early-completion.md)
+adds a batch-only `agreeToEnd` action (JSON: `agree_to_end`); it is neither
+silence nor malformed output. Native/auto/JSON paths have passed isolated cloud
+probes; this extension is not yet released. Human-AI calls retain the existing
+speech/silence/error contract.
+
 Local integrated replay after routing changes: the original human-AI incident's
 saved settings, personas and first human message produced valid speech in 9/9
 calls (three each for its Llama 3.1 70B and two Gemma 3 4B participants). This uses

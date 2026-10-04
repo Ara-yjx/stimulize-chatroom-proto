@@ -1,5 +1,6 @@
 from chatroom_api import config
 from chatroom_api.ai_batch import worker
+from chatroom_api.ai_batch.completion import InferenceDecision
 from chatroom_api.bedrock_client import BedrockInferenceError
 import pytest
 
@@ -29,7 +30,7 @@ def test_usable_truncated_speech_is_not_retried(monkeypatch):
     usage = []
     monkeypatch.setattr(worker, 'record_bedrock_usage', lambda **kw: usage.append(kw))
     assert worker._invoke_candidate(_batch(), _conversation(), _participants(2)[0], [],
-                                   require_message=True, attempt=1) == 'unfinished but usable'
+                                   require_message=True, attempt=1).message == 'unfinished but usable'
     assert len(usage) == 1
 
 
@@ -43,7 +44,7 @@ def test_empty_truncation_can_recover_once(monkeypatch):
     usage = []
     monkeypatch.setattr(worker, 'record_bedrock_usage', lambda **kw: usage.append(kw))
     assert worker._invoke_candidate(_batch(), _conversation(), _participants(2)[0], [],
-                                   require_message=True, attempt=1) == 'recovered'
+                                   require_message=True, attempt=1).message == 'recovered'
     assert [u['extra_raw_usage']['recovery_attempt'] for u in usage] == [0, 1]
 
 
@@ -72,6 +73,7 @@ def _batch(**overrides) -> dict:
             "max_message_chars": 400,
             "max_total_chars": 20_000,
             "max_turns": 4,
+            "allow_early_completion": False,
         },
         **overrides,
     }
@@ -96,7 +98,7 @@ def test_two_ai_choose_message_requires_the_alternating_candidate(monkeypatch) -
 
     def invoke(_batch, _conversation, participant, _history, **kwargs):
         calls.append((participant["ai_participant_id"], kwargs["require_message"]))
-        return "hello"
+        return InferenceDecision('speech', 'hello')
 
     monkeypatch.setattr(worker, "_invoke_candidate", invoke)
     participant, text = worker._choose_message(_batch(), conversation, [])
@@ -110,7 +112,7 @@ def test_three_ai_force_path_has_at_most_ai_count_invocations(monkeypatch) -> No
 
     def invoke(_batch, _conversation, participant, _history, **kwargs):
         calls.append((participant["ai_participant_id"], kwargs["require_message"]))
-        return "forced" if kwargs["require_message"] else None
+        return InferenceDecision('speech', 'forced') if kwargs['require_message'] else InferenceDecision('silence')
 
     monkeypatch.setattr(worker, "_invoke_candidate", invoke)
     _participant, text = worker._choose_message(
@@ -141,7 +143,7 @@ def test_process_work_keeps_advancing_persisted_progress(monkeypatch, max_messag
     monkeypatch.setattr(worker, "_choose_message", lambda *args, **kw: (conversation["participants"][0], "hello"))
     monkeypatch.setattr(worker.store, "finalize_batch_if_done", lambda *args: None)
 
-    def commit(conv, event, *, terminal_status):
+    def commit(conv, event, *, terminal_status, completion_reason):
         committed.append(event)
         conversation.update(next_turn=conv["next_turn"] + 1, message_count=conv["message_count"] + 1,
                             total_chars=conv["total_chars"] + len(event["content"]),
@@ -199,7 +201,7 @@ def test_message_length_is_prompt_only_without_correction(monkeypatch, guidance)
         return {'messages': ['This message deliberately exceeds the suggested length.']}
     monkeypatch.setattr(worker, 'invoke_speak_tool', invoke)
     text = worker._invoke_candidate(batch, _conversation(), _participants(2)[0], [], require_message=True, attempt=0)
-    assert text == 'This message deliberately exceeds the suggested length.'
+    assert text.message == 'This message deliberately exceeds the suggested length.'
     assert len(calls) == 1
     assert calls[0].get('max_message_chars') is None
     assert calls[0]['max_messages'] == 1
@@ -225,6 +227,18 @@ def test_progress_is_dynamic_after_cache_and_absent_guidance_is_omitted(monkeypa
     setting['max_message_chars'] = 50
     _, _, _, messages = worker._build_request(_conversation(), setting, _participants(2)[0], [], require_message=True)
     assert 'Aim for at most 50 characters' in json.dumps(messages)
+
+
+def test_first_speaker_history_is_valid_for_strict_chat_templates(monkeypatch):
+    monkeypatch.setattr(worker.store, 'now_ms', lambda: 1000)
+    setting = {**_batch()['settings_snapshot'], 'model_id': 'google.gemma-3-27b-it', 'allow_early_completion': True}
+    events = [{'type': 'message', 'role': 'ai', 'ai_participant_id': 'ai-0', 'sender': 'A', 'content': 'Choose ten.', 'timestamp': 1},
+              {'type': 'message', 'role': 'ai', 'ai_participant_id': 'ai-1', 'sender': 'B', 'content': 'Ten works.', 'timestamp': 2}]
+    _, _, _, messages = worker._build_request(_conversation(), setting, _participants(2)[0], events,
+                                               require_message=True, allow_agreement=True)
+    assert [message['role'] for message in messages] == ['user', 'assistant', 'user']
+    assert len(events) == 2
+    assert 'agreeToEnd' not in str(messages) and 'agree_to_end' in str(messages)
 
 
 @pytest.mark.parametrize('mimic,required', [(True, True), (False, True), (False, False)])

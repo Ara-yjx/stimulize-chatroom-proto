@@ -1,12 +1,20 @@
 import io
 import json
 import zipfile
+import pytest
 from decimal import Decimal
 
 from chatroom_api.ai_batch import exporter
 
 
-def test_export_includes_only_completed_conversations(monkeypatch) -> None:
+@pytest.mark.parametrize('reason,footer', [
+    (None, 'This conversation has ended.'),
+    ('unknown', 'This conversation has ended.'),
+    ('all_ai_agreed_to_end', 'This conversation has ended because all AI participants were ready to finish.'),
+    ('max_messages', 'This conversation has ended because the maximum number of messages was reached.'),
+    ('max_characters', 'This conversation has ended because the maximum character count was reached.'),
+])
+def test_export_includes_only_completed_conversations(monkeypatch, reason, footer) -> None:
     batch = {
         "batch_job_id": "batch",
         "chatroom_id": "room",
@@ -22,6 +30,7 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
         if conversation_id == exporter.conversation_id("batch", 0):
             return {
                 "status": "completed",
+                'completion_reason': reason,
                 "participants": [{"nickname": "AI", "internal_name": "condition", "avatar": {"emojiText": "legacy"}}],
             }
         return {"status": "failed"}
@@ -50,9 +59,11 @@ def test_export_includes_only_completed_conversations(monkeypatch) -> None:
         assert "conversations/0001.txt" in names
         assert "conversations/0002.json" not in names
         text = archive.read("conversations/0001.txt").decode()
-        assert text == "AI (condition): hello\n"
+        assert text == f"AI (condition): hello\nSystem: {footer}\n"
         saved_conversation = json.loads(archive.read("conversations/0001.json"))
         assert len(saved_conversation['events']) == 1
+        assert saved_conversation['completion_reason'] == reason
+        assert footer not in json.dumps(saved_conversation['events'])
         assert 'missing_tool_call' not in archive.read("conversations/0001.json").decode()
         assert 'avatar' not in saved_conversation['participants'][0]
         assert 'avatar' not in saved_conversation['events'][0]

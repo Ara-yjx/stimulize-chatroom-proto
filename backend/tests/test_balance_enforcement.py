@@ -77,7 +77,7 @@ def test_batch_gate_and_real_usage_path(monkeypatch, caplog, enforce, url, debit
 
     assert worker._invoke_candidate_once(
         batch, conversation, participant, [], require_message=True, attempt=0,
-    ) == "hello"
+    ).message == "hello"
     check.assert_not_called()
     invoke.assert_called_once()
     rds.write_usage.assert_called_once()

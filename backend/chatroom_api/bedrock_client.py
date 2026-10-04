@@ -14,6 +14,7 @@ from chatroom_api import config
 from chatroom_api.prompts.construction import base_bedrock_model_id
 from chatroom_api.prompts.speech_protocol import uses_json_speech
 from chatroom_api.prompts.json_speech import parse_json_speech
+from chatroom_api.prompts.ai_actions import build_ai_action_tool_config, parse_ai_action
 from chatroom_api.prompts.speech_scaffold import (
     REQUIRED_SPEAK_TOOL_CONFIG,
     SPEAK_TOOL_CONFIG,
@@ -181,22 +182,29 @@ def invoke(
     return _call_with_retry(_do_call)
 
 
-def _speak_result(response: dict, *, require_message: bool, max_messages: int, json_protocol: bool = False) -> dict:
+def _speak_result(response: dict, *, require_message: bool, max_messages: int,
+                  json_protocol: bool = False, allow_agreement: bool = False) -> dict:
+    """Normalize paid output without conflating errors, silence and consent."""
     stop_reason = response.get('stopReason')
     truncated = stop_reason == 'max_tokens'
     error = None
     messages = []
+    outcome = None
     try:
         if stop_reason in {'guardrail_intervened', 'content_filtered', 'malformed_model_output',
                            'malformed_tool_use', 'model_context_window_exceeded'}:
             raise SpeechOutputError(stop_reason)
-        messages = parse_json_speech(response) if json_protocol else parse_speak_tool_call(response)
+        if allow_agreement:
+            outcome, messages = parse_ai_action(response, json_protocol=json_protocol)
+        else:
+            messages = parse_json_speech(response) if json_protocol else parse_speak_tool_call(response)
         if len(messages) > max_messages:
             raise SpeechOutputError('too_many_messages')
-        if not messages and (truncated or require_message):
+        if not messages and outcome != 'agree_to_end' and (truncated or require_message):
             raise SpeechOutputError('truncated_without_message' if truncated else 'required_speech_missing')
     except SpeechOutputError as exc:
-        error = 'truncated_without_message' if truncated and not messages else str(exc)
+        error = ('truncated_without_message' if truncated and not messages
+                 and str(exc) != 'truncated_control_output' else str(exc))
         messages = []
     usage = response.get('usage') or {}
     # Chat text may end mid-sentence, like a messaging app's length limit:
@@ -206,7 +214,7 @@ def _speak_result(response: dict, *, require_message: bool, max_messages: int, j
     # can account for this invocation before retrying or recording a failure.
     return {
         'messages': messages,
-        'outcome': 'error' if error else 'speech' if messages else 'silence',
+        'outcome': 'error' if error else outcome or ('speech' if messages else 'silence'),
         'output_error': error,
         'truncated': truncated,
         'stop_reason': stop_reason,
@@ -243,6 +251,7 @@ def invoke_speak_tool(
     max_message_chars: int | None = None,
     max_messages: int = 5,
     before_attempt: Callable[[], None] | None = None,
+    allow_agreement: bool = False,
 ) -> dict:
     """Call Bedrock Converse API with the model's supported tool choice.
 
@@ -273,6 +282,8 @@ def invoke_speak_tool(
         if max_message_chars is not None or max_messages != 5
         else REQUIRED_SPEAK_TOOL_CONFIG if require_message else SPEAK_TOOL_CONFIG
     )
+    if allow_agreement:
+        tool_config = build_ai_action_tool_config(require_message=require_message)
     if base_bedrock_model_id(model_id) in AUTO_SPEAK_MODEL_IDS:
         # Copy instead of mutating the shared constants used by other models.
         tool_config = {**tool_config, 'toolChoice': {'auto': {}}}
@@ -286,6 +297,6 @@ def invoke_speak_tool(
             inferenceConfig={"maxTokens": SPEAK_MAX_OUTPUT_TOKENS, "temperature": temperature},
         )
         return _speak_result(response, require_message=require_message, max_messages=max_messages,
-                             json_protocol=uses_json_speech(model_id))
+                             json_protocol=uses_json_speech(model_id), allow_agreement=allow_agreement)
 
     return _call_with_retry(_do_call, before_attempt)

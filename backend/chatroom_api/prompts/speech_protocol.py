@@ -16,7 +16,7 @@ def uses_json_speech(model_id: str) -> bool:
     return normalized in JSON_MODEL_IDS
 
 
-def render_json_scaffold(scaffold: str) -> str:
+def render_json_scaffold(scaffold: str, *, allow_agreement: bool = False) -> str:
     """Convert only code-owned scaffolds BEFORE researcher text is appended.
 
     Examples contain JSON arrays inside pseudo tool notation. Decode the arrays
@@ -46,4 +46,7 @@ def render_json_scaffold(scaffold: str) -> str:
     ).replace(
         '(stay silent — call speak with empty messages array)', '{"messages": []}',
     ).replace('Use the speak tool to return', 'Return a JSON messages array containing')
+    if allow_agreement:
+        scaffold = scaffold.replace('agreeToEnd()', '{"action":"agree_to_end"}').replace('agreeToEnd', '{"action":"agree_to_end"}')
+        return scaffold + '\nOutput exactly one JSON object: {"messages":["Your message"]}, {"messages":[]}, or {"action":"agree_to_end"}. Obey the current-call restrictions on silence/agreement. Do not mix messages and action. No extra fields, commentary or tool-call notation. Complete the JSON envelope including its closing }.\n'
     return scaffold + '\nOutput only {"messages": ["Your message"]} or {"messages": []}. Always use an array, even for one message. Finish the complete JSON object including its closing }. No extra fields, commentary or tool-call notation.\n'

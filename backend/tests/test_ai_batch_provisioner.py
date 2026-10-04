@@ -30,6 +30,22 @@ def _batch() -> dict:
     }
 
 
+@pytest.mark.parametrize('invalid', [None, 'false', 0, 1, []])
+def test_invalid_completion_flag_fails_before_creating_any_conversation(monkeypatch, invalid):
+    batch = _batch()
+    batch['settings_snapshot']['allow_early_completion'] = invalid
+    failed = []
+    monkeypatch.setattr(config, 'AI_BATCH_ENABLED', True)
+    monkeypatch.setattr(provisioner.store, 'get_batch', lambda _: batch)
+    monkeypatch.setattr(provisioner.store, 'acquire_provision_lease', lambda *a: True)
+    monkeypatch.setattr(provisioner.store, 'fail_validation', lambda *a: failed.append(a))
+    for name in ('save_prompt_reference', 'create_conversation', 'start_execution'):
+        monkeypatch.setattr(provisioner.store, name, lambda *a: pytest.fail('invalid snapshot must not create work'))
+    result = provisioner._provision_batch('aib_test')
+    assert result['status'] == 'validation_failed' and len(failed) == 1
+    assert failed[0][2] == 'allow_early_completion must be a boolean'
+
+
 def test_provisioner_creates_deterministic_conversations_and_dispatches(monkeypatch) -> None:
     batch = _batch()
     created = []

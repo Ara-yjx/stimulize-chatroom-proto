@@ -109,6 +109,19 @@ This file records decisions that came from implementation/debug discussions afte
 
 ## Pending
 
+### AI-only Early Completion Release
+
+- [Live batch runtime and beta verified; production UI rollout follows source merges](./feat-ai-ai-early-completion.md):
+  `agreeToEnd` (`agree_to_end` in JSON/state), speaking invalidates prior confirmations, and the last speaker
+  confirms last. Derive scheduling from accepted tick history, with no stored
+  permutation and no change to no-ready scheduling or human-AI runtime behavior.
+- New editor rooms explicitly save `allow_early_completion=true`; existing
+  rooms and batch snapshots missing the field remain disabled. Management
+  validates the optional boolean on save/batch creation without inserting a
+  default; editor load/save must not silently enable legacy rooms.
+  Track release in
+  [STML-32](https://linear.app/petryyy/issue/STML-32/).
+
 ### Runtime and Infra
 
 - Custom DNS is not complete:

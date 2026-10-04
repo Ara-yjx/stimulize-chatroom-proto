@@ -51,3 +51,25 @@ management debit implementation to balance-clamping once negative balances exist
 ```bash
 pytest tests/
 ```
+
+### Local AI-only conversation
+
+Use the production prompt builder, model adapters and scheduler without DDB,
+RDS, ledger writes or a deployment. From `backend/`:
+
+```bash
+PYTHONPATH=. python scripts/early_completion_conversation.py --state ../.local/demo.json show
+PYTHONPATH=. python scripts/early_completion_conversation.py --state ../.local/demo.json step --invoke
+PYTHONPATH=. python scripts/early_completion_conversation.py --state ../.local/demo.json run --invoke
+```
+
+`--invoke` explicitly permits Bedrock charges. A conversation has a 55-second
+deadline from its first inference and a run is bounded to 20 calls. Use a new
+state path for a new test. `--settings file.json` supplies initial settings;
+otherwise a short two-AI example is used. `append --ai-id ai-0 --text "..."`
+injects a message into a running local conversation and resets confirmations.
+The private JSON file includes actual request/tools, raw output, parsed action
+and usage, including rejected late results. Do not commit traces.
+
+This is prompt-quality testing, not evidence of atomic AWS writes or UI wiring;
+use workflow integration tests and an isolated cloud stack for those checks.

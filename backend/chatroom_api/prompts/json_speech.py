@@ -14,8 +14,8 @@ def _unique_object(pairs):
     return result
 
 
-def parse_json_speech(response: dict) -> list[str]:
-    """Parse an explicitly selected JSON response, never a tool-call fallback.
+def parse_json_payload(response: dict) -> dict:
+    """Decode one complete JSON object, without repairing provider output.
 
     Missing or malformed output previously masqueraded as intentional silence.
     Do not repair incomplete JSON: valid text may end mid-sentence, but the
@@ -49,7 +49,15 @@ def parse_json_speech(response: dict) -> list[str]:
         if isinstance(exc, SpeechOutputError):
             raise
         raise SpeechOutputError('invalid_json') from None
-    if not isinstance(payload, dict) or set(payload) != {'messages'}:
+    if not isinstance(payload, dict):
+        raise SpeechOutputError('invalid_json_arguments')
+    return payload
+
+
+def parse_json_speech(response: dict) -> list[str]:
+    """Human-AI speech retains its messages-only envelope, never an action."""
+    payload = parse_json_payload(response)
+    if set(payload) != {'messages'}:
         raise SpeechOutputError('invalid_json_arguments')
     messages = payload['messages']
     if not isinstance(messages, list) or not all(

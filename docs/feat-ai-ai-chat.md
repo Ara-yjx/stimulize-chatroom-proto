@@ -10,6 +10,12 @@ batch generation with predictable operational bounds.
 
 ### Scheduling and token use
 
+The rules below are the speech-only baseline. **Implemented and isolated-cloud
+verified, not yet released:**
+[AI-AI Early Completion](./feat-ai-ai-early-completion.md) adds `agreeToEnd`.
+It derives candidates from completed tick history, checks the last speaker last,
+and preserves this scheduling policy whenever no ready action is returned.
+
 AI-only conversations do not use human waiting, simulated typing delays, or
 the heartbeat scheduler.
 
