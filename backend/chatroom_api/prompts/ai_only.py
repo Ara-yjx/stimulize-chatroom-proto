@@ -38,7 +38,37 @@ Your response: {"messages": []}
 """
 
 
-def build_ai_only_scaffold(ai_count: int, require_response: bool) -> str:
+EARLY_COMPLETION = """
+Ending the discussion:
+- Contribute when you have something meaningful to add, not to fill the message
+  limit. Once your ideas are adequately expressed and the latest history leaves
+  you no substantive contribution, call agreeToEnd().
+- This means you are willing to finish, not that every opinion must converge.
+  Do not add a summary, goodbye, or empty acknowledgement just to confirm.
+- Review the latest history independently. A new contribution may change your
+  mind; speak normally when it gives you something further to say.
+- Return exactly one action per call: speak OR agreeToEnd, never both.
+  Temporary silence is not consent. The current-call instruction says whether
+  silence or agreement is allowed; the opening call requires a real message.
+
+Example - Views have been expressed; no further contribution.
+Participant_001: A small pilot can test demand before we invest in a full launch.
+Participant_002: I still prefer waiting, but we have explained both trade-offs.
+You have no unanswered question or substantive point to add.
+Your response: agreeToEnd()
+
+Example - A new contribution needs a response, even after you agreed to end.
+Participant_001: We just learned that the pilot would require a full-year contract.
+Your response: {"messages": ["That changes the risk. I would seek a shorter commitment before proceeding."]}
+"""
+
+
+def build_ai_only_scaffold(ai_count: int, require_response: bool, *, allow_early_completion: bool = False) -> str:
+    """Opted-in rules permit consent; the disabled scaffold is unchanged."""
+    if allow_early_completion:
+        group = GROUP if ai_count > 2 else '\nThere are two participants. Take turns exchanging ideas.\n'
+        base = BASE.replace('Use the speak tool to return', 'When speaking, use the speak tool to return')
+        return base + group + EARLY_COMPLETION
     if ai_count <= 2:
         return BASE + '\nThere are two participants. Take turns and return exactly one non-empty message on each call.\n'
     forced = ('\nFor this call, you have been selected to continue the discussion. '

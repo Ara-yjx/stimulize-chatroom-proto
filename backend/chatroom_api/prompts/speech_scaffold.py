@@ -662,6 +662,7 @@ def get_scaffold_for_mode(
     mimic_human: bool = True,
     require_response: bool = False,
     ai_count: int = 2,
+    allow_early_completion: bool = False,
 ) -> str:
     """Return the platform-managed speech scaffold for the given chatroom mode.
 
@@ -676,7 +677,7 @@ def get_scaffold_for_mode(
     """
     if mode == "ai_only":
         from chatroom_api.prompts.ai_only import build_ai_only_scaffold
-        return build_ai_only_scaffold(ai_count, require_response)
+        return build_ai_only_scaffold(ai_count, require_response, allow_early_completion=allow_early_completion)
     if not mimic_human and require_response:
         return GENERIC_AI_ASSISTANT_REQUIRED_RESPONSE_SCAFFOLD
     if not mimic_human:

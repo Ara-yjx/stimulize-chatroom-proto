@@ -10,6 +10,7 @@ from chatroom_api.prompts.construction import build_semi_static_setup_blocks, bu
 from chatroom_api.prompts.speech_protocol import uses_json_speech
 from chatroom_api.prompts.speech_scaffold import get_scaffold_for_mode
 from chatroom_api.settings import normalize_persona_entries
+from chatroom_api.ai_batch.completion import early_completion_enabled
 
 
 def code_block(text: str) -> str:
@@ -26,6 +27,7 @@ def source_hash() -> str:
     for name in (
         "prompts/speech_scaffold.py", "prompts/ai_only.py", "prompts/construction.py",
         "prompts/speech_protocol.py", "prompts/json_speech.py",
+        "prompts/ai_actions.py", "ai_batch/completion.py", "ai_batch/scheduler.py",
         "ai_batch/prompt_reference.py", "ai_batch/worker.py",
         "conversation.py", "settings.py", "bedrock_client.py",
         "ai_participants.py", "prompt_attachments.py",
@@ -42,6 +44,7 @@ def render_prompt_reference(batch: dict) -> str:
         temperature = 0.7
     count = int(setting["ai_count"])
     required = count == 2
+    early = early_completion_enabled(setting)
     lines = [
         "# AI Conversation Prompt Reference", "", "## How to Read This File", "",
         "Each turn sends shared instructions, the selected AI's setup, and history.",
@@ -53,20 +56,21 @@ def render_prompt_reference(batch: dict) -> str:
         "",
         f"- Batch: `{batch['batch_job_id']}`",
         f"- Batch created at: {batch.get('created_at', 'unknown')}",
-        "- Reference format version: 2 (Markdown)",
+        "- Reference format version: 3 (Markdown; optional unanimous completion)",
         f"- Prompt-related source SHA-256: `{source_hash()}`",
         "", "## Request Settings (not literal prompt text)", "",
         f"- Default model: {model}", f"- Default temperature: {temperature}",
         f"- AI count: {count}", "- Style: semi-formal peer discussion (mimic_human does not apply)",
         f"- Message length guidance (optional): {str(setting['max_message_chars']) + ' characters' if setting.get('max_message_chars') is not None else 'not set'}",
         f"- Max messages: {setting.get('max_turns', 100)}",
+        f"- Allow early completion: {str(early).lower()}",
         f"- Max characters: {setting.get('max_total_chars', 20000)} (last message may exceed this)", "",
         "Each call includes current accepted-message/character progress after the cache checkpoint.",
         "The target length and turn ceiling stop generation; they are not a request to fill that length.",
         "", "## STEP 1 - Shared System Instructions and Examples", "",
-        code_block(get_scaffold_for_mode("ai_only", ai_count=count, require_response=required).strip()),
+        code_block(get_scaffold_for_mode("ai_only", ai_count=count, require_response=required, allow_early_completion=early).strip()),
     ]
-    if count > 2:
+    if count > 2 and not early:
         lines.extend([
             "", "### Forced-response variant (if all candidates stay silent)", "",
             code_block(get_scaffold_for_mode("ai_only", ai_count=count, require_response=True).strip()),
@@ -95,9 +99,10 @@ def render_prompt_reference(batch: dict) -> str:
                 'This model uses JSON text, not native tools. Its platform rules replace the STEP 1 tool variant:',
                 '', code_block(build_static_prefix_block(
                     'ai_only', ai_count=count, require_response=required, model_id=effective_model,
+                    allow_early_completion=early,
                 ).strip()), '',
             ])
-            if count > 2:
+            if count > 2 and not early:
                 lines.extend(['Forced-response variant:', '', code_block(build_static_prefix_block(
                     'ai_only', ai_count=count, require_response=True, model_id=effective_model,
                 ).strip()), ''])
@@ -140,14 +145,21 @@ def render_prompt_reference(batch: dict) -> str:
         "Only accepted AI messages count; silence, failed calls, and system events do not.",
         "When message-length guidance is set, this also says:", "",
         code_block("Aim for at most N characters in your message."), "",
-        "Two AIs alternate and must each produce one message." if required else
-        "Other candidates are tried in random order and may stay silent; if all do, one is required to speak.",
+        ("After the opening message, each selected AI may speak or explicitly agree to end. "
+         "Three-plus-AI optional turns also permit silence. Confirm the last speaker last; "
+         "new speech invalidates all old confirmations. No consent or silence counts as a message.") if early else
+        ("Two AIs alternate and must each produce one message." if required else
+         "Other candidates are tried in random order and may stay silent; if all do, one is required to speak."),
         "A continuation instruction may be appended, for example:",
-        code_block("Continue the conversation now with exactly one non-empty message."), "",
+        code_block("Review the latest history. Contribute something substantive or explicitly agree to end. "
+                   "The opening call instead requires exactly one non-empty message." if early else
+                   "Continue the conversation now with exactly one non-empty message."), "",
         "Long messages are not truncated or retried solely because of this guidance.",
         "", "## STEP 5 - Response Contract", "",
-        "Native-tool models receive a separate speak tool definition requiring a messages array.",
-        "JSON-text models instead return that messages array in a JSON object; no tool definition is sent.",
+        ("Native-tool models receive speak(messages) and agreeToEnd() as mutually exclusive tools. "
+         "JSON-text models return either {\"messages\":[...]} or {\"action\":\"agree_to_end\"}. "
+         "Agreement is unavailable on the opening call.") if early else
+        "Native-tool models receive speak(messages); JSON-text models instead return a messages-only JSON object.",
         "At most one message is accepted per call; mandatory turns cannot return an empty array.",
         "The application extracts the message text for the conversation history.",
     ])

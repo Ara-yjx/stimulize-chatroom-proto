@@ -19,6 +19,7 @@ from chatroom_api.ai_batch.contracts import (
 )
 from chatroom_api.ai_participants import build_ai_participants
 from chatroom_api.ai_batch.prompt_reference import render_prompt_reference
+from chatroom_api.ai_batch.completion import early_completion_enabled
 from chatroom_api.settings import normalize_persona_entries
 
 
@@ -51,6 +52,13 @@ def _provision_batch(batch_job_id: str, receive_count: int = 1) -> dict:
         setting = dict(batch["settings_snapshot"])
         ai_count = int(setting["ai_count"])
         batch_count = int(batch["batch_count"])
+        # Validate the immutable snapshot before creating any conversations;
+        # management validation alone cannot protect manually queued jobs.
+        try:
+            early_completion_enabled(setting)
+        except ValueError as exc:
+            store.fail_validation(batch_job_id, lease_id, str(exc), batch_count)
+            return {'status': 'validation_failed', 'batch_job_id': batch_job_id, 'error': str(exc)}
         for field, value, maximum in (
             ('batch_count', batch['batch_count'], 50),
             ('max_turns', setting.get('max_turns', 100), 1000),

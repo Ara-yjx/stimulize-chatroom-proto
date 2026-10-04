@@ -381,7 +381,9 @@ def commit_turn(
     event: dict,
     *,
     terminal_status: str | None = None,
+    completion_reason: str | None = None,
 ) -> None:
+    """Append speech and invalidate every prior confirmation atomically."""
     expected_turn = int(conversation["next_turn"])
     next_turn = expected_turn + 1
     content = str(event.get("content") or "")
@@ -394,7 +396,10 @@ def commit_turn(
         "message_count": int(conversation.get("message_count", 0) or 0) + 1,
         "total_chars": int(conversation.get("total_chars", 0) or 0) + len(content),
         "last_speaker_id": event.get("ai_participant_id"),
+        "ai_tick_history": {'message_revision': next_turn, 'ticks': []},
     }
+    if completion_reason:
+        metadata_updates['completion_reason'] = completion_reason
     extra = (
         [_terminal_batch_action(conversation["batch_job_id"], terminal_status)]
         if terminal_status
@@ -416,12 +421,61 @@ def commit_turn(
     )
 
 
+def commit_decision(conversation: dict, ai_id: str, action: str) -> bool:
+    """Commit one non-message tick with the same optimistic guard as speech.
+
+    Final consent, terminal metadata and batch counts share one transaction.
+    Replays/stale workers fail the version guard; no audit/chat event is written.
+    Only one silence and one agreement per AI per revision can be retained.
+    """
+    from chatroom_api.ai_batch.completion import current_ticks
+    from chatroom_api.participants import participant_id
+    ids = {participant_id(p) for p in conversation['participants']}
+    ticks = current_ticks(conversation)
+    if action not in {'silence', 'agree_to_end'} or ai_id not in ids or not conversation['next_turn']:
+        raise ValueError('invalid non-message decision')
+    if any(t['ai_participant_id'] == ai_id and t['action'] in {action, 'agree_to_end'} for t in ticks):
+        raise ValueError('duplicate decision for current history')
+    ticks.append({'ai_participant_id': ai_id, 'action': action})
+    complete = ids <= {t['ai_participant_id'] for t in ticks if t['action'] == 'agree_to_end'}
+    values = {
+        ':history': {'message_revision': int(conversation['next_turn']), 'ticks': ticks},
+        ':version': int(conversation.get('state_version', 0)), ':one': 1,
+        ':turn': int(conversation['next_turn']), ':batch': conversation['batch_job_id'],
+        ':running': 'running', ':updated': now_iso(),
+    }
+    expression = 'SET ai_tick_history = :history, updated_at = :updated, state_version = :version + :one'
+    if complete:
+        expression += ', #status = :completed, execution_state = :terminal, outcome = :succeeded, completion_reason = :reason'
+        values.update({':completed': 'completed', ':terminal': 'terminal', ':succeeded': 'succeeded',
+                       ':reason': 'all_ai_agreed_to_end'})
+    actions = [{'Update': {
+        'TableName': config.DYNAMODB_TABLE,
+        'Key': _serialize({'conversation_id': conversation['conversation_id']}),
+        'UpdateExpression': expression,
+        'ConditionExpression': 'batch_job_id = :batch AND #status = :running AND next_turn = :turn AND state_version = :version',
+        'ExpressionAttributeNames': {'#status': 'status'},
+        'ExpressionAttributeValues': _serialize(values),
+    }}]
+    if complete:
+        actions.append(_terminal_batch_action(conversation['batch_job_id'], 'completed'))
+    try:
+        _get_client().transact_write_items(TransactItems=actions)
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') == 'TransactionCanceledException':
+            return False
+        raise
+    return True
+
+
 def mark_conversation_terminal(
     conversation: dict,
     terminal_status: str,
     *,
     error: str | None = None,
+    completion_reason: str | None = None,
 ) -> bool:
+    """Converge terminal status/counters without overwriting a newer decision."""
     if terminal_status not in {"failed", "timed_out", "completed"}:
         raise ValueError("invalid conversation terminal status")
     names = {"#status": "status"}
@@ -447,6 +501,9 @@ def mark_conversation_terminal(
     if error:
         values[":error"] = str(error)[:1000]
         update_expression += ", last_error = :error"
+    if completion_reason and terminal_status == 'completed':
+        values[':reason'] = completion_reason
+        update_expression += ', completion_reason = :reason'
 
     batch_action = _terminal_batch_action(
         conversation["batch_job_id"], terminal_status

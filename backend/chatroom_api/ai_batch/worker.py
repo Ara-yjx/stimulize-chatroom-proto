@@ -14,7 +14,8 @@ from chatroom_api.ai_batch.contracts import (
     WORKER_CALL_HEADROOM_MS,
     turn_write_id,
 )
-from chatroom_api.ai_batch.scheduler import candidates_for_turn, forced_candidate
+from chatroom_api.ai_batch.scheduler import candidates_for_turn, forced_candidate, next_decision
+from chatroom_api.ai_batch.completion import InferenceDecision, early_completion_enabled, limit_reason
 from chatroom_api.bedrock_client import BedrockInferenceError, invoke_speak_tool, log_speak_result
 from chatroom_api.conversation import build_bedrock_messages
 from chatroom_api.diagnostics import is_inference_diagnostic
@@ -66,7 +67,18 @@ def _history_block(events: list[dict]) -> str:
     return "\n".join(lines) if lines else "(empty)"
 
 
-def _trigger_message(*, require_message: bool, model_id: str = '') -> dict:
+def _trigger_message(*, require_message: bool, model_id: str = '', allow_agreement: bool = False) -> dict:
+    """Current-call restrictions are dynamic, outside the shared cache prefix."""
+    from chatroom_api.prompts.speech_protocol import uses_json_speech
+    if allow_agreement:
+        speech = 'return {"messages":["Your contribution"]}' if uses_json_speech(model_id) else 'call speak with one message'
+        agree = 'return {"action":"agree_to_end"}' if uses_json_speech(model_id) else 'call agreeToEnd with no arguments'
+        text = (f'Review the latest history. If you have a substantive contribution, {speech}. '
+                f'If you have no further contribution and are willing to end, {agree}. '
+                'Choose independently; ending does not require consensus. Return exactly one action. ')
+        text += ('Temporary silence is not allowed on this call.' if require_message else
+                 'You may instead return an empty messages array to wait temporarily, which is not consent to end.')
+        return {'role': 'user', 'content': [{'text': text}]}
     if require_message:
         text = "Continue the conversation now with exactly one non-empty message."
     else:
@@ -74,7 +86,6 @@ def _trigger_message(*, require_message: bool, model_id: str = '') -> dict:
             "Decide whether you should contribute the next message. Call speak "
             "with one message, or an empty array to stay silent."
         )
-    from chatroom_api.prompts.speech_protocol import uses_json_speech
     if uses_json_speech(model_id):
         text = text.replace('Call speak with one message, or an empty array to stay silent.',
                             'Return {"messages": ["Your message"]}, or {"messages": []} to stay silent.')
@@ -90,7 +101,9 @@ def _build_request(
     history: list[dict],
     *,
     require_message: bool,
+    allow_agreement: bool = False,
 ) -> tuple[str, float, list[dict], list[dict]]:
+    """Assemble the real per-participant request, shared by workers/local probes."""
     ai_id = participant_id(participant)
     if not ai_id:
         raise TerminalConversationError("AI participant has no identity")
@@ -125,6 +138,11 @@ def _build_request(
         require_response=require_message,
     )
     messages = build_bedrock_messages(runtime_conv, ai_id, store.now_ms())
+    # The first speaker's own history starts with assistant. Gemma and other
+    # strict chat templates reject that even though subsequent roles alternate.
+    # This request-only frame is not a participant message or a consent signal.
+    if messages and messages[0]['role'] == 'assistant':
+        messages = [{'role': 'user', 'content': [{'text': 'The discussion so far follows.'}]}, *messages]
     if supports_bedrock_prompt_cache(model_id):
         prefix = build_bedrock_cache_prefix_message(
             "ai_only",
@@ -137,7 +155,7 @@ def _build_request(
         )
         messages = prepend_cache_prefix_message(messages, prefix)
     # Progress changes every accepted message and must stay after the cache prefix.
-    trigger = _trigger_message(require_message=require_message, model_id=model_id)
+    trigger = _trigger_message(require_message=require_message, model_id=model_id, allow_agreement=allow_agreement)
     progress = (
         f"Conversation progress: {conversation.get('message_count', 0)}/{setting['max_turns']} messages; "
         f"{conversation.get('total_chars', 0)}/{setting['max_total_chars']} characters used."
@@ -163,7 +181,9 @@ def _invoke_candidate_once(
     attempt: int,
     before_attempt=None,
     recovery_attempt=0,
-) -> str | None:
+    allow_agreement: bool = False,
+) -> InferenceDecision:
+    """Account every paid result before rejecting errors or late decisions."""
     owner_id = str(batch["owner_id"])
     if not credits_allow(owner_id):
         raise TerminalConversationError("insufficient credits")
@@ -174,6 +194,7 @@ def _invoke_candidate_once(
         participant,
         history,
         require_message=require_message,
+        allow_agreement=allow_agreement,
     )
     invoked_at = store.now_ms()
     invocation_id = uuid4().hex
@@ -185,6 +206,7 @@ def _invoke_candidate_once(
         require_message=require_message,
         max_messages=1,
         before_attempt=before_attempt or (lambda: _check_deadline(batch)),
+        allow_agreement=allow_agreement,
     )
     log_speak_result(result, model_id, conversation_id=conversation["conversation_id"],
                      ai_participant_id=participant_id(participant) or "",
@@ -214,22 +236,27 @@ def _invoke_candidate_once(
             "stop_reason": result.get("stop_reason"),
             "truncated": bool(result.get("truncated")),
             "recovery_attempt": recovery_attempt,
+            "decision": result.get('outcome'),
         },
     )
     _check_deadline(batch)
     if result.get("output_error"):
         raise BedrockInferenceError(result["output_error"], "Invalid speak output", retryable=False)
+    if result.get('outcome') == 'agree_to_end':
+        if not allow_agreement or resolved_messages:
+            raise TerminalConversationError('agreement not allowed on this call')
+        return InferenceDecision('agree_to_end')
     if not resolved_messages:
         if require_message:
             raise TerminalConversationError("model returned silence when a message was required")
-        return None
+        return InferenceDecision('silence')
     if len(resolved_messages) != 1:
         raise TerminalConversationError("model returned more than one message")
-    return resolved_messages[0]
+    return InferenceDecision('speech', resolved_messages[0])
 
 
 def _invoke_candidate(batch, conversation, participant, history, *, require_message,
-                      attempt, before_attempt=None):
+                      attempt, before_attempt=None, allow_agreement=False):
     # Accept usable truncated speech as-is. Only an unrecoverable truncated tool
     # payload gets one recovery attempt; both attempts retain their usage records.
     for recovery_attempt in range(2):
@@ -238,6 +265,7 @@ def _invoke_candidate(batch, conversation, participant, history, *, require_mess
                 batch, conversation, participant, history,
                 require_message=require_message, attempt=attempt,
                 before_attempt=before_attempt, recovery_attempt=recovery_attempt,
+                allow_agreement=allow_agreement,
             )
         except BedrockInferenceError as exc:
             if exc.error_type != "truncated_without_message" or recovery_attempt:
@@ -252,7 +280,7 @@ def _choose_message(batch: dict, conversation: dict, history: list[dict], *, bef
     )
     if len(participants) == 2:
         participant = candidates[0]
-        text = _invoke_candidate(
+        decision = _invoke_candidate(
             batch,
             conversation,
             participant,
@@ -261,12 +289,12 @@ def _choose_message(batch: dict, conversation: dict, history: list[dict], *, bef
             attempt=1,
             before_attempt=before_attempt,
         )
-        if text is None:
+        if decision.message is None:
             raise TerminalConversationError("two-AI turn produced no message")
-        return participant, text
+        return participant, decision.message
 
     for attempt, participant in enumerate(candidates, start=1):
-        text = _invoke_candidate(
+        decision = _invoke_candidate(
             batch,
             conversation,
             participant,
@@ -275,10 +303,10 @@ def _choose_message(batch: dict, conversation: dict, history: list[dict], *, bef
             attempt=attempt,
             before_attempt=before_attempt,
         )
-        if text is not None:
-            return participant, text
+        if decision.message is not None:
+            return participant, decision.message
     participant = forced_candidate(candidates)
-    text = _invoke_candidate(
+    decision = _invoke_candidate(
         batch,
         conversation,
         participant,
@@ -287,12 +315,18 @@ def _choose_message(batch: dict, conversation: dict, history: list[dict], *, bef
         attempt=len(candidates) + 1,
         before_attempt=before_attempt,
     )
-    if text is None:
+    if decision.message is None:
         raise TerminalConversationError("forced AI turn produced no message")
-    return participant, text
+    return participant, decision.message
 
 
 def _process_work(body: dict, context=None) -> dict:
+    """Advance accepted decisions until terminal or the next workflow slice.
+
+    Enabled runs checkpoint silence/consent as well as speech. A slice boundary
+    never restarts a random round; conflicts are retried by the workflow after
+    reloading authoritative progress. Disabled runs retain the legacy policy.
+    """
     if not config.AI_BATCH_ENABLED:
         raise RuntimeError("AI batch runtime is disabled")
     batch_id = str(body["batch_job_id"])
@@ -301,8 +335,7 @@ def _process_work(body: dict, context=None) -> dict:
     if batch is None:
         raise TerminalConversationError("batch not found")
     setting = dict(batch["settings_snapshot"])
-    max_turns = int(setting["max_turns"])
-    max_total_chars = int(setting["max_total_chars"])
+    allow_early_completion = early_completion_enabled(setting)
     started = time.monotonic()
 
     def before_attempt():
@@ -322,15 +355,16 @@ def _process_work(body: dict, context=None) -> dict:
             return {"terminal": True, "outcome": conversation["outcome"]}
         terminal = None
         error = None
+        reason = limit_reason(int(conversation['message_count']), int(conversation['total_chars']), setting)
         if store.now_ms() >= int(batch["deadline_at"]):
             terminal = "timed_out"
         elif batch.get("status") not in BATCH_EXECUTABLE_STATUSES:
             terminal, error = "failed", "batch_not_executable"
-        elif (int(conversation["message_count"]) >= max_turns
-              or int(conversation["total_chars"]) >= max_total_chars):
+        elif reason:
             terminal = "completed"
         if terminal:
-            if not store.mark_conversation_terminal(conversation, terminal, error=error):
+            if not store.mark_conversation_terminal(conversation, terminal, error=error,
+                    completion_reason=reason if terminal == 'completed' else None):
                 raise RuntimeError("terminal transition conflict")
             continue
         if (time.monotonic() - started >= WORKER_SLICE_SECONDS
@@ -341,7 +375,19 @@ def _process_work(body: dict, context=None) -> dict:
         conversation = {**conversation, "status": "running", "execution_state": "running"}
         history = store.query_history(conv_id)
         try:
-            participant, text = _choose_message(batch, conversation, history, before_attempt=before_attempt)
+            if allow_early_completion:
+                turn = next_decision(conversation)
+                if turn.participant is None:
+                    raise TerminalConversationError('all-agreed state was not committed as terminal')
+                participant = turn.participant
+                decision = _invoke_candidate(
+                    batch, conversation, participant, history,
+                    require_message=turn.require_message, allow_agreement=turn.allow_agreement,
+                    attempt=int(conversation.get('state_version', 0)) + 1, before_attempt=before_attempt,
+                )
+            else:
+                participant, text = _choose_message(batch, conversation, history, before_attempt=before_attempt)
+                decision = InferenceDecision('speech', text)
             _check_deadline(batch)
         except WorkerSliceComplete:
             return {"terminal": False}
@@ -363,13 +409,15 @@ def _process_work(body: dict, context=None) -> dict:
             if not store.mark_conversation_terminal(conversation, terminal, error=str(exc)):
                 raise RuntimeError("failure transition conflict") from exc
             continue
+        if decision.action != 'speech':
+            if not store.commit_decision(conversation, participant_id(participant), decision.action):
+                raise RuntimeError('decision transition conflict')
+            continue
+        text = decision.message
         next_message_count = int(conversation.get("message_count", 0) or 0) + 1
         next_total_chars = int(conversation.get("total_chars", 0) or 0) + len(text)
-        terminal = (
-            "completed"
-            if next_message_count >= max_turns or next_total_chars >= max_total_chars
-            else None
-        )
+        reason = limit_reason(next_message_count, next_total_chars, setting)
+        terminal = 'completed' if reason else None
         timestamp = store.now_ms()
         store.commit_turn(
             conversation,
@@ -387,6 +435,7 @@ def _process_work(body: dict, context=None) -> dict:
                 "turn_write_id": turn_write_id(conv_id, int(conversation["next_turn"])),
             },
             terminal_status=terminal,
+            completion_reason=reason,
         )
 
 

@@ -8,6 +8,7 @@ from chatroom_api.prompts.speech_scaffold import (
 )
 from chatroom_api.settings import is_single_human_single_ai_assistant_room
 from chatroom_api.prompts.speech_protocol import uses_json_speech, render_json_scaffold
+from chatroom_api.ai_batch.completion import early_completion_enabled
 
 
 BEDROCK_PROMPT_CACHE_MODEL_IDS = frozenset({
@@ -40,14 +41,16 @@ def build_static_prefix_block(
     require_response: bool = False,
     ai_count: int = 2,
     model_id: str = '',
+    allow_early_completion: bool = False,
 ) -> str:
     scaffold = get_scaffold_for_mode(
         mode,
         mimic_human=mimic_human,
         require_response=require_response,
         ai_count=ai_count,
+        allow_early_completion=allow_early_completion,
     )
-    return render_json_scaffold(scaffold) if uses_json_speech(model_id) else scaffold
+    return render_json_scaffold(scaffold, allow_agreement=allow_early_completion) if uses_json_speech(model_id) else scaffold
 
 
 def build_semi_static_setup_blocks(
@@ -108,6 +111,7 @@ def build_prompt_blocks(
             require_response=require_response,
             ai_count=int(chatroom_setting.get('ai_count', 2)),
             model_id=model_id or chatroom_setting.get('model_id', ''),
+            allow_early_completion=mode == 'ai_only' and early_completion_enabled(chatroom_setting),
         ),
         "semi_static_setup": build_semi_static_setup_blocks(
             chatroom_setting,
@@ -191,6 +195,7 @@ def build_bedrock_system_blocks(
             mimic_human=bool(chatroom_setting.get("mimic_human", True)),
             require_response=require_response,
             ai_count=int(chatroom_setting.get('ai_count', 2)),
+            allow_early_completion=mode == 'ai_only' and early_completion_enabled(chatroom_setting),
         )
     }]
 

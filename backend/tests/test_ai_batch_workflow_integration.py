@@ -164,6 +164,132 @@ def test_twenty_messages_across_four_worker_slices(definition, runtime, monkeypa
     assert "worker_lease_id" not in conv
 
 
+@pytest.mark.parametrize('count,first_silent', [(2, False), (3, False), (3, True)])
+def test_unanimous_completion_survives_slices_and_keeps_decisions_out_of_history(
+    definition, runtime, monkeypatch, count, first_silent,
+):
+    participants = [{'role': 'ai', 'ai_participant_id': f'ai-{i}', 'nickname': f'AI {i}'} for i in range(count)]
+    runtime.ddb.Table('conversations').update_item(Key={'conversation_id': 'conversation'},
+        UpdateExpression='SET participants = :p', ExpressionAttributeValues={':p': participants})
+    calls = []
+    def decide(*args, **kwargs):
+        result = runtime.infer(*args, **kwargs)
+        conv = store.get_conversation('conversation')
+        calls.append(kwargs)
+        if conv['next_turn']:
+            result.update(messages=[], outcome='silence' if first_silent and not kwargs['require_message'] else 'agree_to_end')
+        return result
+    monkeypatch.setattr(worker, 'invoke_speak_tool', decide)
+    invocations = run_workflow(definition, runtime, monkeypatch)
+    conv, batch = store.get_conversation('conversation'), store.get_batch('batch')
+    history = store.query_history('conversation')
+    expected = 1 + (2 * count - 1 if first_silent else count)
+    assert len(calls) == len(runtime.usage) == expected
+    assert len(invocations) == (2 if expected > 5 else 1)
+    assert not calls[0]['allow_agreement'] and calls[0]['require_message']
+    assert all(call['allow_agreement'] for call in calls[1:])
+    assert len(history) == conv['message_count'] == conv['next_turn'] == 1
+    assert conv['state_version'] == expected
+    assert conv['completion_reason'] == 'all_ai_agreed_to_end'
+    assert conv['ai_tick_history']['ticks'][-1]['ai_participant_id'] == conv['last_speaker_id']
+    assert batch['completed_count'] == 1 and batch['unfinished_count'] == batch['running_count'] == 0
+    assert worker.lambda_handler({'batch_job_id': 'batch', 'conversation_id': 'conversation'}) == {'terminal': True, 'outcome': 'succeeded'}
+    assert len(runtime.usage) == expected and store.get_batch('batch')['completed_count'] == 1
+
+
+def test_new_speech_restarts_confirmation_even_from_the_previous_last_speaker(runtime, monkeypatch):
+    calls = []
+    def decide(*args, **kwargs):
+        result = runtime.infer(*args, **kwargs)
+        calls.append(True)
+        # Opening; other AI agrees; last speaker changes its mind; two fresh votes.
+        if len(calls) not in (1, 3):
+            result.update(messages=[], outcome='agree_to_end')
+        return result
+    monkeypatch.setattr(worker, 'invoke_speak_tool', decide)
+    worker.lambda_handler({'batch_job_id': 'batch', 'conversation_id': 'conversation'})
+    conv, history = store.get_conversation('conversation'), store.query_history('conversation')
+    assert len(calls) == len(runtime.usage) == 5
+    assert len(history) == 2 and history[0]['ai_participant_id'] == history[1]['ai_participant_id']
+    assert conv['ai_tick_history']['message_revision'] == 2 and len(conv['ai_tick_history']['ticks']) == 2
+    assert conv['completion_reason'] == 'all_ai_agreed_to_end'
+
+
+def test_stale_decisions_cannot_overwrite_speech_or_double_count_completion(runtime):
+    from chatroom_api.ai_batch.contracts import turn_write_id
+    conv = store.get_conversation('conversation')
+    assert store.start_conversation('batch', conv)
+    conv = store.get_conversation('conversation')
+    store.commit_turn(conv, {'type': 'message', 'content': 'Opening', 'timestamp': runtime.clock[0],
+                            'ai_participant_id': 'ai-0', 'turn_write_id': turn_write_id('conversation', 0)})
+    snapshot = store.get_conversation('conversation')
+    assert store.commit_decision(snapshot, 'ai-1', 'agree_to_end')
+    assert not store.commit_decision(snapshot, 'ai-1', 'agree_to_end')
+    with pytest.raises(event_store.ConditionalWriteFailed):
+        store.commit_turn(snapshot, {'type': 'message', 'content': 'stale', 'timestamp': runtime.clock[0],
+            'ai_participant_id': 'ai-1', 'turn_write_id': turn_write_id('conversation', 1)})
+    latest = store.get_conversation('conversation')
+    assert store.commit_decision(latest, 'ai-0', 'agree_to_end')
+    assert not store.commit_decision(latest, 'ai-0', 'agree_to_end')
+    assert len(store.query_history('conversation')) == 1
+    assert store.get_batch('batch')['completed_count'] == 1
+
+
+def test_late_consent_is_paid_but_never_accepted(runtime, monkeypatch):
+    def late(*args, **kwargs):
+        result = runtime.infer(*args, **kwargs)
+        if len(runtime.calls) == 2:
+            runtime.clock[0] = runtime.batch['deadline_at']
+            result.update(messages=[], outcome='agree_to_end')
+        return result
+    monkeypatch.setattr(worker, 'invoke_speak_tool', late)
+    worker.lambda_handler({'batch_job_id': 'batch', 'conversation_id': 'conversation'})
+    conv = store.get_conversation('conversation')
+    assert len(runtime.usage) == 2 and conv['outcome'] == 'timed_out'
+    assert conv['ai_tick_history']['ticks'] == [] and 'completion_reason' not in conv
+    assert store.get_batch('batch')['completed_count'] == 0
+
+
+@pytest.mark.parametrize('enabled,chars,reason', [(False, 20000, 'max_messages'), (True, 1, 'max_characters')])
+def test_switch_and_limits_stop_without_final_confirmation(runtime, monkeypatch, enabled, chars, reason):
+    batch = store.get_batch('batch')
+    batch['settings_snapshot'].update(allow_early_completion=enabled, max_turns=3, max_total_chars=chars)
+    runtime.ddb.Table('batches').put_item(Item=batch)
+    calls = []
+    def speech(*args, **kwargs):
+        calls.append(kwargs)
+        return runtime.infer(*args, **kwargs)
+    monkeypatch.setattr(worker, 'invoke_speak_tool', speech)
+    worker.lambda_handler({'batch_job_id': 'batch', 'conversation_id': 'conversation'})
+    conv = store.get_conversation('conversation')
+    assert conv['completion_reason'] == reason
+    assert len(runtime.usage) == (3 if not enabled else 1)
+    if not enabled:
+        assert all(not call['allow_agreement'] for call in calls)
+
+
+def test_committed_consent_then_crash_is_not_repeated(definition, runtime, monkeypatch):
+    commit = store.commit_decision
+    crashed = []
+    def decide(*args, **kwargs):
+        result = runtime.infer(*args, **kwargs)
+        if len(runtime.calls) > 1:
+            result.update(messages=[], outcome='agree_to_end')
+        return result
+    def crash_once(*args, **kwargs):
+        result = commit(*args, **kwargs)
+        if not crashed:
+            crashed.append(True)
+            raise RuntimeError('lost response after accepted consent')
+        return result
+    monkeypatch.setattr(worker, 'invoke_speak_tool', decide)
+    monkeypatch.setattr(store, 'commit_decision', crash_once)
+    run_workflow(definition, runtime, monkeypatch)
+    assert len(runtime.calls) == len(runtime.usage) == 3
+    assert store.get_conversation('conversation')['completion_reason'] == 'all_ai_agreed_to_end'
+    assert store.get_batch('batch')['completed_count'] == 1
+
+
 def test_late_result_discarded_but_usage_recorded(definition, runtime, monkeypatch):
     def late(*args, **kwargs):
         result = runtime.infer(*args, **kwargs)
