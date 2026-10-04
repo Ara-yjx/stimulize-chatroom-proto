@@ -413,7 +413,8 @@ The reconnect button is the only recovery affordance. Once aborted, polling stop
 ## Async AI Conversation Flow
 
 This heartbeat flow is for human-AI conversations. The separate AI-only worker's
-planned [early-completion extension](./feat-ai-ai-early-completion.md) persists
+[early-completion extension](./feat-ai-ai-early-completion.md) (implemented and
+isolated-cloud verified; not yet released) persists
 accepted current-round tick results, not a random candidate queue, and atomically
 finishes after all AIs confirm the same history. It must preserve no-ready
 scheduling and does not modify this human-AI tick handler.

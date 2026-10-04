@@ -109,16 +109,16 @@ This file records decisions that came from implementation/debug discussions afte
 
 ## Pending
 
-### AI-only Early Completion
+### AI-only Early Completion Release
 
-- [Design agreed; not implemented](./feat-ai-ai-early-completion.md):
+- [Implemented; isolated cloud verified, not live](./feat-ai-ai-early-completion.md):
   `agreeToEnd` (`agree_to_end` in JSON/state), speaking invalidates prior confirmations, and the last speaker
   confirms last. Derive scheduling from accepted tick history, with no stored
   permutation and no change to no-ready scheduling or human-AI runtime behavior.
 - Room-level `allow_early_completion` defaults to true in runtime; management
   validates its optional boolean type on room save and batch creation. Protecting
   old in-flight batches requires an agreed rollout gate or runtime marker.
-  Track implementation in
+  Track release in
   [STML-32](https://linear.app/petryyy/issue/STML-32/).
 
 ### Runtime and Infra

@@ -1,6 +1,7 @@
 # Feat: AI-AI Early Completion
 
-Status: design agreed; implementation and deployment pending (2026-10-04).
+Status: implemented and verified in an isolated cloud stack (2026-10-04).
+Not released to live runtime, management or hosted editor.
 Tracking: [STML-32](https://linear.app/petryyy/issue/STML-32/).
 Baseline: [AI-AI Chat](./feat-ai-ai-chat.md). This extends AI-only batch workers,
 not the human-AI heartbeat/tick handler.
@@ -241,7 +242,7 @@ Existing archive files remain immutable. `timed_out` and `failed` remain separat
 outcomes; current exports omit those conversations and describe their omission
 in the manifest, so they do not receive a successful-completion TXT footer.
 
-## Implementation and Validation Plan
+## Implementation and Validation
 
 1. **Pure scheduler + compatibility tests:** `ai_batch/scheduler.py`; table-driven
    and generated decision histories cover no-ready behavior, all-ready rotation,
@@ -270,6 +271,54 @@ in the manifest, so they do not receive a successful-completion TXT footer.
    actual downloaded TXT/JSON/prompt.md, completion reasons, usage/ledger and
    workflow status; clean up test rooms. Preserve active customer batches and
    agree the release gate above, then deploy runtime and editor.
+
+### Acceptance Evidence (2026-10-04)
+
+- Candidate commits: runtime `890a66a`, management `21cddc7`, editor `217c449`
+  plus the browser-verified wrapping fix `afbcda0`. All remain on local
+  `feat/yejiaxi/ai-ai-early-completion` branches; no main push or live release.
+- Local suites: runtime 500 passed / 1 existing opt-in paid test skipped;
+  management 72 passed; editor chatroom 73 passed; CDK 28 passed. Editor typecheck
+  and production build passed, with existing CRA/lint warnings. Tests cover
+  human-AI compatibility, no-ready selection, reconsideration, stale commits,
+  slice/retry recovery, deadline rejection and accounting, not only happy paths.
+- Real Bedrock local traces and cloud tests exercised Sonnet 4.6 native tools,
+  Gemma 3 27B JSON, Scout auto-tool choice, two/three AIs and mixed-model personas.
+  Gemma exposed an assistant-first history rejection; the AI-only request builder
+  now prepends a neutral user frame when needed, without changing stored history
+  or the shared human-AI mapper.
+- Browser path: local editor -> SSH tunnel -> separate loopback process on beta
+  EC2 -> temporary batch stack. Created a room, verified default-on/explicit-off
+  save and reload, ran one conversation and a two-conversation disabled batch,
+  viewed reasons/usage, and downloaded actual TXT/JSON/prompt.md archives. Browser
+  and direct-API ZIP downloads matched byte-for-byte. Consent never became an event;
+  TXT had one final reason footer. The local harness imposed a 55-second deadline;
+  public management's 24-hour setting was not changed.
+- Cloud aggregate: 12 batches, 12 conversations: 10 completed, one explicit model
+  output failure, one deliberately expired conversation; another invalid-snapshot
+  batch created no conversation. Six completions were unanimous, three hit message
+  limits, one hit the character limit. Invalid snapshot and expired work made no
+  inference. 47 paid invocations, including confirmations and the failed output,
+  recorded about $0.1266 estimated usage. Temporary runtime had no ledger endpoint;
+  wallet writes were not enabled for these tests.
+- Do not hide the failure: one three-AI Sonnet opening returned
+  `invalid_tool_arguments` and failed at zero messages. Four local opening probes
+  and a new cloud run then succeeded; this does not establish its cause or a
+  statistical reliability rate. It was not interpreted as silence/consent.
+- All temporary workflows reached terminal state; queues/DLQs were empty and
+  alarms OK. A duplicate terminal worker call made no new inference/event/counter
+  change. All 55 deployed Python modules matched the runtime commit. Live Lambda
+  code/env/heartbeat and the public beta PID/release remained unchanged.
+- Cleanup: nine test rooms are inactive; all three temporary stacks, their tables,
+  workers, workflows, queues, export bucket and retained test log group were removed.
+  The beta-only IAM grant, loopback process, copied private env and local tunnel/editor
+  were removed/stopped. Shared RDS usage records remain. AWS refuses manual deletion
+  of the three automatic deleted-table system backups; they expire on 2026-11-08.
+  No running temporary infrastructure remains.
+
+Remaining release work: agree the no-new-batches/drain window above, then release
+runtime before editor. Raw responses, identifiers and downloaded test data stay
+in gitignored local artifacts, not this document.
 
 ## Main Risks and Mitigations
 
